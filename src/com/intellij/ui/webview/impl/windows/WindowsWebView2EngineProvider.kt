@@ -7,10 +7,10 @@ import com.intellij.ui.webview.impl.engine.WebViewEngineCapabilities
 import com.intellij.ui.webview.impl.engine.WebViewEngineId
 import com.intellij.ui.webview.impl.engine.WebViewEngineKind
 import com.intellij.ui.webview.impl.NativeBridgeLibraryAvailability
-import com.intellij.ui.webview.impl.WebViewEngineBridge
 import com.intellij.ui.webview.impl.engine.WebViewEngineCreationOptions
 import com.intellij.ui.webview.impl.engine.WebViewEngineProvider
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 
@@ -35,13 +35,14 @@ internal class WindowsWebView2EngineProvider : WebViewEngineProvider {
     }
   }
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+  override fun createController(scope: CoroutineScope, options: WebViewEngineCreationOptions, hostEventSink: WebViewHostEventSink): WebViewController {
     check(SystemInfo.isWindows) { "System WebView is supported only on Windows" }
-    return createWinWebViewEngine(scope, options.debugName, options.documentStartScripts)
-  }
-
-  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-    return WinNativeWebViewHostPeer(engine as WinWebViewEngine)
+    return createWinWebViewController(
+      scope,
+      options.debugName,
+      documentStartScripts = options.documentStartScripts,
+      hostEventSink = hostEventSink,
+    )
   }
 }
 

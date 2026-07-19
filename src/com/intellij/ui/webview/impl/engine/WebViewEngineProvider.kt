@@ -14,8 +14,8 @@ import com.intellij.ui.webview.api.WebViewNotification
 import com.intellij.ui.webview.impl.CONSOLE_LOG_CATEGORY
 import com.intellij.ui.webview.impl.SwingWebViewHostPanel
 import com.intellij.ui.webview.impl.WebViewConsoleCapture
-import com.intellij.ui.webview.impl.WebViewEngineBridge
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import com.intellij.ui.webview.impl.rpc.WebViewMessageBusImpl
 import com.intellij.ui.webview.impl.traceWebViewPerf
 import kotlinx.coroutines.CoroutineScope
@@ -57,22 +57,26 @@ interface WebViewEngineProvider {
     ) {
       val provider = this
       val consoleCapture = WebViewConsoleCapture(options.consoleLogCategory)
-      val engine = LOG.traceWebViewPerf(
-        "webview.provider.engine.create",
+      val hostComponent = AtomicReference<SwingWebViewHostPanel?>()
+      val hostEventSink = WebViewHostEventSink { event ->
+        hostComponent.get()?.handleHostEvent(event) ?: false
+      }
+      val controller = LOG.traceWebViewPerf(
+        "webview.provider.controller.create",
         "provider=$id, debugName=${options.debugName.orEmpty()}",
       ) {
-        createEngine(webViewScope, options.withDocumentStartScript(WebViewConsoleCapture.DOCUMENT_START_SCRIPT))
+        createController(webViewScope, options.withDocumentStartScript(WebViewConsoleCapture.DOCUMENT_START_SCRIPT), hostEventSink)
       }
-      val runtimeInfoValue = runtimeInfo(engine)
+      val runtimeInfoValue = runtimeInfo()
       val busSetup = LOG.traceWebViewPerf(
         "webview.provider.bus.setup",
         "provider=$id, debugName=${options.debugName.orEmpty()}",
       ) {
-        val bus = WebViewMessageBusImpl(webViewScope, engine)
+        val bus = WebViewMessageBusImpl(webViewScope, controller)
         bus.registerRuntimeInfoHandler(runtimeInfoValue)
         val consoleRegistration = consoleCapture.register(bus)
         val themeRegistration = bus.interop.registerThemeHandler()
-        engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
+        controller.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
         WebViewBusSetup(bus, consoleRegistration, themeRegistration)
       }
       val bus = busSetup.bus
@@ -81,7 +85,6 @@ interface WebViewEngineProvider {
       val closed = AtomicBoolean(false)
       val closeOnScopeCompletion = AtomicReference<DisposableHandle?>(null)
       val createdWebView = object : WebView, CreatedWebView {
-        private var hostComponent: SwingWebViewHostPanel? = null
         private var focusRegistration: WebViewMessageRegistration? = null
         private val firstAssetLoadLogged = AtomicBoolean(false)
 
@@ -90,10 +93,8 @@ interface WebViewEngineProvider {
 
         override val runtimeInfo: WebViewRuntimeInfo = runtimeInfoValue
         override val interop: WebViewInterop = bus.interop
-        override val isHeavyweight: Boolean = engine.isHeavyweight
-
         override fun createHostComponent(): JComponent {
-          hostComponent?.let { return it }
+          hostComponent.get()?.let { return it }
 
           val host = LOG.traceWebViewPerf(
             "webview.provider.hostComponent.create",
@@ -101,20 +102,19 @@ interface WebViewEngineProvider {
           ) {
             SwingWebViewHostPanel(
               webViewScope,
-              engine,
+              controller,
               bus.interop.createWebViewFocusEntrySink(),
-              provider.createNativeHostPeer(webViewScope, engine),
             )
           }
           focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-          hostComponent = host
+          hostComponent.set(host)
           return host
         }
 
         override suspend fun loadFile(file: VirtualFile) {
           consoleCapture.setViewId(null)
           val path = file.toNioPathOrNull() ?: error("WebView can load only local files: ${file.presentableUrl}")
-          engine.loadFile(path)
+          controller.loadFile(path)
         }
 
         override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
@@ -124,22 +124,22 @@ interface WebViewEngineProvider {
               "provider=${provider.id}, viewId=${root.viewId}, entry=$entry, debugName=${options.debugName.orEmpty()}",
             ) {
               consoleCapture.setViewId(root.viewId)
-              engine.loadAsset(root, entry, query.withWebViewTheme())
+              controller.loadAsset(root, entry, query.withWebViewTheme())
             }
           }
           else {
             consoleCapture.setViewId(root.viewId)
-            engine.loadAsset(root, entry, query.withWebViewTheme())
+            controller.loadAsset(root, entry, query.withWebViewTheme())
           }
         }
 
         override suspend fun loadHtml(html: String) {
           consoleCapture.setViewId(null)
-          engine.loadHtml(html)
+          controller.loadHtml(html, null)
         }
 
         override suspend fun evaluateJavaScript(script: String): WebViewScriptResult {
-          return WebViewScriptResult(engine.evaluateJavaScript(script))
+          return WebViewScriptResult(controller.evaluateJavaScript(script))
         }
 
         override suspend fun close() {
@@ -150,7 +150,7 @@ interface WebViewEngineProvider {
           consoleRegistration.close()
           themeRegistration.close()
           bus.close()
-          engine.close()
+          controller.close()
         }
       }
       closeOnScopeCompletion.set(webViewScope.coroutineContext.job.invokeOnCompletion {
@@ -166,24 +166,18 @@ interface WebViewEngineProvider {
     }
   }
 
-  fun runtimeInfo(engine: WebViewEngineBridge): WebViewRuntimeInfo {
+  fun runtimeInfo(): WebViewRuntimeInfo {
     return WebViewRuntimeInfo(id, capabilities, displayName)
   }
 
-  fun createEngine(
+  fun createController(
     scope: CoroutineScope,
     options: WebViewEngineCreationOptions,
-  ): WebViewEngineBridge
-
-  fun createNativeHostPeer(
-    scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-  ): NativeWebViewHostPeer? = null
+    hostEventSink: WebViewHostEventSink,
+  ): WebViewController
 
   interface CreatedWebView {
     val webView: WebView
-
-    val isHeavyweight: Boolean
 
     fun createHostComponent(): JComponent
   }

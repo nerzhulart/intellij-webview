@@ -9,10 +9,14 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefClient
 import com.intellij.ui.webview.api.WebViewAssetPath
 import com.intellij.ui.webview.api.WebViewAssetRoot
-import com.intellij.ui.webview.impl.ComponentBackedWebViewEngine
 import com.intellij.ui.webview.impl.WebViewAssetResolver
 import com.intellij.ui.webview.impl.WebViewAssetResponse
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewEditCommand
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
 import com.intellij.ui.webview.impl.engine.WebViewScript
 import com.intellij.ui.webview.impl.resolveWebViewAssetUrl
 import com.intellij.ui.webview.impl.webViewAssetHttpsUrl
@@ -57,13 +61,13 @@ import javax.swing.JComponent
 import javax.swing.SwingUtilities
 import kotlin.time.Duration.Companion.milliseconds
 
-private val LOG = logger<JcefWebViewEngine>()
+private val LOG = logger<JcefWebViewController>()
 
-internal class JcefWebViewEngine(
+internal class JcefWebViewController(
   parentScope: CoroutineScope,
   jbCefApp: JBCefApp,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
-) : ComponentBackedWebViewEngine {
+) : WebViewController {
   private companion object {
     private const val INITIAL_URL = "about:blank"
     private const val QUERY_FUNCTION = "__wviJcefQuery"
@@ -104,6 +108,8 @@ internal class JcefWebViewEngine(
     .build()
 
   override val component: JComponent
+
+  override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.NONE
 
   private val cefBrowser: CefBrowser
     get() = jbCefBrowser.cefBrowser
@@ -217,6 +223,16 @@ internal class JcefWebViewEngine(
     }
   }
 
+  override fun applyLayout(params: WebViewHostLayoutParams) {
+    // JCEF is mounted as a regular Swing component and owns its own geometry.
+  }
+
+  override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    cefBrowser.setFocus(false)
+  }
+
+  override fun handleEditShortcut(event: java.awt.event.KeyEvent, command: WebViewEditCommand): Boolean = false
+
   override fun requestWebViewFocus() {
     runOnEdt {
       cefBrowser.uiComponent.requestFocusInWindow()
@@ -224,7 +240,7 @@ internal class JcefWebViewEngine(
     }
   }
 
-  override fun clearWebViewFocus() {
+  private fun clearWebViewFocus() {
     runOnEdt {
       cefBrowser.setFocus(false)
     }
@@ -561,9 +577,9 @@ internal class JcefWebViewEngine(
 
 }
 
-internal fun createJcefWebViewEngine(
+internal fun createJcefWebViewController(
   parentScope: CoroutineScope,
   documentStartScripts: List<WebViewScript> = emptyList(),
-): JcefWebViewEngine {
-  return JcefWebViewEngine(parentScope, JcefWebViewRuntime.getOrCreateJBCefApp(), documentStartScripts)
+): JcefWebViewController {
+  return JcefWebViewController(parentScope, JcefWebViewRuntime.getOrCreateJBCefApp(), documentStartScripts)
 }

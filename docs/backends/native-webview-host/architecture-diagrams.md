@@ -2,7 +2,7 @@
 
 Status: plan.
 
-The diagrams below use full type APIs in nodes and call names on edges. Every owned type node is marked with its source side: `<<Kotlin>>` for Kotlin-only types, `<<KotlinTsRpc>>` for mirrored Kotlin/TS RPC protocol types, `<<Rust>>` for native bridge implementation types, and `<<WebView2COM>>` for WebView2 COM types. JVM/Swing/JDK value types such as `Component`, `KeyEvent`, `String`, or `Boolean` are external library types and are not repeated as nodes. The diagrams describe the target architecture, not the current class layout.
+The diagrams below use full type APIs in nodes and call names on edges. Every owned type node is marked with its source side: `<<Kotlin>>` for Kotlin-only types, `<<KotlinTsRpc>>` for mirrored Kotlin/TS RPC protocol types, `<<Rust>>` for native bridge implementation types, and `<<WebView2COM>>` for WebView2 COM types. JVM/Swing/JDK value types such as `Component`, `KeyEvent`, `String`, or `Boolean` are external library types and are not repeated as nodes. The diagrams describe the target architecture, not the current class layout. Each platform diagram node is one `WebViewController` (Kotlin) that fully owns one WebView. For Windows, `WinWebViewController` is driven by the AWT-owned Canvas thread; the Rust native library does not create a separate event loop, window procedure, or UI thread.
 
 ## Creation and ownership
 
@@ -13,7 +13,7 @@ direction LR
 class WebViewRuntime {
   <<Kotlin>>
   +suspend createWebView(scope: CoroutineScope, options: WebViewCreationOptions): WebView
-  +createEngine(scope: CoroutineScope, engineKind: WebViewEngineKind, jcefNativeBundlePath: Path?): WebViewEngine
+  +createController(scope: CoroutineScope, engineKind: WebViewEngineKind, jcefNativeBundlePath: Path?): WebViewController
   +suspend createWebViewPanel(scope: CoroutineScope, options: WebViewPanelOptions): WebViewPanel
 }
 
@@ -25,10 +25,10 @@ class WebViewEngineProvider {
   +selectionPriority(preference: WebViewEngineKind): Int?
   +suspend availability(): WebViewEngineAvailability
   +availabilityBlocking(): WebViewEngineAvailability
-  +createBackend(scope: CoroutineScope, options: WebViewEngineCreationOptions, hostEvents: WebViewHostEventSink): WebViewBackend
+  +createController(scope: CoroutineScope, options: WebViewEngineCreationOptions, hostEvents: WebViewHostEventSink): WebViewController
 }
 
-class WebViewRuntimeEngine {
+class WebViewController {
   <<Kotlin>>
   +suspend loadFile(file: Path)
   +suspend loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?)
@@ -37,10 +37,6 @@ class WebViewRuntimeEngine {
   +suspend close()
   +suspend transferToJs(rawJson: String)
   +connectMessageBus(receiver: WebViewJsMessageReceiver)
-}
-
-class WebViewHostController {
-  <<Kotlin>>
   +component: Component
   +editShortcutPolicy: WebViewEditShortcutPolicy
   +applyLayout(params: WebViewHostLayoutParams)
@@ -61,17 +57,10 @@ class WebViewHostEvent {
   MoveFocusRequested(direction: WebViewFocusDirection)
 }
 
-class WebViewBackend {
-  <<Kotlin>>
-  +runtimeEngine: WebViewRuntimeEngine
-  +hostController: WebViewHostController
-}
-
 class CreatedWebViewHost {
   <<Kotlin>>
   +webView: WebView
-  +runtimeEngine: WebViewRuntimeEngine
-  +hostController: WebViewHostController
+  +controller: WebViewController
   +hostPanel: SwingWebViewHostPanel
   +close(): Unit
 }
@@ -86,16 +75,14 @@ class WebViewPanel {
 }
 
 WebViewRuntime --> WebViewEngineProvider : selectProvider(preference, requirements)
-WebViewRuntime --> WebViewEngineProvider : createBackend(scope, options, hostEvents)
-WebViewEngineProvider --> WebViewBackend : construct facets
-WebViewBackend --> WebViewRuntimeEngine : runtimeEngine
-WebViewBackend --> WebViewHostController : hostController
-WebViewBackend --> WebViewHostEventSink : reports native facts
-WebViewRuntime --> WebViewRuntimeEngine : connectMessageBus(receiver)
-WebViewRuntime --> CreatedWebViewHost : construct(backend.runtimeEngine, backend.hostController, hostPanel)
+WebViewRuntime --> WebViewEngineProvider : createController(scope, options, hostEvents)
+WebViewEngineProvider --> WebViewController : construct selected controller
+WebViewController --> WebViewHostEventSink : reports native facts
+WebViewRuntime --> WebViewController : connectMessageBus(receiver)
+WebViewRuntime --> CreatedWebViewHost : construct(controller, hostPanel)
 CreatedWebViewHost --> WebViewPanel : expose(component = hostPanel)
 WebViewPanel --> CreatedWebViewHost : close()
-CreatedWebViewHost --> WebViewRuntimeEngine : close()
+CreatedWebViewHost --> WebViewController : close()
 ```
 
 ## Runtime transport and page API
@@ -123,7 +110,7 @@ class WebViewMessageBusImpl {
   +close()
 }
 
-class WebViewRuntimeEngine {
+class WebViewController {
   <<Kotlin>>
   +suspend loadFile(file: Path)
   +suspend loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?)
@@ -168,13 +155,13 @@ class WebViewFocusDirection {
   BACKWARD
 }
 
-WebView --> WebViewRuntimeEngine : loadFile(path)
-WebView --> WebViewRuntimeEngine : loadAsset(root, entry, query)
-WebView --> WebViewRuntimeEngine : loadHtml(html, baseFile)
-WebView --> WebViewRuntimeEngine : evaluateJavaScript(script)
-WebView --> WebViewRuntimeEngine : close()
-WebViewMessageBusImpl --> WebViewRuntimeEngine : transferToJs(rawJson)
-WebViewRuntimeEngine --> WebViewJsMessageReceiver : transferFromJs(rawJson)
+WebView --> WebViewController : loadFile(path)
+WebView --> WebViewController : loadAsset(root, entry, query)
+WebView --> WebViewController : loadHtml(html, baseFile)
+WebView --> WebViewController : evaluateJavaScript(script)
+WebView --> WebViewController : close()
+WebViewMessageBusImpl --> WebViewController : transferToJs(rawJson)
+WebViewController --> WebViewJsMessageReceiver : transferFromJs(rawJson)
 WebViewMessageBusImpl --> WebViewFocusHostApi : implement(ID, hostApi)
 WebViewMessageBusImpl --> WebViewFocusPageApi : callable(ID).enter(params)
 WebViewMessageBusImpl --> WebViewFocusPageApi : callable(ID).leave()
@@ -182,7 +169,7 @@ WebViewFocusPageApi --> WebViewFocusEntry : enter(params)
 WebViewFocusHostApi --> WebViewFocusExit : exit(params)
 ```
 
-This diagram shows the Kotlin/TS RPC transport surface. It does not make page-side focus-boundary messages the universal native focus mechanism. Windows must use WebView2 controller focus and traversal events for the paths they cover; macOS may keep a private runtime-owned boundary detector only until a native AppKit-only traversal path is proven.
+This diagram shows the Kotlin/TS RPC transport surface. It does not make page-side focus-boundary messages the universal native focus mechanism. Windows must use WebView2 controller focus and traversal events for the paths they cover; `MacWkWebViewController` may use a private controller-owned TypeScript boundary detector only until a native AppKit-only traversal path is proven.
 
 ## Swing layout and focus policy
 
@@ -200,7 +187,7 @@ class SwingWebViewHostPanel {
   +layoutStateReader
 }
 
-class WebViewHostController {
+class WebViewController {
   <<Kotlin>>
   +component: Component
   +editShortcutPolicy: WebViewEditShortcutPolicy
@@ -238,36 +225,32 @@ class WebViewFocusDirection {
   BACKWARD
 }
 
-SwingWebViewHostPanel --> WebViewHostController : component
+SwingWebViewHostPanel --> WebViewController : component
 SwingWebViewHostPanel --> WebViewHostLayoutParams : readCurrentLayoutParams()
-SwingWebViewHostPanel --> WebViewHostController : applyLayout(params)
-SwingWebViewHostPanel --> WebViewHostController : component.requestFocusInWindow()
-SwingWebViewHostPanel --> WebViewHostController : swingFocusMovedOutside(event)
-SwingWebViewHostPanel --> WebViewHostController : handleEditShortcut(event, command)
+SwingWebViewHostPanel --> WebViewController : applyLayout(params)
+SwingWebViewHostPanel --> WebViewController : component.requestFocusInWindow()
+SwingWebViewHostPanel --> WebViewController : swingFocusMovedOutside(event)
+SwingWebViewHostPanel --> WebViewController : handleEditShortcut(event, command)
 SwingWebViewHostPanel --> WebViewHostEventSink : owns callback port
-WebViewHostController --> WebViewHostEventSink : handle(event)
+WebViewController --> WebViewHostEventSink : handle(event)
 WebViewHostEventSink --> WebViewHostEvent : receives event
 WebViewHostEventSink --> SwingWebViewHostPanel : guarded state update
 SwingWebViewHostPanel --> SwingWebViewHostPanel : exitByTraversal(direction)
 SwingWebViewHostPanel --> SwingWebViewHostPanel : focusNext/PreviousComponent(hostPanel)
 ```
 
-`WebViewHostEventSink` in this diagram means constructor-provided lambdas or an anonymous callback object owned by `SwingWebViewHostPanel` (Kotlin). It is not a second common controller contract. Its only job is to let backend host facets report native focus, host/native activation, optional evidence-driven page pointer fallback events, and native traversal requests back into the guarded Swing host state.
+`WebViewHostEventSink` in this diagram means constructor-provided lambdas or an anonymous callback object owned by `SwingWebViewHostPanel` (Kotlin). It is not a second controller. Its only job is to let the selected controller report native focus, host/native activation, and native traversal requests back into the guarded Swing host state.
 
-## Platform backend implementations
+## Platform controller implementations
 
 ```mermaid
 classDiagram
 direction LR
 
-class WebViewBackend {
+class WebViewController {
   <<Kotlin>>
-  +runtimeEngine: WebViewRuntimeEngine
-  +hostController: WebViewHostController
-}
-
-class WebViewRuntimeEngine {
-  <<Kotlin>>
+  +component: Component
+  +editShortcutPolicy: WebViewEditShortcutPolicy
   +suspend loadFile(file: Path)
   +suspend loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?)
   +suspend loadHtml(html: String, baseFile: Path?)
@@ -275,12 +258,6 @@ class WebViewRuntimeEngine {
   +suspend close()
   +suspend transferToJs(rawJson: String)
   +connectMessageBus(receiver: WebViewJsMessageReceiver)
-}
-
-class WebViewHostController {
-  <<Kotlin>>
-  +component: Component
-  +editShortcutPolicy: WebViewEditShortcutPolicy
   +applyLayout(params: WebViewHostLayoutParams)
   +swingFocusMovedOutside(event: WebViewSwingFocusExit)
   +handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean
@@ -291,48 +268,36 @@ class WebViewHostEventSink {
   +handle(event: WebViewHostEvent): Boolean
 }
 
-class WinWebView2Backend {
+class WinWebViewController {
   <<Kotlin>>
-  +runtimeEngineFacet: WebViewRuntimeEngine
-  +hostControllerFacet: WebViewHostController
   -canvas: Canvas
   -hostHwnd: Long
   -webView2Handle: Long
 }
 
-class MacWkWebViewBackend {
+class MacWkWebViewController {
   <<Kotlin>>
-  +runtimeEngineFacet: WebViewRuntimeEngine
-  +hostControllerFacet: WebViewHostController
   -hostComponent: Component
   -hostNSView: ID
   -wkWebView: ID
 }
 
-class JcefWebViewBackend {
+class JcefWebViewController {
   <<Kotlin>>
-  +runtimeEngineFacet: WebViewRuntimeEngine
-  +hostControllerFacet: WebViewHostController
   -browserComponent: JComponent
 }
 
-WebViewBackend --> WebViewRuntimeEngine : runtimeEngine
-WebViewBackend --> WebViewHostController : hostController
-WebViewRuntimeEngine <|.. WinWebView2Backend
-WebViewHostController <|.. WinWebView2Backend
-WebViewRuntimeEngine <|.. MacWkWebViewBackend
-WebViewHostController <|.. MacWkWebViewBackend
-WebViewRuntimeEngine <|.. JcefWebViewBackend
-WebViewHostController <|.. JcefWebViewBackend
-WinWebView2Backend --> WebViewBackend : returned as facets
-MacWkWebViewBackend --> WebViewBackend : returned as facets
-JcefWebViewBackend --> WebViewBackend : returned as facets
-WinWebView2Backend --> WebViewHostEventSink : native focus/activation/traversal facts
-MacWkWebViewBackend --> WebViewHostEventSink : native focus/activation/traversal facts
-JcefWebViewBackend --> WebViewHostEventSink : native focus facts when needed
+WebViewController <|.. WinWebViewController
+WebViewController <|.. MacWkWebViewController
+WebViewController <|.. JcefWebViewController
+WinWebViewController --> WebViewHostEventSink : native focus/activation/traversal facts
+MacWkWebViewController --> WebViewHostEventSink : native focus/activation/traversal facts
+JcefWebViewController --> WebViewHostEventSink : native focus facts when needed
 ```
 
-`WinWebView2Backend`, `MacWkWebViewBackend`, and `JcefWebViewBackend` are target implementation examples, not a new public/common hierarchy. A backend can implement both facets directly, as shown above, or return private facet delegates over the same backend-owned native session. Private delegates are intentionally omitted from the diagram because they do not define the architecture. Host-only native operations such as attaching to an HWND/NSView, changing WebView2 bounds, AppKit first-responder cleanup, or JCEF focus calls stay private to the selected backend and never appear on `WebViewRuntimeEngine`.
+`WinWebViewController`, `MacWkWebViewController`, and `JcefWebViewController` are the only per-WebView platform implementation hierarchy. Each fully owns one WebView. Do not introduce per-platform `*Engine`, `*HostController`, `*Backend`, tuple, or facet-delegate classes. Native operations such as attaching to an HWND/NSView, changing WebView2 bounds, AppKit first-responder cleanup, or JCEF focus calls stay as private methods or narrow non-polymorphic helpers of the selected controller.
+
+`WebViewEngineKind`, `WebViewEngineId`, capabilities, availability, and the provider name in the diagram are common selection metadata retained from the external/runtime selection API. They do not define a second per-OS implementation hierarchy. `createController(...)` is the only per-WebView construction operation.
 
 ## Windows native bridge
 
@@ -340,7 +305,7 @@ JcefWebViewBackend --> WebViewHostEventSink : native focus facts when needed
 classDiagram
 direction LR
 
-class WinWebView2Backend {
+class WinWebViewController {
   <<Kotlin>>
   +applyLayout(params: WebViewHostLayoutParams)
   +swingFocusMovedOutside(event: WebViewSwingFocusExit)
@@ -409,14 +374,14 @@ class ICoreWebView2Controller {
   +add_AcceleratorKeyPressed(handler)
 }
 
-WinWebView2Backend --> WinWebView2BridgeApi : create(hostHwnd, userDataDir, documentStartScript, callbacks)
-WinWebView2Backend --> WinWebView2BridgeApi : setBounds(handle, x, y, width, height, scale)
-WinWebView2Backend --> WinWebView2BridgeApi : setVisible(handle, visible)
-WinWebView2Backend --> WinWebView2BridgeApi : focus(handle)
-WinWebView2Backend --> WinWebView2BridgeApi : loadUrl(handle, url)
-WinWebView2Backend --> WinWebView2BridgeApi : loadHtml(handle, html, baseUrl)
-WinWebView2Backend --> WinWebView2BridgeApi : evaluateJavaScript(handle, evalId, script)
-WinWebView2Backend --> WinWebView2BridgeApi : transferToJs(handle, rawJson)
+WinWebViewController --> WinWebView2BridgeApi : create(hostHwnd, userDataDir, documentStartScript, callbacks)
+WinWebViewController --> WinWebView2BridgeApi : setBounds(handle, x, y, width, height, scale)
+WinWebViewController --> WinWebView2BridgeApi : setVisible(handle, visible)
+WinWebViewController --> WinWebView2BridgeApi : focus(handle)
+WinWebViewController --> WinWebView2BridgeApi : loadUrl(handle, url)
+WinWebViewController --> WinWebView2BridgeApi : loadHtml(handle, html, baseUrl)
+WinWebViewController --> WinWebView2BridgeApi : evaluateJavaScript(handle, evalId, script)
+WinWebViewController --> WinWebView2BridgeApi : transferToJs(handle, rawJson)
 WinWebView2BridgeApi --> RustWebView2Bridge : JNI native calls
 RustWebView2Bridge --> ICoreWebView2Controller : CreateCoreWebView2ControllerWithOptions(hostHwnd, options, handler)
 RustWebView2Bridge --> ICoreWebView2Controller : SetBounds(bounds)
@@ -426,5 +391,5 @@ ICoreWebView2Controller --> Callbacks : onFocusGained()
 ICoreWebView2Controller --> Callbacks : onFocusLost()
 ICoreWebView2Controller --> Callbacks : onMoveFocusRequested(reason)
 ICoreWebView2Controller --> Callbacks : onAcceleratorKeyPressed(...)
-Callbacks --> WinWebView2Backend : apply callback state
+Callbacks --> WinWebViewController : apply callback state
 ```

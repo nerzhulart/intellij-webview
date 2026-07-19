@@ -10,7 +10,8 @@ import com.intellij.ui.webview.api.WebViewPanel
 import com.intellij.ui.webview.api.WebViewPanelOptions
 import com.intellij.ui.webview.api.createWebViewPanel
 import com.intellij.ui.webview.impl.SwingWebViewHostPanel
-import com.intellij.ui.webview.impl.WebViewEngineBridge
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import com.intellij.ui.webview.impl.engine.WebView
 import com.intellij.ui.webview.impl.engine.WebViewEngineAvailability
 import com.intellij.ui.webview.impl.engine.WebViewEngineCapabilities
@@ -19,10 +20,8 @@ import com.intellij.ui.webview.impl.engine.WebViewEngineId
 import com.intellij.ui.webview.impl.engine.WebViewEngineKind
 import com.intellij.ui.webview.impl.engine.WebViewEngineProvider
 import com.intellij.ui.webview.impl.engine.WebViewRuntime
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
-import com.intellij.ui.webview.impl.mac.MacNativeWebViewHostPeer
-import com.intellij.ui.webview.impl.mac.MacWebViewEngine
 import com.intellij.ui.webview.impl.mac.MacWebViewFirstResponderState
+import com.intellij.ui.webview.impl.mac.MacWkWebViewController
 import com.intellij.ui.webview.impl.mac.MacWkWebViewEngineProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -111,7 +110,7 @@ internal class MacWebViewHotkeysInIdeTest {
       clickCenter(robot, host)
       assertTrue(waitForHostFocus(host, 5.seconds), failureMessage("WebView host did not become the Swing shortcut focus owner"))
       assertTrue(waitForHostWebViewActive(host, 5.seconds), failureMessage("WebView host did not mark WebView focus as inside host"))
-      val lastFirstResponder = waitForFirstResponderInsideWebView(provider.engine)
+      val lastFirstResponder = waitForFirstResponderInsideWebView(provider.controller)
 
       val lastSelection = waitForJavaScriptResult(
         webView = panel.webView,
@@ -204,7 +203,7 @@ internal class MacWebViewHotkeysInIdeTest {
     )
   }
 
-  private suspend fun waitForFirstResponderInsideWebView(engine: MacWebViewEngine): MacWebViewFirstResponderState? {
+  private suspend fun waitForFirstResponderInsideWebView(engine: MacWkWebViewController): MacWebViewFirstResponderState? {
     var lastState: MacWebViewFirstResponderState? = null
     val matched = withTimeoutOrNull(5.seconds) {
       while (true) {
@@ -443,7 +442,7 @@ internal class MacWebViewHotkeysInIdeTest {
 
   private class CapturingMacProvider : WebViewEngineProvider {
     private val delegate = MacWkWebViewEngineProvider()
-    lateinit var engine: MacWebViewEngine
+    lateinit var controller: MacWkWebViewController
       private set
 
     override val id: WebViewEngineId = delegate.id
@@ -454,12 +453,12 @@ internal class MacWebViewHotkeysInIdeTest {
 
     override fun availabilityBlocking(): WebViewEngineAvailability = delegate.availabilityBlocking()
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
-      return (delegate.createEngine(scope, options) as MacWebViewEngine).also { engine = it }
-    }
-
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-      return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
+    override fun createController(
+      scope: CoroutineScope,
+      options: WebViewEngineCreationOptions,
+      hostEventSink: WebViewHostEventSink,
+    ): WebViewController {
+      return (delegate.createController(scope, options, hostEventSink) as MacWkWebViewController).also { controller = it }
     }
   }
 

@@ -1,18 +1,19 @@
-# JCEF Host
+# JCEF WebView Controller
 
 Status: plan.
 
-JCEF is the simplest backend shape because `JBCefBrowser` already exposes a Swing component. The target architecture should still present it through the same two facets as every other backend:
+JCEF is the simplest controller shape because `JBCefBrowser` already exposes a Swing component. The target architecture still uses the same single `WebViewController` as every other platform:
 
 ```kotlin
-private class JcefWebViewBackend : WebViewRuntimeEngine, WebViewHostController
+// Kotlin type.
+private class JcefWebViewController : WebViewController
 ```
 
-The runtime facet owns navigation, JavaScript evaluation, message transport, and close. The host facet owns the mounted Swing component and focus/layout behavior.
+`JcefWebViewController` owns navigation, JavaScript evaluation, message transport, close, the mounted Swing component, and focus/layout behavior.
 
-## Host Facet
+## Controller
 
-`JcefWebViewBackend` exposes `WebViewHostController` over the existing `JBCefBrowser.component`. The same backend object may also be the `WebViewRuntimeEngine`.
+`JcefWebViewController` is the complete controller for one JCEF WebView. It exposes `WebViewController.component` over the existing `JBCefBrowser.component`.
 
 Host behavior:
 
@@ -24,4 +25,4 @@ Host behavior:
 
 ## Removed Shape
 
-Do not keep `ComponentBackedWebViewEngine` for JCEF. A Swing component is host-facet state, not runtime-engine state. Common code should receive `WebViewRuntimeEngine` for page/runtime work and `WebViewHostController` for embedding, and it should never cast the runtime engine to a component-backed type.
+Do not keep `ComponentBackedWebViewEngine` for JCEF. The JCEF Swing component is state of `JcefWebViewController`; common code receives the one `WebViewController` for both page/runtime work and embedding, and never casts it to a component-backed subtype.

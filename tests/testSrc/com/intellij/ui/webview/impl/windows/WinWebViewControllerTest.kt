@@ -11,10 +11,11 @@ import com.intellij.ui.webview.api.WebViewAssetRoot
 import com.intellij.ui.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
 import com.intellij.ui.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME_HOST
 import com.intellij.ui.webview.impl.WEBVIEW_ASSET_HTTPS_HOST
+import com.intellij.ui.webview.impl.WebViewHostEvent
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import com.intellij.ui.webview.impl.engine.WebViewScript
 import com.intellij.ui.webview.impl.webViewAssetCustomSchemeUrl
 import com.intellij.ui.webview.impl.webViewAssetHttpsUrl
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -23,8 +24,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -32,19 +35,119 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.EnumSet
-import kotlin.coroutines.CoroutineContext
 
-internal class WinWebViewEngineTest {
+internal class WinWebViewControllerTest {
+
+  @Test
+  fun zeroHostHwndFailsFast() {
+    val scope = testScope()
+    val controller = createTestEngine(scope, FakeWinWebView2Bridge())
+    try {
+      assertThrows(IllegalStateException::class.java) {
+        controller.recreateOnHost(0)
+      }
+    }
+    finally {
+      closeEngine(controller, scope)
+    }
+  }
+
+  @Test
+  fun bridgeApiHasNoLegacyHostingOrClearFocusOperations() {
+    val methodNames = WinWebView2BridgeApi::class.java.methods.mapTo(HashSet()) { it.name }
+    assertFalse("attachToParent" in methodNames)
+    assertFalse("detachFromParent" in methodNames)
+    assertFalse("setHostWindow" in methodNames)
+    assertFalse("clearFocus" in methodNames)
+  }
+
+  @Test
+  fun webView2ConfigurationIsSuppliedByController() {
+    val configuration = WinWebView2Configuration(
+      allowHostInputProcessing = false,
+      areDevToolsEnabled = true,
+      areBrowserAcceleratorKeysEnabled = true,
+    )
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val controller = WinWebViewController(
+      scope,
+      bridge,
+      webView2Configuration = configuration,
+      hostEventSink = WebViewHostEventSink { false },
+      devToolsCpuProfilingEnabled = { false },
+    )
+    try {
+      runInEdtAndWait { controller.recreateOnHost(42L) }
+
+      assertEquals(listOf(configuration), bridge.configurations)
+    }
+    finally {
+      closeEngine(controller, scope)
+    }
+  }
+
+  @Test
+  fun webView2ConfigurationEncodesEverySettingIndependently() {
+    val allEnabled = WinWebView2Configuration(
+      allowHostInputProcessing = true,
+      isScriptEnabled = true,
+      isWebMessageEnabled = true,
+      areDefaultScriptDialogsEnabled = true,
+      isStatusBarEnabled = true,
+      areDevToolsEnabled = true,
+      areDefaultContextMenusEnabled = true,
+      areHostObjectsAllowed = true,
+      isZoomControlEnabled = true,
+      isBuiltInErrorPageEnabled = true,
+      areBrowserAcceleratorKeysEnabled = true,
+      isGeneralAutofillEnabled = true,
+      isPasswordAutosaveEnabled = true,
+      isSwipeNavigationEnabled = true,
+    )
+
+    assertEquals((1L shl 14) - 1, allEnabled.toNativeFlags())
+  }
+
+  @Test
+  fun explicitFocusRequestFocusesWebView2AndNativeCallbackNotifiesHost() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val events = ArrayList<WebViewHostEvent>()
+    val controller = WinWebViewController(
+      scope,
+      bridge,
+      hostEventSink = WebViewHostEventSink { event ->
+        events.add(event)
+        true
+      },
+      devToolsCpuProfilingEnabled = { false },
+    )
+    try {
+      runInEdtAndWait {
+        controller.recreateOnHost(42L)
+        bridge.callbacks.onCreated(bridge.createdHandles.single())
+        controller.requestWebViewFocus()
+        bridge.callbacks.onFocusGained()
+      }
+
+      assertEquals(listOf(WebViewHostEvent.NativeFocusGained), events)
+      assertEquals(listOf(bridge.createdHandles.single()), bridge.focusedHandles)
+    }
+    finally {
+      closeEngine(controller, scope)
+    }
+  }
 
   @Test
   fun nativeDiagnosticLevelsMapToLoggerLevels() {
     val factory = Logger.getFactory() as? TestLoggerFactory
-    assertNotNull(factory, "WinWebViewEngineTest expects TestLoggerFactory")
+    assertNotNull(factory, "WinWebViewControllerTest expects TestLoggerFactory")
     val marker = "win-webview2-diagnostic-${System.nanoTime()}"
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
     val engine = createActiveEngine(scope, bridge)
-    val engineLogger = Logger.getInstance(WinWebViewEngine::class.java)
+    val engineLogger = Logger.getInstance(WinWebViewController::class.java)
 
     val logged = collectWarningsAndErrors {
       engineLogger.setLevel(LogLevel.TRACE)
@@ -114,11 +217,10 @@ internal class WinWebViewEngineTest {
       bridge,
       debugName = "test",
       documentStartScripts = listOf(WebViewScript("first"), WebViewScript("second")),
-      webViewDispatcher = SyncDispatcher,
     )
     try {
       runInEdtAndWait {
-        engine.attachToParent(100L, 10, 20, 300, 200, 1.5)
+        engine.recreateOnHost(100L, 10, 20, 300, 200, 1.5)
       }
 
       assertEquals(listOf("first\n;\nsecond"), bridge.documentStartScripts)
@@ -184,77 +286,67 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
-  fun closeDestroysHandleEvenWhenDispatchedTasksAreDelayed() {
+  fun closeDestroysHandle() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
-    val dispatcher = QueuingDispatcher()
-    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
+    val engine = createTestEngine(scope, bridge, debugName = "test")
     runInEdtAndWait {
-      engine.attachToParent(100L, 10, 20, 300, 200, 1.5)
+      engine.recreateOnHost(100L, 10, 20, 300, 200, 1.5)
+      bridge.callbacks.onCreated(bridge.createdHandles.last())
     }
-    dispatcher.drain()
-    runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
 
     runBlocking { engine.close() }
-    dispatcher.drain()
+    runInEdtAndWait {}
 
     assertEquals(listOf(1L), bridge.destroyedHandles)
     scope.cancel()
   }
 
   @Test
-  fun setBoundsSpamCoalescesIntoSingleApply() {
+  fun hostHwndChangeDestroysAndRecreatesController() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
-    val dispatcher = QueuingDispatcher()
-    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
+    val engine = createActiveEngine(scope, bridge)
     try {
-      runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
-      dispatcher.drain()
-      runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
-
-      bridge.bounds.clear()
       runInEdtAndWait {
-        repeat(10) { i ->
-          engine.setBounds(i * 5, i * 5, 100 + i, 100 + i, 1.0)
-        }
+        engine.recreateOnHost(200L, 30, 40, 500, 400, 2.0)
+        bridge.callbacks.onCreated(bridge.createdHandles.last())
       }
-      assertEquals(1, dispatcher.pendingCount(), "expected setBounds to coalesce into a single queued task")
-      dispatcher.drain()
-      assertEquals(1, bridge.bounds.size)
-      assertEquals(Bounds(45, 45, 109, 109, 1.0), bridge.bounds[0].bounds)
+
+      assertEquals(listOf(100L, 200L), bridge.createParentHwnds)
+      assertEquals(listOf(1L), bridge.destroyedHandles)
+      assertTrue(bridge.bounds.any { it.handle == 2L && it.bounds == Bounds(30, 40, 500, 400, 2.0) })
     }
     finally {
-      runBlocking { engine.close() }
-      dispatcher.drain()
-      scope.cancel()
+      closeEngine(engine, scope)
     }
   }
 
   @Test
-  fun attachToParentRespectsLatestParentOnce() {
-    val bridge = FakeWinWebView2Bridge()
+  fun hostHwndChangeWaitsForNativeDestroyBeforeCreatingReplacement() {
+    val bridge = FakeWinWebView2Bridge().apply { autoDestroyCallback = false }
     val scope = testScope()
-    val dispatcher = QueuingDispatcher()
-    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
+    val controller = createActiveEngine(scope, bridge)
     try {
       runInEdtAndWait {
-        engine.attachToParent(100L, 10, 20, 300, 200, 1.5)
-        engine.attachToParent(200L, 30, 40, 500, 400, 2.0)
+        controller.recreateOnHost(200L, 30, 40, 500, 400, 2.0)
       }
-      dispatcher.drain()
-      runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
-      dispatcher.drain()
 
-      assertEquals(listOf(200L), bridge.createParentHwnds,
-                   "performCreate should pick up the latest parent set before it runs")
-      assertEquals(emptyList<Long>(), bridge.attachParents,
-                   "no follow-up bridge.attachToParent expected when create already used latest parent")
+      assertEquals(listOf(100L), bridge.createParentHwnds)
+      assertEquals(listOf(1L), bridge.destroyedHandles)
+
+      runInEdtAndWait {
+        bridge.callbacks.onDestroyed(1L)
+      }
+
+      assertEquals(listOf(100L, 200L), bridge.createParentHwnds)
+      runInEdtAndWait {
+        bridge.callbacks.onCreated(bridge.createdHandles.last())
+      }
     }
     finally {
-      runBlocking { engine.close() }
-      dispatcher.drain()
-      scope.cancel()
+      bridge.autoDestroyCallback = true
+      closeEngine(controller, scope)
     }
   }
 
@@ -292,9 +384,9 @@ internal class WinWebViewEngineTest {
   fun createAppliesInitialBoundsBeforeFirstVisibilityAndKeepsHiddenUntilCreated() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
-    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = SyncDispatcher)
+    val engine = createTestEngine(scope, bridge, debugName = "test")
     try {
-      runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+      runInEdtAndWait { engine.recreateOnHost(100L, 10, 20, 300, 200, 1.5) }
       runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.single()) }
 
       assertEquals(
@@ -316,6 +408,7 @@ internal class WinWebViewEngineTest {
     val engine = createActiveEngine(scope, bridge)
     try {
       runBlocking { engine.loadAsset(WebViewAssetRoot.fromDirectory(tempDir), WebViewAssetPath.indexHtml(), null) }
+      runInEdtAndWait {}
 
       assertEquals(
         listOf(UrlLoad(1L, webViewAssetCustomSchemeUrl(WebViewAssetPath.indexHtml()))),
@@ -336,6 +429,7 @@ internal class WinWebViewEngineTest {
     val engine = createActiveEngine(scope, bridge, customSchemeAssetLoadingEnabled = false)
     try {
       runBlocking { engine.loadAsset(WebViewAssetRoot.fromDirectory(tempDir), WebViewAssetPath.indexHtml(), null) }
+      runInEdtAndWait {}
 
       assertEquals(
         listOf(UrlLoad(1L, webViewAssetHttpsUrl(WebViewAssetPath.indexHtml()))),
@@ -385,6 +479,7 @@ internal class WinWebViewEngineTest {
     try {
       runInEdtAndWait { engine.setHidden(true) }
       runBlocking { engine.transferToJs("{\"jsonrpc\":\"2.0\",\"method\":\"markdown.preview/contentChanged\"}") }
+      runInEdtAndWait {}
 
       assertEquals(
         listOf(JsTransfer(1L, "{\"jsonrpc\":\"2.0\",\"method\":\"markdown.preview/contentChanged\"}")),
@@ -397,21 +492,18 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
-  fun transientFocusFailuresDoNotEscapeDispatcherTask() {
+  fun transientFocusFailureDoesNotEscapeDispatcherTask() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
     val engine = createActiveEngine(scope, bridge)
     try {
       bridge.focusFailure = IllegalStateException("focus failed")
-      bridge.clearFocusFailure = IllegalStateException("clear focus failed")
 
       runInEdtAndWait {
-        engine.requestFocus()
-        engine.clearFocus()
+        engine.requestWebViewFocus()
       }
 
       assertEquals(listOf(1L), bridge.focusedHandles)
-      assertEquals(listOf(1L), bridge.clearFocusedHandles)
     }
     finally {
       closeEngine(engine, scope)
@@ -424,17 +516,16 @@ internal class WinWebViewEngineTest {
     parentHwnd: Long = 100L,
     devToolsCpuProfilingEnabled: Boolean = false,
     customSchemeAssetLoadingEnabled: Boolean = true,
-  ): WinWebViewEngine {
+  ): WinWebViewController {
     val engine = createTestEngine(
       scope,
       bridge,
       debugName = "test",
-      webViewDispatcher = SyncDispatcher,
       devToolsCpuProfilingEnabled = { devToolsCpuProfilingEnabled },
       customSchemeAssetLoadingEnabled = { customSchemeAssetLoadingEnabled },
     )
     runInEdtAndWait {
-      engine.attachToParent(parentHwnd, 10, 20, 300, 200, 1.5)
+      engine.recreateOnHost(parentHwnd, 10, 20, 300, 200, 1.5)
       bridge.callbacks.onCreated(bridge.createdHandles.last())
     }
     return engine
@@ -445,36 +536,7 @@ internal class WinWebViewEngineTest {
     return CoroutineScope(SupervisorJob())
   }
 
-  /**
-   * Runs every dispatched [Runnable] inline on the calling thread. The engine
-   * uses `dispatcher.dispatch(...)` directly (not `launch`), so we cannot rely
-   * on `Dispatchers.Unconfined` here — its `dispatch` throws.
-   */
-  private object SyncDispatcher : CoroutineDispatcher() {
-    override fun dispatch(context: CoroutineContext, block: Runnable) {
-      block.run()
-    }
-  }
-
-  /** Queues every dispatched runnable; runs them only on explicit [drain]. */
-  private class QueuingDispatcher : CoroutineDispatcher() {
-    private val queue = ArrayDeque<Runnable>()
-
-    override fun dispatch(context: CoroutineContext, block: Runnable) {
-      synchronized(queue) { queue.addLast(block) }
-    }
-
-    fun pendingCount(): Int = synchronized(queue) { queue.size }
-
-    fun drain() {
-      while (true) {
-        val next = synchronized(queue) { queue.removeFirstOrNull() } ?: return
-        next.run()
-      }
-    }
-  }
-
-  private fun closeEngine(engine: WinWebViewEngine, scope: CoroutineScope) {
+  private fun closeEngine(engine: WinWebViewController, scope: CoroutineScope) {
     runBlocking { engine.close() }
     runInEdtAndWait {}
     scope.cancel()
@@ -491,16 +553,15 @@ internal class WinWebViewEngineTest {
     bridge: FakeWinWebView2Bridge,
     debugName: String? = "test",
     documentStartScripts: List<WebViewScript> = emptyList(),
-    webViewDispatcher: CoroutineDispatcher = SyncDispatcher,
     devToolsCpuProfilingEnabled: () -> Boolean = { false },
     customSchemeAssetLoadingEnabled: () -> Boolean = { true },
-  ): WinWebViewEngine {
-    return WinWebViewEngine(
+  ): WinWebViewController {
+    return WinWebViewController(
       scope,
       bridge,
       debugName = debugName,
       documentStartScripts = documentStartScripts,
-      webViewDispatcher = webViewDispatcher,
+      hostEventSink = WebViewHostEventSink { false },
       devToolsCpuProfilingEnabled = devToolsCpuProfilingEnabled,
       customSchemeAssetLoadingEnabled = customSchemeAssetLoadingEnabled,
     )
@@ -581,7 +642,6 @@ internal class WinWebViewEngineTest {
 
     val createdHandles = mutableListOf<Long>()
     val createParentHwnds = mutableListOf<Long>()
-    val attachParents = mutableListOf<Long>()
     val destroyedHandles = mutableListOf<Long>()
     val bounds = mutableListOf<BoundsRecord>()
     val visibility = mutableListOf<Visibility>()
@@ -590,17 +650,24 @@ internal class WinWebViewEngineTest {
     val jsTransfers = mutableListOf<JsTransfer>()
     val devToolsCalls = mutableListOf<DevToolsCall>()
     val documentStartScripts = mutableListOf<String>()
+    val configurations = mutableListOf<WinWebView2Configuration>()
     val focusedHandles = mutableListOf<Long>()
-    val clearFocusedHandles = mutableListOf<Long>()
     val callOrder = mutableListOf<String>()
     var focusFailure: IllegalStateException? = null
-    var clearFocusFailure: IllegalStateException? = null
     var deferProfilerStop: Boolean = false
+    var autoDestroyCallback: Boolean = true
     var pendingProfilerStopCallId: Long? = null
     private var nextHandle = 1L
 
-    override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    override fun create(
+      parentHwnd: Long,
+      userDataDir: String,
+      documentStartScript: String,
+      configuration: WinWebView2Configuration,
+      callbacks: WinWebView2Bridge.Callbacks,
+    ): Long {
       this.callbacks = callbacks
+      configurations.add(configuration)
       documentStartScripts.add(documentStartScript)
       createParentHwnds.add(parentHwnd)
       callOrder.add("create:$parentHwnd")
@@ -610,13 +677,9 @@ internal class WinWebViewEngineTest {
     override fun destroy(handle: Long) {
       destroyedHandles.add(handle)
       callOrder.add("destroy:$handle")
-    }
-
-    override fun attachToParent(handle: Long, parentHwnd: Long) {
-      attachParents.add(parentHwnd)
-    }
-
-    override fun detachFromParent(handle: Long) {
+      if (autoDestroyCallback) {
+        callbacks.onDestroyed(handle)
+      }
     }
 
     override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
@@ -632,11 +695,6 @@ internal class WinWebViewEngineTest {
     override fun focus(handle: Long) {
       focusedHandles.add(handle)
       focusFailure?.let { throw it }
-    }
-
-    override fun clearFocus(handle: Long) {
-      clearFocusedHandles.add(handle)
-      clearFocusFailure?.let { throw it }
     }
 
     override fun loadUrl(handle: Long, url: String) {

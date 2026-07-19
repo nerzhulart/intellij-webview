@@ -2,7 +2,7 @@
 
 Status: plan.
 
-This document describes the platform-neutral focus, activation, traversal, and shortcut policy. Platform backends report facts through `WebViewHostEvent` and implement native consequences behind `WebViewHostController`; common Swing code owns the guarded policy.
+This document describes the platform-neutral focus, activation, traversal, and shortcut policy. Platform `WebViewController` implementations report facts through `WebViewHostEvent` and implement native consequences; common Swing code owns the guarded policy.
 
 ## Focus Model
 
@@ -11,14 +11,14 @@ This document describes the platform-neutral focus, activation, traversal, and s
 When Swing focus enters the WebView host through traversal or IDE request:
 
 1. `SwingWebViewHostPanel` enters guarded focus transition.
-2. `SwingWebViewHostPanel` requests focus on `hostController.component`.
-3. The backend host facet observes focus on its own component/native view and performs the native focus consequence.
-4. On Windows this means WebView2 `controller.MoveFocus(PROGRAMMATIC)` from the Windows backend host facet; on macOS this means `makeFirstResponder(wkWebView)` from the macOS backend host facet; on JCEF this means the browser component/JCEF focus path.
+2. `SwingWebViewHostPanel` requests focus on `controller.component`.
+3. The selected `WebViewController` observes focus on its own component/native view and performs the native focus consequence.
+4. On Windows this means WebView2 `controller.MoveFocus(PROGRAMMATIC)` from `WinWebViewController`; on macOS this means `makeFirstResponder(wkWebView)` from `MacWkWebViewController`; on JCEF this means the browser component/JCEF focus path.
 5. Do not call Swing focus request again from native callback.
 
 Why:
 
-- Swing initiated focus, so the backend should activate the native browser behind its mounted component.
+- Swing initiated focus, so the controller should activate the native browser behind its mounted component.
 - Calling back into Swing focus request from the same path risks recursion.
 
 ### Focus entry from WebView2
@@ -40,7 +40,7 @@ Why:
 When WebView2 fires `LostFocus`:
 
 1. Native bridge calls `onFocusLost`.
-2. Swing host checks whether permanent focus owner is still inside the host/backend component.
+2. Swing host checks whether permanent focus owner is still inside the controller component.
 3. If focus left the host, page `leave` lifecycle runs.
 4. Do not call `SetFocus(parent)` or any native focus transfer.
 
@@ -71,14 +71,14 @@ macOS does not currently have a WebView2-style `MoveFocusRequested` controller c
 
 ## Mouse And Activation
 
-Common activation handling should consume a platform-neutral `WebViewHostEvent.Activated(source)` event. Backends choose how to produce that event.
+Common activation handling should consume a platform-neutral `WebViewHostEvent.Activated(source)` event. Each platform controller produces that event through its native path.
 
 For Windows, remove native WndProc mouse hooks. The primary path should be WebView2 controller focus events plus host input processing:
 
 1. `ICoreWebView2Controller.GotFocus`, `LostFocus`, and `MoveFocusRequested` drive focus state. Do not install `focusin` page listeners for normal focus bookkeeping.
 2. `AllowHostInputProcessing(true)` gives AWT/JBR the first chance to observe host input before WebView2 receives it.
-3. If the Canvas/AWT path receives a mouse press while WebView focus is active or entering, the Windows host facet sends `WebViewHostEvent.Activated(HOST_INPUT)` to `WebViewHostEventSink`.
-4. Popup/menu closing should be verified against that host-input path before adding any page script fallback.
+3. If the Canvas/AWT path receives a mouse press while WebView focus is active or entering, `WinWebViewController` sends `WebViewHostEvent.Activated(HOST_INPUT)` to `WebViewHostEventSink`.
+4. Popup/menu closing must work through that host-input path without a page script fallback.
 
 Why:
 
@@ -86,31 +86,9 @@ Why:
 - `AllowHostInputProcessing(true)` is the WebView2-supported way to let the host process keyboard, mouse, touch, and pen input first.
 - A document-start script would duplicate signals that the controller or host input path already provides, and can create extra activation events while focus is already inside the WebView.
 
-Add a page-message fallback only after a Windows regression test proves that controller focus events plus host input processing cannot produce the event needed for popup/menu closing. Until that proof exists, do not inject any activation script. If the proof exists, keep that fallback narrow:
+Do not inject `pointerdown`, `mousedown`, `focusin`, `keydown`, or `keyup` listeners for Windows host activation, focus bookkeeping, or shortcut routing. If WebView2 controller events plus `AllowHostInputProcessing(true)` cannot satisfy the required behavior, stop and treat it as a Windows implementation blocker rather than adding a page-message or Win32-hook fallback.
 
-1. Inject only pointer activation listeners such as `pointerdown`, with `mousedown` as a fallback for older content paths.
-2. Do not inject `focusin` for focus state; WebView2 `GotFocus`/`LostFocus` own that path.
-3. Do not inject `keydown`/`keyup` for shortcut routing by default; `AllowHostInputProcessing` and shortcut arbitration own that path.
-4. The script posts a typed message through `chrome.webview.postMessage`.
-5. Existing native `WebMessageReceived` forwards the raw message to Kotlin.
-6. Kotlin routes this message as private runtime infrastructure and sends `WebViewHostEvent.Activated(PAGE_POINTER_FALLBACK)` only if the same activation was not already observed through host input.
-
-Fallback message shape should be typed and versioned, for example:
-
-```json
-{
-  "kind": "webview.hostActivation",
-  "source": "pointer",
-  "button": 0,
-  "modifiers": 0,
-  "clientX": 120,
-  "clientY": 48
-}
-```
-
-Do not expose this as public page API. It is runtime infrastructure and should remain absent unless the primary controller/host-input path is insufficient.
-
-For macOS, do not rely on a page pointer message for normal WKWebView mouse activation. `MacWkWebViewBackend` should receive native AppKit callbacks from the WKWebView subclass (`mouseDown:`, `rightMouseDown:`, `otherMouseDown:`), send `WebViewHostEvent.Activated(NATIVE_MOUSE)` to `WebViewHostEventSink`, and then let WebKit handle the original event through `super`.
+For macOS, do not rely on a page pointer message for normal WKWebView mouse activation. `MacWkWebViewController` receives native AppKit callbacks from the WKWebView subclass (`mouseDown:`, `rightMouseDown:`, `otherMouseDown:`), sends `WebViewHostEvent.Activated(NATIVE_MOUSE)` to `WebViewHostEventSink`, and then lets WebKit handle the original event through `super`.
 
 ## Shortcut Arbitration
 
@@ -197,12 +175,11 @@ Replacement path:
 
 - `AllowHostInputProcessing(true)` should let AWT/JBR see bare Shift key down/up while WebView focus is active.
 - Do not add a document-start key listener by default.
-- Add a narrowly-scoped private page-message key fallback only if tests/manual regression prove that AWT/JBR still does not receive bare Shift through host input processing. Do not add it while `AllowHostInputProcessing(true)` satisfies the gesture path.
-- If that fallback is added, Kotlin must deduplicate host-input and page-message Shift events.
+- Do not add a page-message key fallback. If AWT/JBR does not receive bare Shift through host input processing, treat it as a blocker and investigate the controller/AWT integration.
 
 Why:
 
 - WebView2 `AcceleratorKeyPressed` does not cover bare Shift reliably enough for double-Shift gestures.
-- Host input processing is the intended replacement for the old native hook; page key messages are only a fallback after evidence.
+- Host input processing is the only replacement for the old native hook in this design.
 - A low-level Windows hook is too broad and belongs outside this WebView-specific hosting model.
 

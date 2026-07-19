@@ -22,8 +22,13 @@ import com.intellij.ui.webview.impl.engine.WebViewRuntime
 import com.intellij.ui.webview.impl.engine.WebViewRuntimeInfo
 import com.intellij.ui.webview.impl.engine.WebViewScriptResult
 import com.intellij.ui.webview.impl.WebViewConsoleCapture
-import com.intellij.ui.webview.impl.WebViewEngineBridge
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewEditCommand
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewHostEventSink
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
 import com.intellij.ui.webview.impl.engine.WebViewEngineCreationOptions
 import com.intellij.ui.webview.impl.engine.WebViewEngineProvider
 import com.intellij.ui.webview.impl.rpc.WebViewMessageBusImpl
@@ -44,6 +49,8 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
+import java.awt.event.KeyEvent
 import java.nio.file.Path
 import java.time.Instant
 import javax.swing.JComponent
@@ -324,32 +331,6 @@ internal class WebViewRuntimeTest {
   }
 
   @Test
-  fun createWebView_propagatesHeavyweightCapabilityToCreatedWebView(): Unit = runBlocking {
-    val heavyweightProvider = FakeEngineProvider(
-      id = WebViewEngineId.SYSTEM_WINDOWS,
-      displayName = "WebView2",
-      capabilities = capabilities(assetServing = true),
-      isHeavyweight = true,
-    )
-    val lightweightProvider = FakeEngineProvider(
-      id = WebViewEngineId.JCEF,
-      displayName = "JCEF",
-      capabilities = capabilities(assetServing = true),
-    )
-
-    val heavyweightWebView = heavyweightProvider.createWebView(this, webViewEngineCreationOptions())
-    val lightweightWebView = lightweightProvider.createWebView(this, webViewEngineCreationOptions())
-    try {
-      assertTrue(heavyweightWebView.isHeavyweight)
-      assertFalse(lightweightWebView.isHeavyweight)
-    }
-    finally {
-      heavyweightWebView.webView.close()
-      lightweightWebView.webView.close()
-    }
-  }
-
-  @Test
   fun createWebView_closesEngineWhenScopeCompletes(): Unit = runBlocking {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
@@ -473,7 +454,11 @@ internal class WebViewRuntimeTest {
       }
     }
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createController(
+      scope: CoroutineScope,
+      options: WebViewEngineCreationOptions,
+      hostEventSink: WebViewHostEventSink,
+    ): WebViewController {
       error("Fake provider does not create engines")
     }
 
@@ -483,8 +468,6 @@ internal class WebViewRuntimeTest {
     override val webView: FakeWebView,
     private val onHostComponentCreated: () -> Unit,
   ) : WebViewEngineProvider.CreatedWebView {
-    override val isHeavyweight: Boolean = false
-
     override fun createHostComponent(): JComponent {
       onHostComponentCreated()
       return JPanel()
@@ -495,9 +478,8 @@ internal class WebViewRuntimeTest {
     override val id: WebViewEngineId,
     override val displayName: String,
     override val capabilities: WebViewEngineCapabilities,
-    isHeavyweight: Boolean = false,
   ) : WebViewEngineProvider {
-    val engine = CapturingEngine(isHeavyweight)
+    val engine = CapturingEngine()
     val creationOptions = mutableListOf<WebViewEngineCreationOptions>()
 
     override fun selectionPriority(preference: WebViewEngineKind): Int? {
@@ -509,7 +491,11 @@ internal class WebViewRuntimeTest {
 
     override fun availabilityBlocking(): WebViewEngineAvailability = WebViewEngineAvailability.Available
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createController(
+      scope: CoroutineScope,
+      options: WebViewEngineCreationOptions,
+      hostEventSink: WebViewHostEventSink,
+    ): WebViewController {
       creationOptions.add(options)
       return engine
     }
@@ -544,8 +530,9 @@ internal class WebViewRuntimeTest {
     }
   }
 
-  private class FakeEngine : WebViewEngineBridge {
-    override val isHeavyweight: Boolean = false
+  private class FakeEngine : WebViewController {
+    override val component: Component = JPanel()
+    override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.NONE
 
     override suspend fun loadFile(file: Path) {
     }
@@ -565,14 +552,22 @@ internal class WebViewRuntimeTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
 
+    override fun applyLayout(params: WebViewHostLayoutParams) {
+    }
+
+    override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    }
+
+    override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean = false
+
     override suspend fun close() {
     }
 
   }
 
-  private class CapturingEngine(
-    override val isHeavyweight: Boolean = false,
-  ) : WebViewEngineBridge {
+  private class CapturingEngine : WebViewController {
+    override val component: Component = JPanel()
+    override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.NONE
     val delivered = Channel<String>(Channel.UNLIMITED)
     private var messageReceiver: WebViewJsMessageReceiver? = null
     var lastAssetQuery: String? = null
@@ -599,6 +594,14 @@ internal class WebViewRuntimeTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
       messageReceiver = receiver
     }
+
+    override fun applyLayout(params: WebViewHostLayoutParams) {
+    }
+
+    override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    }
+
+    override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean = false
 
     override suspend fun close() {
       closeCount++

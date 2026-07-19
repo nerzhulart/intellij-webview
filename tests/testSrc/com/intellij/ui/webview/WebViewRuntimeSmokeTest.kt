@@ -11,22 +11,16 @@ import com.intellij.ui.webview.api.WebViewAssetRoot
 import com.intellij.ui.webview.api.WebViewNotification
 import com.intellij.ui.webview.impl.NativeBridgeLibraryAvailability
 import com.intellij.ui.webview.impl.SwingWebViewHostPanel
-import com.intellij.ui.webview.impl.WebViewEngineBridge
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
-import com.intellij.ui.webview.impl.linux.LinuxNativeWebViewHostPeer
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import com.intellij.ui.webview.impl.linux.LinuxWaylandWindowUtil
 import com.intellij.ui.webview.impl.linux.LinuxWebKitBackend
 import com.intellij.ui.webview.impl.linux.LinuxWebKitGtkBridge
-import com.intellij.ui.webview.impl.linux.LinuxWebKitWebViewEngine
-import com.intellij.ui.webview.impl.linux.createLinuxWebKitWebViewEngine
+import com.intellij.ui.webview.impl.linux.createLinuxWebKitController
 import com.intellij.ui.webview.impl.linux.linuxWebKitGtkBridgeLibrary
-import com.intellij.ui.webview.impl.mac.MacNativeWebViewHostPeer
-import com.intellij.ui.webview.impl.mac.MacWebViewEngine
-import com.intellij.ui.webview.impl.mac.createMacWebViewEngine
+import com.intellij.ui.webview.impl.mac.createMacWkWebViewController
 import com.intellij.ui.webview.impl.rpc.WebViewMessageBusImpl
-import com.intellij.ui.webview.impl.windows.WinNativeWebViewHostPeer
-import com.intellij.ui.webview.impl.windows.WinWebViewEngine
-import com.intellij.ui.webview.impl.windows.createWinWebViewEngine
+import com.intellij.ui.webview.impl.windows.createWinWebViewController
 import com.intellij.ui.webview.impl.windows.winWebView2BridgeLibrary
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -69,6 +63,7 @@ internal class WebViewRuntimeSmokeTest {
   private var runtime: PlatformWebViewRuntime? = null
   private var frame: JFrame? = null
   private var scope: CoroutineScope? = null
+  private var activeHost: SwingWebViewHostPanel? = null
 
   companion object {
     private val longRunningThreadsDisposable = Disposer.newDisposable("WebViewRuntimeSmokeTest long-running threads")
@@ -226,7 +221,7 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   @Test
-  fun facade_survives_host_detach_reattach(): Unit = runSmokeTest {
+  fun facade_replays_document_after_host_detach_reattach(): Unit = runSmokeTest {
     val engine = createEngine()
     try {
       attach(engine)
@@ -244,7 +239,7 @@ internal class WebViewRuntimeSmokeTest {
       attach(engine)
 
       waitForJavaScript(engine, "document.body.textContent.trim() === 'phase1'", "true", "Page state was not retained after reattach")
-      waitForJavaScript(engine, "window.__wviReattachMarker === 'alive'", "true", "JavaScript state was not retained after reattach")
+      assertEquals("false", engine.evaluateJavaScript("window.__wviReattachMarker === 'alive'"))
       assertEquals("4", engine.evaluateJavaScript(/*language=JavaScript*/ "2 + 2"))
     }
     finally {
@@ -443,10 +438,16 @@ internal class WebViewRuntimeSmokeTest {
     repeat(100) { index ->
       @Suppress("RAW_SCOPE_CREATION") // Test: each iteration owns a short-lived WebView scope.
       val localScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-      val engine = currentRuntime().createEngine(localScope)
+      var localHost: SwingWebViewHostPanel? = null
+      val engine = currentRuntime().createController(
+        localScope,
+        WebViewHostEventSink { event -> localHost?.handleHostEvent(event) ?: false },
+      )
       try {
         SwingUtilities.invokeAndWait {
-          frame!!.contentPane.add(SwingWebViewHostPanel(localScope, engine, nativeHostPeer = currentRuntime().createNativeHostPeer(localScope, engine)))
+          val host = SwingWebViewHostPanel(localScope, engine)
+          localHost = host
+          frame!!.contentPane.add(host)
           frame!!.revalidate()
         }
         delay(100.milliseconds)
@@ -489,7 +490,7 @@ internal class WebViewRuntimeSmokeTest {
     }
   }
 
-  private fun attach(engine: WebViewEngineBridge): SwingWebViewHostPanel {
+  private fun attach(engine: WebViewController): SwingWebViewHostPanel {
     lateinit var host: SwingWebViewHostPanel
     SwingUtilities.invokeAndWait {
       host = createHost(engine)
@@ -500,16 +501,27 @@ internal class WebViewRuntimeSmokeTest {
     return host
   }
 
-  private fun createHost(engine: WebViewEngineBridge): SwingWebViewHostPanel {
-    return SwingWebViewHostPanel(scope!!, engine, nativeHostPeer = currentRuntime().createNativeHostPeer(scope!!, engine))
+  private fun createHost(engine: WebViewController): SwingWebViewHostPanel {
+    return SwingWebViewHostPanel(scope!!, engine).also { activeHost = it }
   }
 
-  private fun createEngine(): WebViewEngineBridge {
-    return currentRuntime().createEngine(scope!!)
+  private fun createEngine(): WebViewController {
+    return currentRuntime().createController(
+      scope!!,
+      WebViewHostEventSink { event -> activeHost?.handleHostEvent(event) ?: false },
+    )
   }
 
   private fun currentRuntime(): PlatformWebViewRuntime {
     return checkNotNull(runtime) { "WebView runtime was not initialized for the current test" }
+  }
+
+  private suspend fun WebViewController.loadHtml(@Language("HTML") html: String) {
+    loadHtml(html, null)
+  }
+
+  private suspend fun WebViewController.loadAsset(root: WebViewAssetRoot) {
+    loadAsset(root, com.intellij.ui.webview.api.WebViewAssetPath.indexHtml(), null)
   }
 
   private fun runSmokeTest(action: suspend CoroutineScope.() -> Unit): Unit = runBlocking {
@@ -519,7 +531,7 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   private suspend fun waitForJavaScript(
-    engine: WebViewEngineBridge,
+    engine: WebViewController,
     @Language("JavaScript") script: String,
     expected: String,
     description: String,
@@ -565,9 +577,7 @@ internal class WebViewRuntimeSmokeTest {
 
     fun assumeAvailable()
 
-    fun createEngine(scope: CoroutineScope): WebViewEngineBridge
-
-    fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer
+    fun createController(scope: CoroutineScope, hostEventSink: WebViewHostEventSink): WebViewController
   }
 
   private object MacRuntime : PlatformWebViewRuntime {
@@ -580,11 +590,8 @@ internal class WebViewRuntimeSmokeTest {
       }
     }
 
-    override fun createEngine(scope: CoroutineScope): WebViewEngineBridge = createMacWebViewEngine(scope)
-
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-      return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
-    }
+    override fun createController(scope: CoroutineScope, hostEventSink: WebViewHostEventSink): WebViewController =
+      createMacWkWebViewController(scope, emptyList(), hostEventSink)
   }
 
   private object WindowsRuntime : PlatformWebViewRuntime {
@@ -598,11 +605,8 @@ internal class WebViewRuntimeSmokeTest {
       )
     }
 
-    override fun createEngine(scope: CoroutineScope): WebViewEngineBridge = createWinWebViewEngine(scope)
-
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-      return WinNativeWebViewHostPeer(engine as WinWebViewEngine)
-    }
+    override fun createController(scope: CoroutineScope, hostEventSink: WebViewHostEventSink): WebViewController =
+      createWinWebViewController(scope, hostEventSink = hostEventSink)
   }
 
   private object LinuxRuntime : PlatformWebViewRuntime {
@@ -620,13 +624,8 @@ internal class WebViewRuntimeSmokeTest {
       )
     }
 
-    override fun createEngine(scope: CoroutineScope): WebViewEngineBridge {
-      return createLinuxWebKitWebViewEngine(scope, LinuxWebKitBackend.WaylandSnapshot)
-    }
-
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-      return LinuxNativeWebViewHostPeer(engine as LinuxWebKitWebViewEngine)
-    }
+    override fun createController(scope: CoroutineScope, hostEventSink: WebViewHostEventSink): WebViewController =
+      createLinuxWebKitController(scope, LinuxWebKitBackend.WaylandSnapshot)
   }
 
   private fun currentRuntimeOrSkip(): PlatformWebViewRuntime {

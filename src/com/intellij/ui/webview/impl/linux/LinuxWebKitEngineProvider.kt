@@ -6,10 +6,10 @@ import com.intellij.ui.webview.impl.engine.WebViewEngineAvailability
 import com.intellij.ui.webview.impl.engine.WebViewEngineCapabilities
 import com.intellij.ui.webview.impl.engine.WebViewEngineId
 import com.intellij.ui.webview.impl.engine.WebViewEngineKind
-import com.intellij.ui.webview.impl.WebViewEngineBridge
 import com.intellij.ui.webview.impl.engine.WebViewEngineCreationOptions
 import com.intellij.ui.webview.impl.engine.WebViewEngineProvider
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 
@@ -31,12 +31,8 @@ internal class LinuxWebKitEngineProvider : WebViewEngineProvider {
     return WebViewEngineAvailability.Unavailable("Linux WebKitGTK WebView is disabled")
   }
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+  override fun createController(scope: CoroutineScope, options: WebViewEngineCreationOptions, hostEventSink: WebViewHostEventSink): WebViewController {
     error("Linux WebKitGTK WebView is disabled")
-  }
-
-  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-    return LinuxNativeWebViewHostPeer(engine as LinuxWebKitWebViewEngine)
   }
 
 }

@@ -7,15 +7,13 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.ui.webview.impl.NativeBridgeLibraryAvailability
-import com.intellij.ui.webview.impl.WebViewEngineBridge
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
-import com.intellij.ui.webview.impl.mac.MacNativeWebViewHostPeer
-import com.intellij.ui.webview.impl.mac.MacWebViewEngine
+import com.intellij.ui.webview.impl.SwingWebViewHostPanel
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import com.intellij.ui.webview.impl.mac.MacWebViewFirstResponderState
-import com.intellij.ui.webview.impl.mac.createMacWebViewEngine
-import com.intellij.ui.webview.impl.windows.WinNativeWebViewHostPeer
-import com.intellij.ui.webview.impl.windows.WinWebViewEngine
-import com.intellij.ui.webview.impl.windows.createWinWebViewEngine
+import com.intellij.ui.webview.impl.mac.MacWkWebViewController
+import com.intellij.ui.webview.impl.mac.createMacWkWebViewController
+import com.intellij.ui.webview.impl.windows.createWinWebViewController
 import com.intellij.ui.webview.impl.windows.winWebView2BridgeLibrary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +35,7 @@ import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.awt.Desktop
 import java.awt.Dimension
+import java.awt.Container
 import java.nio.file.Files
 import java.nio.file.Path
 import javax.swing.JFrame
@@ -100,13 +99,12 @@ class WebViewFocusInteropRobotTest {
 
   @Test
   fun clickingWebViewClearsSwingFocusAndAllowsTypingBackInSwing(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runFocusInteropScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -117,13 +115,12 @@ class WebViewFocusInteropRobotTest {
 
   @Test
   fun modifierDoubleClickInsideWebViewReachesAwt(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runModifierDoubleClickShortcutScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -136,13 +133,12 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.WINDOWS)
   fun browserTextNavigationShortcutsStayInsideWebView(): Unit = runBlocking {
     val tempDir = Files.createTempDirectory("webview-text-navigation-test")
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runBrowserTextNavigationScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -156,13 +152,12 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.WINDOWS)
   fun altF1InsideWebViewReachesAwtWithAltModifier(): Unit = runBlocking {
     val tempDir = Files.createTempDirectory("webview-alt-f1-test")
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runAltF1ShortcutScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -176,13 +171,12 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.WINDOWS)
   fun altF4InsideWebViewClosesFrame(): Unit = runBlocking {
     val tempDir = Files.createTempDirectory("webview-alt-f4-test")
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runAltF4WindowCloseScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -196,13 +190,12 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.MAC)
   fun returningToSwingMovesMacFirstResponderOutsideWebView(@TempDir tempDir: Path): Unit = runBlocking {
     ensureJna()
-    val facade = createMacWebViewEngine(scope!!)
+    val facade = createMacWkWebViewController(scope!!, emptyList(), hostEventSink()) as MacWkWebViewController
     try {
       WebViewFocusRobotTestSupport.runMacFirstResponderFocusTransferScenario(
         frame = frame!!,
         scope = scope!!,
         engine = facade,
-        nativeHostPeer = MacNativeWebViewHostPeer(scope!!, facade),
         tempDir = tempDir,
         assertNativeFocusReadyForSwingTyping = { assertFirstResponderOutsideWebView(facade) },
       )
@@ -215,13 +208,12 @@ class WebViewFocusInteropRobotTest {
   @Test
   @EnabledOnOs(OS.WINDOWS)
   fun selectingTextInWebViewWithoutTabbablesDoesNotBounceFocusBackToSwing(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runNonTabbableSelectionScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -233,13 +225,12 @@ class WebViewFocusInteropRobotTest {
   @Test
   @EnabledOnOs(OS.WINDOWS)
   fun clickingBadComboPopupThenSwingFieldClosesPopupAndMovesFocusBack(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val facade = createPlatformController(scope!!)
     try {
       WebViewFocusRobotTestSupport.runBadComboPopupThenSwingRefocusScenario(
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -248,26 +239,24 @@ class WebViewFocusInteropRobotTest {
     }
   }
 
-  private fun createPlatformEngine(scope: CoroutineScope): WebViewEngineBridge {
+  private fun createPlatformController(scope: CoroutineScope): WebViewController {
     val osName = System.getProperty("os.name", "")
     return when {
       osName.startsWith("Mac", ignoreCase = true) -> {
         ensureJna()
-        createMacWebViewEngine(scope)
+        createMacWkWebViewController(scope, emptyList(), hostEventSink())
       }
       osName.startsWith("Windows", ignoreCase = true) -> {
         assumeTrue(nativeBridgeAvailable(), "WinWebView2Bridge DLL is not built; run community/plugins/ui.webview/native/WinWebView2Bridge/build.ps1")
-        createWinWebViewEngine(scope)
+        createWinWebViewController(scope, hostEventSink = hostEventSink())
       }
       else -> error("Unsupported OS for WebView focus interop Robot test: $osName")
     }
   }
 
-  private fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-    return when (engine) {
-      is MacWebViewEngine -> MacNativeWebViewHostPeer(scope, engine)
-      is WinWebViewEngine -> WinNativeWebViewHostPeer(engine)
-      else -> error("Unsupported WebView engine for focus interop Robot test: ${engine.javaClass.name}")
+  private fun hostEventSink(): WebViewHostEventSink {
+    return WebViewHostEventSink { event ->
+      findWebViewHost(frame?.contentPane)?.handleHostEvent(event) ?: false
     }
   }
 
@@ -281,7 +270,7 @@ class WebViewFocusInteropRobotTest {
     return winWebView2BridgeLibrary.availability() is NativeBridgeLibraryAvailability.Available
   }
 
-  private suspend fun assertFirstResponderOutsideWebView(engine: MacWebViewEngine) {
+  private suspend fun assertFirstResponderOutsideWebView(engine: MacWkWebViewController) {
     var lastState: MacWebViewFirstResponderState? = null
     val matched = withTimeoutOrNull(2.seconds) {
       while (true) {
@@ -292,6 +281,15 @@ class WebViewFocusInteropRobotTest {
       }
     } == true
     assertTrue(matched, "macOS first responder did not move back outside WKWebView; lastState=$lastState")
+  }
+
+  private fun findWebViewHost(container: Container?): SwingWebViewHostPanel? {
+    if (container == null) return null
+    for (component in container.components) {
+      if (component is SwingWebViewHostPanel) return component
+      if (component is Container) findWebViewHost(component)?.let { return it }
+    }
+    return null
   }
 
   private fun requestForeground(frame: JFrame) {

@@ -1,134 +1,76 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.ui.webview.impl.windows
 
-import com.intellij.openapi.keymap.KeymapManager
-import com.intellij.ui.webview.impl.WebViewShortcutRouter
-import com.intellij.ui.webview.impl.WebViewShortcutRouting
 import java.awt.Component
-import java.awt.KeyboardFocusManager
-import java.awt.Toolkit
+import java.awt.EventQueue
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
-import javax.swing.KeyStroke
 
+/**
+ * Pure accelerator ownership policy. This is called synchronously on the Canvas owner AWT thread,
+ * so it must not access EDT state, AWT queues, the action system, locks, or mutable routing state.
+ */
 internal object WinWebViewShortcutInterop {
   internal const val KEY_EVENT_KIND_KEY_DOWN: Int = 0
   internal const val KEY_EVENT_KIND_KEY_UP: Int = 1
   internal const val KEY_EVENT_KIND_SYSTEM_KEY_DOWN: Int = 2
   internal const val KEY_EVENT_KIND_SYSTEM_KEY_UP: Int = 3
 
+  internal const val RESULT_HANDLED: Int = 1
+  internal const val RESULT_BROWSER_ACCELERATOR_ENABLED: Int = 1 shl 1
+
   internal const val MODIFIER_SHIFT: Int = 1
   internal const val MODIFIER_CONTROL: Int = 1 shl 1
   internal const val MODIFIER_ALT: Int = 1 shl 2
   internal const val MODIFIER_META: Int = 1 shl 3
 
-  private val systemKeyRoutingState = SystemKeyRoutingState()
-
-  fun handleAcceleratorKeyPressed(
-    target: Component?,
-    keyEventKind: Int,
-    virtualKey: Int,
-    modifierFlags: Int,
-    keyEventLParam: Int,
-  ): Boolean {
-    if (target == null || !target.isShowing) return false
-
-    val eventSource = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow ?: target
-    val keyEvent = createKeyEvent(eventSource, keyEventKind, virtualKey, modifierFlags, keyEventLParam) ?: return false
-    val routing = routeKeyEvent(keyEventKind, virtualKey, keyEvent)
-    if (routing == WebViewShortcutRouting.BROWSER_ONLY) return false
-
-    Toolkit.getDefaultToolkit().systemEventQueue.postEvent(keyEvent)
-    return routing == WebViewShortcutRouting.FORWARD_TO_IDE_CONSUME_BROWSER_HANDLING
+  fun routeAccelerator(virtualKey: Int, modifiers: Int): Int {
+    val shortcut = Shortcut(virtualKey, modifiers and SUPPORTED_MODIFIERS)
+    return if (shortcut in WEBVIEW_SHORTCUTS) RESULT_BROWSER_ACCELERATOR_ENABLED else RESULT_HANDLED
   }
 
-  internal fun createKeyEvent(source: Component, keyEventKind: Int, virtualKey: Int, modifierFlags: Int, keyEventLParam: Int): KeyEvent? {
+  fun handleAccelerator(
+    target: Component,
+    eventQueue: EventQueue,
+    keyEventKind: Int,
+    virtualKey: Int,
+    modifiers: Int,
+    keyEventLParam: Int,
+  ): Int {
+    val routing = routeAccelerator(virtualKey, modifiers)
+    if (routing == RESULT_BROWSER_ACCELERATOR_ENABLED) return routing
+
+    createSwingKeyEvent(target, keyEventKind, virtualKey, modifiers, keyEventLParam)?.let(eventQueue::postEvent)
+    return RESULT_HANDLED
+  }
+
+  internal fun createSwingKeyEvent(
+    target: Component,
+    keyEventKind: Int,
+    virtualKey: Int,
+    modifiers: Int,
+    keyEventLParam: Int,
+  ): KeyEvent? {
     val eventId = when (keyEventKind) {
       KEY_EVENT_KIND_KEY_DOWN, KEY_EVENT_KIND_SYSTEM_KEY_DOWN -> KeyEvent.KEY_PRESSED
       KEY_EVENT_KIND_KEY_UP, KEY_EVENT_KIND_SYSTEM_KEY_UP -> KeyEvent.KEY_RELEASED
       else -> return null
     }
-
-    val keyCode = windowsVirtualKeyToJavaKeyCode(virtualKey)
     return KeyEvent(
-      source,
+      target,
       eventId,
       System.currentTimeMillis(),
-      modifierFlagsToJavaModifiers(modifierFlags),
-      keyCode,
+      toAwtModifiers(modifiers),
+      WINDOWS_TO_JAVA_KEY_CODES[virtualKey] ?: virtualKey,
       KeyEvent.CHAR_UNDEFINED,
       keyLocation(virtualKey, keyEventLParam),
     )
   }
 
-  internal fun isShortcutCandidate(keyCode: Int, modifiersEx: Int): Boolean {
-    return WebViewShortcutRouter.isShortcutCandidate(keyCode, modifiersEx)
-  }
-
-  internal fun routeKeyEvent(
-    keyEventKind: Int,
-    virtualKey: Int,
-    keyEvent: KeyEvent,
-    hasActiveKeymapShortcut: (KeyEvent) -> Boolean = ::hasActiveKeymapShortcut,
-    systemKeyRoutingState: SystemKeyRoutingState = this.systemKeyRoutingState,
-  ): WebViewShortcutRouting {
-    return when (keyEventKind) {
-      KEY_EVENT_KIND_SYSTEM_KEY_DOWN -> systemKeyRoutingState.routeSystemKeyDown(virtualKey, keyEvent, hasActiveKeymapShortcut)
-      KEY_EVENT_KIND_SYSTEM_KEY_UP -> systemKeyRoutingState.routeSystemKeyUp(virtualKey)
-      else -> WebViewShortcutRouter.route(keyEvent)
+  private fun toAwtModifiers(modifiers: Int): Int {
+    return MODIFIER_MAPPINGS.fold(0) { result, (nativeMask, awtMask) ->
+      if (modifiers and nativeMask == 0) result else result or awtMask
     }
-  }
-
-  internal class SystemKeyRoutingState {
-    private val ideOwnedVirtualKeys = HashSet<Int>()
-
-    // WebView2 reports Alt-based Windows shortcuts as SYSTEM_KEY_*. The IDE gets first ownership
-    // only when the active keymap actually binds the keystroke; otherwise native code forwards the
-    // original WM_SYSKEY* message to AWT so Windows behavior such as Alt+F4 stays native.
-    @Synchronized
-    fun routeSystemKeyDown(
-      virtualKey: Int,
-      keyEvent: KeyEvent,
-      hasActiveKeymapShortcut: (KeyEvent) -> Boolean,
-    ): WebViewShortcutRouting {
-      if (!WebViewShortcutRouter.isShortcutCandidate(keyEvent.keyCode, keyEvent.modifiersEx) || !hasActiveKeymapShortcut(keyEvent)) {
-        ideOwnedVirtualKeys.remove(virtualKey)
-        return WebViewShortcutRouting.BROWSER_ONLY
-      }
-
-      ideOwnedVirtualKeys.add(virtualKey)
-      return WebViewShortcutRouting.FORWARD_TO_IDE_CONSUME_BROWSER_HANDLING
-    }
-
-    // A release must follow the decision made for its press. Otherwise an IDE-owned Alt shortcut
-    // would get a pressed event in Swing and then leak the release into the native fallback path.
-    @Synchronized
-    fun routeSystemKeyUp(virtualKey: Int): WebViewShortcutRouting {
-      return if (ideOwnedVirtualKeys.remove(virtualKey)) {
-        WebViewShortcutRouting.FORWARD_TO_IDE_CONSUME_BROWSER_HANDLING
-      }
-      else {
-        WebViewShortcutRouting.BROWSER_ONLY
-      }
-    }
-  }
-
-  private fun hasActiveKeymapShortcut(event: KeyEvent): Boolean {
-    val keymap = KeymapManager.getInstance()?.activeKeymap ?: return false
-    return keymap.getActionIds(KeyStroke.getKeyStrokeForEvent(event)).isNotEmpty()
-  }
-
-  private fun modifierFlagsToJavaModifiers(modifierFlags: Int): Int {
-    var result = 0
-    if (modifierFlags and MODIFIER_SHIFT != 0) result = result or InputEvent.SHIFT_DOWN_MASK
-    if (modifierFlags and MODIFIER_CONTROL != 0) result = result or InputEvent.CTRL_DOWN_MASK
-    if (modifierFlags and MODIFIER_ALT != 0) result = result or InputEvent.ALT_DOWN_MASK
-    if (modifierFlags and MODIFIER_META != 0) result = result or InputEvent.META_DOWN_MASK
-    return result
-  }
-
-  private fun windowsVirtualKeyToJavaKeyCode(virtualKey: Int): Int {
-    return WINDOWS_TO_JAVA_KEY_CODES[virtualKey] ?: virtualKey
   }
 
   private fun keyLocation(virtualKey: Int, keyEventLParam: Int): Int {
@@ -143,7 +85,66 @@ internal object WinWebViewShortcutInterop {
     }
   }
 
-  private val WINDOWS_TO_JAVA_KEY_CODES = mapOf(
+  private data class Shortcut(val virtualKey: Int, val modifiers: Int)
+
+  private val TEXT_NAVIGATION_KEYS: Set<Int> = setOf(
+    VK_BACK,
+    VK_END,
+    VK_HOME,
+    VK_LEFT,
+    VK_UP,
+    VK_RIGHT,
+    VK_DOWN,
+    VK_INSERT,
+    VK_DELETE,
+  )
+
+  private val TEXT_NAVIGATION_MODIFIERS: Set<Int> = setOf(
+    0,
+    MODIFIER_SHIFT,
+    MODIFIER_CONTROL,
+    MODIFIER_CONTROL or MODIFIER_SHIFT,
+  )
+
+  private val TEXT_INPUT_SHORTCUTS: Set<Shortcut> = setOf(
+    Shortcut(VK_TAB, 0),
+    Shortcut(VK_TAB, MODIFIER_SHIFT),
+    Shortcut(VK_RETURN, 0),
+    Shortcut(VK_RETURN, MODIFIER_SHIFT),
+    Shortcut(VK_PRIOR, 0),
+    Shortcut(VK_PRIOR, MODIFIER_SHIFT),
+    Shortcut(VK_NEXT, 0),
+    Shortcut(VK_NEXT, MODIFIER_SHIFT),
+  )
+
+  private val EDITING_SHORTCUTS: Set<Shortcut> = setOf(
+    Shortcut('A'.code, MODIFIER_CONTROL),
+    Shortcut('C'.code, MODIFIER_CONTROL),
+    Shortcut('V'.code, MODIFIER_CONTROL),
+    Shortcut('X'.code, MODIFIER_CONTROL),
+    Shortcut('Y'.code, MODIFIER_CONTROL),
+    Shortcut('Z'.code, MODIFIER_CONTROL),
+    Shortcut('Z'.code, MODIFIER_CONTROL or MODIFIER_SHIFT),
+  )
+
+  private val WEBVIEW_SHORTCUTS: Set<Shortcut> = buildSet {
+    for (virtualKey in TEXT_NAVIGATION_KEYS) {
+      for (modifiers in TEXT_NAVIGATION_MODIFIERS) {
+        add(Shortcut(virtualKey, modifiers))
+      }
+    }
+    addAll(TEXT_INPUT_SHORTCUTS)
+    addAll(EDITING_SHORTCUTS)
+  }
+
+  private val MODIFIER_MAPPINGS: List<Pair<Int, Int>> = listOf(
+    MODIFIER_SHIFT to InputEvent.SHIFT_DOWN_MASK,
+    MODIFIER_CONTROL to InputEvent.CTRL_DOWN_MASK,
+    MODIFIER_ALT to InputEvent.ALT_DOWN_MASK,
+    MODIFIER_META to InputEvent.META_DOWN_MASK,
+  )
+
+  private val WINDOWS_TO_JAVA_KEY_CODES: Map<Int, Int> = mapOf(
     VK_RETURN to KeyEvent.VK_ENTER,
     VK_PRIOR to KeyEvent.VK_PAGE_UP,
     VK_NEXT to KeyEvent.VK_PAGE_DOWN,
@@ -174,10 +175,19 @@ internal object WinWebViewShortcutInterop {
     VK_OEM_102 to KeyEvent.VK_LESS,
   )
 
+  private const val SUPPORTED_MODIFIERS: Int = MODIFIER_SHIFT or MODIFIER_CONTROL or MODIFIER_ALT or MODIFIER_META
   private const val EXTENDED_KEY_MASK: Int = 1 shl 24
+  private const val VK_BACK: Int = 0x08
+  private const val VK_TAB: Int = 0x09
   private const val VK_RETURN: Int = 0x0D
   private const val VK_PRIOR: Int = 0x21
   private const val VK_NEXT: Int = 0x22
+  private const val VK_END: Int = 0x23
+  private const val VK_HOME: Int = 0x24
+  private const val VK_LEFT: Int = 0x25
+  private const val VK_UP: Int = 0x26
+  private const val VK_RIGHT: Int = 0x27
+  private const val VK_DOWN: Int = 0x28
   private const val VK_INSERT: Int = 0x2D
   private const val VK_DELETE: Int = 0x2E
   private const val VK_SNAPSHOT: Int = 0x2C

@@ -18,7 +18,7 @@ Most review findings are still open. Stage 1 of the [off-EDT plan](windows-webvi
 
 ## Overview
 
-JNI bridge crate that backs the Windows WebView2 path of `intellij.platform.ui.webview`. Source lives in `community/plugins/ui.webview/native/WinWebView2Bridge/src/lib.rs` (~1200 lines, single file), built as a `cdylib`. The Java side is `WinWebView2Bridge.kt` (declarations) plus `WinWebViewEngine.kt` (orchestration, which currently funnels every JNI call through `runOnEdt`).
+JNI bridge crate that backs the Windows WebView2 path of `intellij.platform.ui.webview`. Source lives in `community/plugins/ui.webview/native/WinWebView2Bridge/src/lib.rs` (~1200 lines, single file), built as a `cdylib`. The Java side is `WinWebView2Bridge.kt` (declarations) plus `WinWebViewController.kt` (orchestration, which currently funnels every JNI call through `runOnEdt`).
 
 This document inventories issues found in the Rust crate. The proposed off-EDT refactor is in [windows-webview2-off-edt-plan.md](windows-webview2-off-edt-plan.md).
 
@@ -27,7 +27,7 @@ This document inventories issues found in the Rust crate. The proposed off-EDT r
 - `community/plugins/ui.webview/native/WinWebView2Bridge/src/lib.rs` — single Rust source.
 - `community/plugins/ui.webview/native/WinWebView2Bridge/Cargo.toml` — `jni 0.21`, `webview2-com 0.38`, `windows 0.61`.
 - `community/plugins/ui.webview/src/com/intellij/ui/webview/impl/windows/WinWebView2Bridge.kt` — Kotlin JNI declarations and ABI sentinel.
-- `community/plugins/ui.webview/src/com/intellij/ui/webview/impl/windows/WinWebViewEngine.kt` — engine that orchestrates native calls on EDT.
+- `../../src/com/intellij/ui/webview/impl/windows/WinWebViewController.kt` — engine that orchestrates native calls on EDT.
 - `community/plugins/ui.webview/tests/testSrc/com/intellij/ui/webview/WindowsWebViewSmokeTest.kt` — smoke tests.
 
 ## Issues
@@ -100,7 +100,7 @@ SetParent(view.hwnd, Some(parent))?;
 // no visibility restore
 ```
 
-This relies on the caller calling `setVisible` afterwards. `WinWebViewEngine.applyAttachmentState` does so, so it works in practice — but the native function's contract is brittle.
+This relies on the caller calling `setVisible` afterwards. `WinWebViewController.applyAttachmentState` does so, so it works in practice — but the native function's contract is brittle.
 
 **Fix.** Restore `view.visible` at the end of `attachToParentNative`, or document "caller must restore visibility".
 

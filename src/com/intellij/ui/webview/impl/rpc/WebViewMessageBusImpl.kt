@@ -9,7 +9,7 @@ import com.intellij.ui.webview.api.WebViewMessageRegistration
 import com.intellij.ui.webview.api.WebViewNotification
 import com.intellij.ui.webview.api.WebViewNotificationHandler
 import com.intellij.ui.webview.api.WebViewRpcException
-import com.intellij.ui.webview.impl.WebViewEngineBridge
+import com.intellij.ui.webview.impl.WebViewController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +38,7 @@ import java.util.concurrent.ConcurrentHashMap
 @ApiStatus.Internal
 internal class WebViewMessageBusImpl internal constructor(
   private val scope: CoroutineScope,
-  private val engine: WebViewEngineBridge,
+  private val controller: WebViewController,
   private val json: Json = DEFAULT_JSON,
 ) : WebViewMessageBus {
   val interop: WebViewInterop = WebViewMessageBusInterop(this)
@@ -364,7 +364,7 @@ internal class WebViewMessageBusImpl internal constructor(
 
   private suspend fun transferToJs(frame: OutgoingFrame) {
     try {
-      engine.transferToJs(frame.rawJson)
+      controller.transferToJs(frame.rawJson)
     }
     catch (e: CancellationException) {
       throw e

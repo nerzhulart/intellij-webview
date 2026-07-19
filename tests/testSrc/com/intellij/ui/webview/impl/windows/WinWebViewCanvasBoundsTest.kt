@@ -3,7 +3,7 @@ package com.intellij.ui.webview.impl.windows
 
 import com.intellij.testFramework.runInEdtAndWait
 import com.intellij.ui.webview.impl.SwingWebViewHostPanel
-import kotlinx.coroutines.CoroutineDispatcher
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -22,15 +22,14 @@ import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.JFrame
 import javax.swing.JPanel
 import javax.swing.WindowConstants
-import kotlin.coroutines.CoroutineContext
 
 @EnabledOnOs(OS.WINDOWS)
 @DisabledIfSystemProperty(named = "java.awt.headless", matches = "true")
-internal class WinWebViewOverlayBoundsTest {
+internal class WinWebViewCanvasBoundsTest {
 
   private lateinit var scope: CoroutineScope
   private lateinit var bridge: FakeWinWebView2Bridge
-  private lateinit var engine: WinWebViewEngine
+  private lateinit var controller: WinWebViewController
   private var frame: JFrame? = null
 
   @BeforeEach
@@ -38,7 +37,7 @@ internal class WinWebViewOverlayBoundsTest {
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent fixture scope.
     scope = CoroutineScope(SupervisorJob())
     bridge = FakeWinWebView2Bridge()
-    engine = WinWebViewEngine(scope, bridge, debugName = "overlay-test", webViewDispatcher = SyncDispatcher)
+    controller = WinWebViewController(scope, bridge, debugName = "overlay-test", hostEventSink = WebViewHostEventSink { false })
   }
 
   @AfterEach
@@ -47,7 +46,7 @@ internal class WinWebViewOverlayBoundsTest {
       frame?.dispose()
       frame = null
     }
-    runBlocking { engine.close() }
+    runBlocking { controller.close() }
     scope.cancel()
   }
 
@@ -80,7 +79,7 @@ internal class WinWebViewOverlayBoundsTest {
       val rootPanel = JPanel(null).apply {
         preferredSize = Dimension(220, 320)
       }
-      val hostPanel = SwingWebViewHostPanel(scope, engine, nativeHostPeer = WinNativeWebViewHostPeer(engine)).apply {
+      val hostPanel = SwingWebViewHostPanel(scope, controller).apply {
         setBounds(20, 40, 300, 200)
       }
       rootPanel.add(hostPanel)
@@ -98,7 +97,7 @@ internal class WinWebViewOverlayBoundsTest {
     runInEdtAndWait {
       bridge.callbacks.onCreated(bridge.createdHandles.single())
     }
-    assertEquals(Bounds(20, 40, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
+    assertEquals(Bounds(0, 0, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
     assertVisibilityApplied(Visibility(1L, true))
   }
 
@@ -111,7 +110,7 @@ internal class WinWebViewOverlayBoundsTest {
       val root = JPanel(null).apply {
         preferredSize = Dimension(420, 320)
       }
-      val hostPanel = SwingWebViewHostPanel(scope, engine, nativeHostPeer = WinNativeWebViewHostPeer(engine)).apply {
+      val hostPanel = SwingWebViewHostPanel(scope, controller).apply {
         setBounds(20, 40, 300, 200)
       }
       val overlayPanel = JPanel().apply {
@@ -165,9 +164,7 @@ internal class WinWebViewOverlayBoundsTest {
   private fun expectedBounds(host: SwingWebViewHostPanel): Bounds {
     var result: Bounds? = null
     runInEdtAndWait {
-      val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host)!!
-      val nativeBounds = SwingWebViewHostPanel.calculateWindowsBounds(host, anchor)
-      result = Bounds(nativeBounds.x, nativeBounds.y, nativeBounds.width, nativeBounds.height, WindowsHwndUtil.scale(host))
+      result = Bounds(0, 0, controller.component.width, controller.component.height, WindowsHwndUtil.scale(host))
     }
     return result!!
   }
@@ -178,12 +175,6 @@ internal class WinWebViewOverlayBoundsTest {
       result = WindowsHwndUtil.scale(host)
     }
     return result
-  }
-
-  private object SyncDispatcher : CoroutineDispatcher() {
-    override fun dispatch(context: CoroutineContext, block: Runnable) {
-      block.run()
-    }
   }
 
   private class FakeWinWebView2Bridge : WinWebView2BridgeApi {
@@ -203,18 +194,18 @@ internal class WinWebViewOverlayBoundsTest {
 
     fun visibilitySnapshot(): List<Visibility> = visibility.toList()
 
-    override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    override fun create(
+      parentHwnd: Long,
+      userDataDir: String,
+      documentStartScript: String,
+      configuration: WinWebView2Configuration,
+      callbacks: WinWebView2Bridge.Callbacks,
+    ): Long {
       this.callbacks = callbacks
       return nextHandle++.also { createdHandles.add(it) }
     }
 
     override fun destroy(handle: Long) {
-    }
-
-    override fun attachToParent(handle: Long, parentHwnd: Long) {
-    }
-
-    override fun detachFromParent(handle: Long) {
     }
 
     override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
@@ -226,9 +217,6 @@ internal class WinWebViewOverlayBoundsTest {
     }
 
     override fun focus(handle: Long) {
-    }
-
-    override fun clearFocus(handle: Long) {
     }
 
     override fun loadUrl(handle: Long, url: String) {

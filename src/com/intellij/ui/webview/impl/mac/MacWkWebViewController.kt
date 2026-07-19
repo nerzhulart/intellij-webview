@@ -9,9 +9,13 @@ import com.intellij.ui.webview.api.WebViewAssetRoot
 import com.intellij.ui.webview.impl.MacMainThreadDispatcher
 import com.intellij.ui.webview.impl.WebViewAssetResolver
 import com.intellij.ui.webview.impl.WebViewAssetResponse
+import com.intellij.ui.webview.impl.WebViewController
 import com.intellij.ui.webview.impl.WebViewEditCommand
-import com.intellij.ui.webview.impl.WebViewEngineBridge
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewHostEventSink
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
 import com.intellij.ui.webview.impl.engine.WebViewScript
 import com.intellij.ui.webview.impl.openWebViewPopupUrlExternally
 import com.intellij.ui.webview.impl.resolveWebViewAssetUrl
@@ -28,15 +32,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
+import java.awt.Canvas
+import java.awt.Component
+import java.awt.event.KeyEvent
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
-private val LOG = logger<MacWebViewEngine>()
+private val LOG = logger<MacWkWebViewController>()
 
 /**
- * macOS implementation of [WebViewEngineBridge] backed by a native `WKWebView`.
+ * macOS controller for one WKWebView hosted by one heavyweight AWT component.
  *
  * Lifecycle state machine: `New → Active → Closing → Closed`.
  *
@@ -44,11 +51,17 @@ private val LOG = logger<MacWebViewEngine>()
  * The engine creates a child [CoroutineScope] with [SupervisorJob] from the provided parent scope.
  */
 @ApiStatus.Internal
-internal class MacWebViewEngine(
+internal class MacWkWebViewController(
   parentScope: CoroutineScope,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
-) : WebViewEngineBridge {
-  override val isHeavyweight: Boolean = true
+  @Suppress("unused") private val hostEventSink: WebViewHostEventSink,
+) : WebViewController {
+
+  override val component: Component = Canvas().apply {
+    isFocusable = true
+  }
+
+  override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER
 
   private companion object {
     const val EVAL_PREFIX = "__eval__:"
@@ -97,8 +110,8 @@ internal class MacWebViewEngine(
               val createdHandles = LOG.traceWebViewPerf("wkwebview-create") {
                 WKWebViewBridge.createWKWebView(
                   onMessage = { message -> handleIncomingMessage(message) },
-                  resolveAssetUrl = this@MacWebViewEngine::resolveAssetUrl,
-                  onNewWindowRequested = this@MacWebViewEngine::openNewWindowRequest,
+                  resolveAssetUrl = this@MacWkWebViewController::resolveAssetUrl,
+                  onNewWindowRequested = this@MacWkWebViewController::openNewWindowRequest,
                   onModifierKeyEvent = { event -> modifierKeyHandler(event) },
                   documentStartScripts = documentStartScripts,
                 )
@@ -303,7 +316,7 @@ internal class MacWebViewEngine(
     WKWebViewBridge.setHidden(wv, hidden)
   }
 
-  internal fun requestFocus() {
+  override fun requestWebViewFocus() {
     val wv = handles?.webView ?: return
     WKWebViewBridge.requestFocus(wv)
   }
@@ -336,6 +349,20 @@ internal class MacWebViewEngine(
       val wv = handles?.webView ?: return@withContext null
       if (state.get() == State.Active) WKWebViewBridge.firstResponderState(wv) else null
     }
+  }
+
+  override fun applyLayout(params: WebViewHostLayoutParams) {
+    // Host NSView resolution and attachment remain private to the macOS controller.
+    if (params.displayable) initialize()
+    setHidden(!params.showing || params.clippedBoundsInWindow.isEmpty)
+  }
+
+  override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    if (event.sameWindow) clearFocus()
+  }
+
+  override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean {
+    return event.id == KeyEvent.KEY_PRESSED && performEditCommand(command)
   }
 
   private fun cancelPendingEvaluations() {
@@ -413,11 +440,12 @@ internal class MacWebViewEngine(
  * Factory function for creating a macOS WebView engine.
  */
 @ApiStatus.Internal
-internal fun createMacWebViewEngine(
+internal fun createMacWkWebViewController(
   parentScope: CoroutineScope,
   documentStartScripts: List<WebViewScript> = emptyList(),
-): MacWebViewEngine {
-  return MacWebViewEngine(parentScope, documentStartScripts)
+  hostEventSink: WebViewHostEventSink,
+): WebViewController {
+  return MacWkWebViewController(parentScope, documentStartScripts, hostEventSink)
 }
 
 @ApiStatus.Internal

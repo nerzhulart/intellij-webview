@@ -3,7 +3,6 @@ package com.intellij.ui.webview.impl.windows
 
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.ui.webview.impl.NativeBridgeLibrary
-import com.intellij.ui.webview.impl.WebViewLogger
 import com.intellij.ui.webview.impl.webViewNativeArchDirectory
 import org.jetbrains.annotations.ApiStatus
 
@@ -21,7 +20,7 @@ private class WinWebView2BridgePluginAnchor
 
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-custom-scheme-assets-v10"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-host-controller-v14"
 
   init {
     if (SystemInfo.isWindows) {
@@ -33,16 +32,16 @@ internal object WinWebView2Bridge {
   private external fun abiVersionNative(): String
 
   @JvmStatic
-  private external fun createNative(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long
+  private external fun createNative(
+    hostHwnd: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    configurationFlags: Long,
+    callbacks: Callbacks,
+  ): Long
 
   @JvmStatic
   private external fun destroyNative(handle: Long)
-
-  @JvmStatic
-  private external fun attachToParentNative(handle: Long, parentHwnd: Long)
-
-  @JvmStatic
-  private external fun detachFromParentNative(handle: Long)
 
   @JvmStatic
   private external fun setBoundsNative(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double)
@@ -52,9 +51,6 @@ internal object WinWebView2Bridge {
 
   @JvmStatic
   private external fun focusNative(handle: Long)
-
-  @JvmStatic
-  private external fun clearFocusNative(handle: Long)
 
   @JvmStatic
   private external fun loadUrlNative(handle: Long, url: String)
@@ -75,27 +71,21 @@ internal object WinWebView2Bridge {
   private external fun transferToJsNative(handle: Long, rawJson: String)
 
   @JvmStatic
-  private external fun runMessageLoopNative()
-
-  @JvmStatic
-  private external fun postTaskNative(runnable: Runnable, targetTid: Long)
-
-  @JvmStatic
-  private external fun stopMessageLoopNative(targetTid: Long)
-
-  @JvmStatic
-  private external fun currentThreadIdNative(): Long
-
-  fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long =
-    createNative(parentHwnd, userDataDir, documentStartScript, callbacks)
+  fun create(
+    hostHwnd: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    configuration: WinWebView2Configuration,
+    callbacks: Callbacks,
+  ): Long {
+    require(hostHwnd != 0L) { "WebView2 host HWND must not be 0" }
+    return createNative(hostHwnd, userDataDir, documentStartScript, configuration.toNativeFlags(), callbacks)
+  }
 
   fun destroy(handle: Long) = destroyNative(handle)
-  fun attachToParent(handle: Long, parentHwnd: Long) = attachToParentNative(handle, parentHwnd)
-  fun detachFromParent(handle: Long) = detachFromParentNative(handle)
   fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) = setBoundsNative(handle, x, y, width, height, scale)
   fun setVisible(handle: Long, visible: Boolean) = setVisibleNative(handle, visible)
   fun focus(handle: Long) = focusNative(handle)
-  fun clearFocus(handle: Long) = clearFocusNative(handle)
   fun loadUrl(handle: Long, url: String) = loadUrlNative(handle, url)
   fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String) =
     setVirtualHostNameToFolderMappingNative(handle, hostName, folderPath)
@@ -107,32 +97,6 @@ internal object WinWebView2Bridge {
 
   fun transferToJs(handle: Long, rawJson: String) = transferToJsNative(handle, rawJson)
 
-  internal fun runMessageLoop() = runMessageLoopNative()
-  internal fun postTask(task: Runnable, targetTid: Long) = postTaskNative(task, targetTid)
-  internal fun stopMessageLoop(targetTid: Long) = stopMessageLoopNative(targetTid)
-  internal fun currentThreadId(): Long = currentThreadIdNative()
-
-  /**
-   * Called from the native dispatcher loop when a posted [Runnable] left a
-   * pending Java exception on the JNI thread. Must remain a non-internal
-   * `@JvmStatic` so that `call_static_method` from Rust can resolve it without
-   * name mangling.
-   */
-  @Suppress("unused")
-  @JvmStatic
-  fun reportTaskException(t: Throwable) {
-    WebViewLogger.LOG.error("Uncaught exception in WebView2 dispatcher task", t)
-  }
-
-  /**
-   * Called from the native dispatcher loop on unrecoverable runtime errors
-   * (Rust panic in the task glue, system error from GetMessageW, etc.).
-   */
-  @Suppress("unused")
-  @JvmStatic
-  fun reportDispatcherError(message: String) {
-    WebViewLogger.LOG.error(message)
-  }
 
   private fun loadNativeLibrary() {
     val libraryPath = winWebView2BridgeLibrary.load()
@@ -142,13 +106,15 @@ internal object WinWebView2Bridge {
   internal interface Callbacks {
     fun onCreated(handle: Long)
     fun onCreateFailed(message: String)
+    fun onDestroyed(handle: Long)
     fun onMessage(raw: String)
     fun onEvaluationResult(evalId: Long, result: String?)
     fun onEvaluationError(evalId: Long, message: String)
     fun onDevToolsProtocolMethodResult(callId: Long, result: String?, error: String?)
-    fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Boolean
-    fun onBeforeMouseFocus()
+    fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Int
     fun onFocusGained()
+    fun onFocusLost()
+    fun onMoveFocusRequested(reason: Int): Boolean
     fun onLog(level: Int, message: String)
     fun onNativeDiagnostic(level: Int, event: String, message: String, data: String)
     fun resolveAsset(url: String): AssetResponse?
@@ -187,15 +153,62 @@ internal object WinWebView2Bridge {
 }
 
 @ApiStatus.Internal
+internal data class WinWebView2Configuration(
+  val allowHostInputProcessing: Boolean = true,
+  val isScriptEnabled: Boolean = true,
+  val isWebMessageEnabled: Boolean = true,
+  val areDefaultScriptDialogsEnabled: Boolean = false,
+  val isStatusBarEnabled: Boolean = false,
+  val areDevToolsEnabled: Boolean = false,
+  val areDefaultContextMenusEnabled: Boolean = false,
+  val areHostObjectsAllowed: Boolean = false,
+  val isZoomControlEnabled: Boolean = false,
+  val isBuiltInErrorPageEnabled: Boolean = false,
+  val areBrowserAcceleratorKeysEnabled: Boolean = false,
+  val isGeneralAutofillEnabled: Boolean = false,
+  val isPasswordAutosaveEnabled: Boolean = false,
+  val isSwipeNavigationEnabled: Boolean = false,
+) {
+  internal fun toNativeFlags(): Long {
+    var flags = 0L
+    values.forEachIndexed { index, enabled ->
+      if (enabled) flags = flags or (1L shl index)
+    }
+    return flags
+  }
+
+  private val values: List<Boolean>
+    get() = listOf(
+      allowHostInputProcessing,
+      isScriptEnabled,
+      isWebMessageEnabled,
+      areDefaultScriptDialogsEnabled,
+      isStatusBarEnabled,
+      areDevToolsEnabled,
+      areDefaultContextMenusEnabled,
+      areHostObjectsAllowed,
+      isZoomControlEnabled,
+      isBuiltInErrorPageEnabled,
+      areBrowserAcceleratorKeysEnabled,
+      isGeneralAutofillEnabled,
+      isPasswordAutosaveEnabled,
+      isSwipeNavigationEnabled,
+    )
+}
+
+@ApiStatus.Internal
 internal interface WinWebView2BridgeApi {
-  fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long
+  fun create(
+    hostHwnd: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    configuration: WinWebView2Configuration,
+    callbacks: WinWebView2Bridge.Callbacks,
+  ): Long
   fun destroy(handle: Long)
-  fun attachToParent(handle: Long, parentHwnd: Long)
-  fun detachFromParent(handle: Long)
   fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double)
   fun setVisible(handle: Long, visible: Boolean)
   fun focus(handle: Long)
-  fun clearFocus(handle: Long)
   fun loadUrl(handle: Long, url: String)
   fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String)
   fun loadHtml(handle: Long, html: String, baseUrl: String?)
@@ -206,18 +219,20 @@ internal interface WinWebView2BridgeApi {
 
 @ApiStatus.Internal
 internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
-  override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long =
-    WinWebView2Bridge.create(parentHwnd, userDataDir, documentStartScript, callbacks)
+  override fun create(
+    hostHwnd: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    configuration: WinWebView2Configuration,
+    callbacks: WinWebView2Bridge.Callbacks,
+  ): Long = WinWebView2Bridge.create(hostHwnd, userDataDir, documentStartScript, configuration, callbacks)
 
   override fun destroy(handle: Long) = WinWebView2Bridge.destroy(handle)
-  override fun attachToParent(handle: Long, parentHwnd: Long) = WinWebView2Bridge.attachToParent(handle, parentHwnd)
-  override fun detachFromParent(handle: Long) = WinWebView2Bridge.detachFromParent(handle)
   override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) =
     WinWebView2Bridge.setBounds(handle, x, y, width, height, scale)
 
   override fun setVisible(handle: Long, visible: Boolean) = WinWebView2Bridge.setVisible(handle, visible)
   override fun focus(handle: Long) = WinWebView2Bridge.focus(handle)
-  override fun clearFocus(handle: Long) = WinWebView2Bridge.clearFocus(handle)
   override fun loadUrl(handle: Long, url: String) = WinWebView2Bridge.loadUrl(handle, url)
   override fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String) =
     WinWebView2Bridge.setVirtualHostNameToFolderMapping(handle, hostName, folderPath)

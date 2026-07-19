@@ -3,14 +3,21 @@ package com.intellij.ui.webview
 
 import com.intellij.ide.IdeEventQueue
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.SystemInfoRt
 import com.intellij.ui.webview.api.WebViewAssetPath
 import com.intellij.ui.webview.api.WebViewAssetRoot
 import com.intellij.ui.webview.impl.SwingWebViewHostPanel
-import com.intellij.ui.webview.impl.WebViewEngineBridge
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewEditCommand
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewFocusEntrySink
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
 import com.intellij.ui.webview.impl.engine.createWebViewFocusEntrySink
 import com.intellij.ui.webview.impl.engine.registerWebViewFocusExitHandler
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
+import com.intellij.ui.webview.impl.windows.WinWebView2Bridge
+import com.intellij.ui.webview.impl.windows.WindowsHwndUtil
 import com.intellij.ui.webview.impl.rpc.WebViewMessageBusImpl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -22,6 +29,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.awt.AWTEvent
 import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.Container
 import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.KeyboardFocusManager
@@ -34,10 +42,13 @@ import java.awt.event.FocusEvent
 import java.awt.event.InputEvent
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
 import javax.swing.JFrame
+import javax.swing.JPanel
 import javax.swing.JTextField
 import javax.swing.SwingUtilities
 import javax.swing.text.DefaultCaret
@@ -47,11 +58,14 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 internal object WebViewFocusRobotTestSupport {
+  private suspend fun WebViewController.loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath) {
+    loadAsset(root, entry, null)
+  }
+
   suspend fun runFocusInteropScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -83,8 +97,13 @@ internal object WebViewFocusRobotTestSupport {
           inputEvents.add("keyReleased:${e.keyCode}")
         }
       })
+      addMouseListener(object : MouseAdapter() {
+        override fun mousePressed(e: MouseEvent) {
+          inputEvents.add("mousePressed:${e.x},${e.y}")
+        }
+      })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -114,11 +133,13 @@ internal object WebViewFocusRobotTestSupport {
       clearText(field)
       clearWebInput(engine)
       typeKey(robot, KeyEvent.VK_1)
-      val swingFieldPreflightDiagnostics = buildCurrentFocusDiagnostics(frame, field)
+      val swingFieldPreflightDiagnostics = buildCurrentFocusDiagnostics(frame, field, host)
+      val webInputValueAfterSwingPreflight = webInputValueJson(engine)
       // macOS may deny Robot keyboard injection to non-foreground test runners. Once this preflight passes, later focus failures are real.
       assumeTrue(
         waitForFieldText(field, "1", inputEvents, assertOnFailure = false),
-        "AWT Robot key input is not delivered to the focused Swing field; $swingFieldPreflightDiagnostics; inputEvents=$inputEvents",
+        "AWT Robot key input is not delivered to the focused Swing field; $swingFieldPreflightDiagnostics; " +
+        "inputEvents=$inputEvents; webInputValue=$webInputValueAfterSwingPreflight",
       )
       assertWebInputValue(engine, "", "WebView input received typed input while Swing field was focused")
 
@@ -152,8 +173,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runModifierDoubleClickShortcutScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -163,7 +183,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     val modifierEventRegistration = recordModifierKeyEvents(modifierEvents)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
@@ -209,6 +229,8 @@ internal object WebViewFocusRobotTestSupport {
         keyCode = KeyEvent.VK_SHIFT,
         description = "Double Shift inside WebView did not enter the IDE key event pipeline",
       )
+      pressEscape(robot)
+      clickWebElementCenter(robot, host, engine, "web-input")
 
       clearRecordedKeyEvents(modifierEvents)
       doubleTapModifier(robot, KeyEvent.VK_CONTROL)
@@ -233,8 +255,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runBrowserTextNavigationScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -243,7 +264,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -336,8 +357,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runAltF4WindowCloseScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -346,7 +366,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -410,8 +430,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runAltF1ShortcutScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -421,7 +440,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     val keyEventRegistration = recordKeyEvents(keyEvents, KeyEvent.VK_F1)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
@@ -483,8 +502,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runMacFirstResponderFocusTransferScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
     assertNativeFocusReadyForSwingTyping: suspend () -> Unit,
   ) {
@@ -504,7 +522,7 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -560,8 +578,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runNonTabbableSelectionScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -593,7 +610,7 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeNonTabbableSelectionPage(tempDir)
@@ -656,8 +673,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runBadComboPopupThenSwingRefocusScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-    nativeHostPeer: NativeWebViewHostPeer,
+    engine: WebViewController,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -676,9 +692,8 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
-    val inactiveNativePeer = RecordingNativeWebViewHostPeer()
-    val inactiveHost = SwingWebViewHostPanel(scope, NoopWebViewEngine(), nativeHostPeer = inactiveNativePeer).apply {
+    val host = createHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
+    val inactiveHost = SwingWebViewHostPanel(scope, NoopWebViewController()).apply {
       preferredSize = Dimension(8, 1)
     }
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
@@ -720,7 +735,6 @@ internal object WebViewFocusRobotTestSupport {
         expected = "true",
         description = "Combo popup Robot test page did not expose state reset hook",
       )
-      inactiveNativePeer.reset()
       inputEvents.clear()
 
       // Step 1: focus starts in Swing, then one real Robot click opens the bad combo inside WebView.
@@ -730,11 +744,6 @@ internal object WebViewFocusRobotTestSupport {
         host,
         inputEvents,
         "WebView combo click did not move Swing focus from the external field to the host panel",
-      )
-      assertEquals(
-        0,
-        inactiveNativePeer.clearFocusForSwingTransferCount,
-        "Inactive WebView host cleared native focus while another WebView host was activated",
       )
       waitForJavaScriptResult(
         webView = engine,
@@ -835,6 +844,14 @@ internal object WebViewFocusRobotTestSupport {
       assumeTrue(false, "AWT Robot is unavailable: ${error.message}")
       throw error
     }
+  }
+
+  private fun createHostPanel(
+    scope: CoroutineScope,
+    engine: WebViewController,
+    focusEntrySink: WebViewFocusEntrySink,
+  ): SwingWebViewHostPanel {
+    return SwingWebViewHostPanel(scope, engine, focusEntrySink)
   }
 
   private fun writeFocusInteropPage(root: Path) {
@@ -1110,7 +1127,7 @@ internal object WebViewFocusRobotTestSupport {
   }
 
   private suspend fun waitForJavaScriptResult(
-    webView: WebViewEngineBridge,
+    webView: WebViewController,
     @Language("JavaScript") script: String,
     expected: String,
     description: String,
@@ -1126,7 +1143,7 @@ internal object WebViewFocusRobotTestSupport {
     assertTrue(matched, "$description, lastJsResult=$lastResult")
   }
 
-  private suspend fun clearWebInput(webView: WebViewEngineBridge) {
+  private suspend fun clearWebInput(webView: WebViewController) {
     waitForJavaScriptResult(
       webView = webView,
       script = "const input = document.getElementById('web-input'); if (input) { input.value = ''; true } else false",
@@ -1135,11 +1152,11 @@ internal object WebViewFocusRobotTestSupport {
     )
   }
 
-  private suspend fun webInputValueJson(webView: WebViewEngineBridge): String? {
+  private suspend fun webInputValueJson(webView: WebViewController): String? {
     return webView.evaluateJavaScript("JSON.stringify(document.getElementById('web-input')?.value ?? '')")
   }
 
-  private suspend fun assertWebInputValue(webView: WebViewEngineBridge, expected: String, description: String) {
+  private suspend fun assertWebInputValue(webView: WebViewController, expected: String, description: String) {
     val actual = webView.evaluateJavaScript("document.getElementById('web-input')?.value === '${expected}'")
     assertEquals("true", actual, "$description, expected=$expected, jsResult=$actual")
   }
@@ -1235,7 +1252,8 @@ internal object WebViewFocusRobotTestSupport {
                              lastFocusOwner !== field &&
                              lastPermanentFocusOwner !== field &&
                              "focusLost" in inputEvents
-        val hostOwnsSwingFocus = lastFocusOwner === host || lastPermanentFocusOwner === host
+        val hostOwnsSwingFocus = isFocusOwnerInsideHost(lastFocusOwner, host) ||
+                                  isFocusOwnerInsideHost(lastPermanentFocusOwner, host)
         if (fieldLostFocus && hostOwnsSwingFocus) {
           return@withTimeoutOrNull true
         }
@@ -1278,6 +1296,10 @@ internal object WebViewFocusRobotTestSupport {
       }
     } == true
     assertTrue(matched, "$description; inputEvents=$inputEvents; $lastFocusDiagnostics")
+  }
+
+  private fun isFocusOwnerInsideHost(focusOwner: Component?, host: Component): Boolean {
+    return focusOwner === host || focusOwner != null && SwingUtilities.isDescendingFrom(focusOwner, host)
   }
 
   private suspend fun assertFocusOwnerStaysAwayFrom(
@@ -1326,8 +1348,7 @@ internal object WebViewFocusRobotTestSupport {
   private fun clickCenter(robot: Robot, component: Component) {
     val point = arrayOfNulls<Point>(1)
     SwingUtilities.invokeAndWait {
-      val location = component.locationOnScreen
-      point[0] = Point(location.x + component.width / 2, location.y + component.height / 2)
+      point[0] = toRobotScreenPoint(component, component.width / 2, component.height / 2)
     }
     val center = point[0]!!
     robot.mouseMove(center.x, center.y)
@@ -1336,7 +1357,19 @@ internal object WebViewFocusRobotTestSupport {
     robot.waitForIdle()
   }
 
-  private suspend fun clickWebElementCenter(robot: Robot, host: Component, webView: WebViewEngineBridge, elementId: String) {
+  private suspend fun clickWebElementCenter(robot: Robot, host: Component, webView: WebViewController, elementId: String) {
+    webView.evaluateJavaScript("""
+      (() => {
+        window.__wviRobotClickProbe = { count: 0, lastTarget: '', lastX: -1, lastY: -1 };
+        document.addEventListener('pointerdown', event => {
+          window.__wviRobotClickProbe.count++;
+          window.__wviRobotClickProbe.lastTarget = event.target?.id || event.target?.tagName || '';
+          window.__wviRobotClickProbe.lastX = event.clientX;
+          window.__wviRobotClickProbe.lastY = event.clientY;
+        }, { capture: true, once: true });
+        return true;
+      })()
+    """.trimIndent())
     val center = webView.evaluateJavaScript("""
       (() => {
         const element = document.getElementById('$elementId');
@@ -1351,23 +1384,29 @@ internal object WebViewFocusRobotTestSupport {
 
     val point = arrayOfNulls<Point>(1)
     SwingUtilities.invokeAndWait {
-      val location = host.locationOnScreen
-      point[0] = Point(location.x + parts[0].toDouble().roundToInt(), location.y + parts[1].toDouble().roundToInt())
+      point[0] = toRobotScreenPoint(host, parts[0].toDouble().roundToInt(), parts[1].toDouble().roundToInt())
     }
     val target = point[0]!!
     robot.mouseMove(target.x, target.y)
     robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     robot.waitForIdle()
+    val probe = webView.evaluateJavaScript("JSON.stringify(window.__wviRobotClickProbe || null)")
+    val probeCount = webView.evaluateJavaScript("String(window.__wviRobotClickProbe?.count ?? 0)")
+    val normalizedProbeCount = probeCount?.trim()?.removeSurrounding("\"")
+    assertTrue(
+      normalizedProbeCount == "1",
+      "Robot click did not reach WebView DOM for #$elementId; target=$target; hostBounds=${host.bounds}; " +
+      "hostShowing=${host.isShowing}; probeCount=$probeCount; probe=$probe",
+    )
   }
 
   private fun dragSelection(robot: Robot, component: Component) {
     val points = arrayOfNulls<Point>(2)
     SwingUtilities.invokeAndWait {
-      val location = component.locationOnScreen
-      val y = location.y + component.height / 2
-      points[0] = Point(location.x + component.width / 4, y)
-      points[1] = Point(location.x + component.width * 3 / 4, y)
+      val y = component.height / 2
+      points[0] = toRobotScreenPoint(component, component.width / 4, y)
+      points[1] = toRobotScreenPoint(component, component.width * 3 / 4, y)
     }
     val start = points[0]!!
     val end = points[1]!!
@@ -1394,6 +1433,11 @@ internal object WebViewFocusRobotTestSupport {
     frame.isAlwaysOnTop = false
   }
 
+  private fun toRobotScreenPoint(component: Component, x: Int, y: Int): Point {
+    val location = component.locationOnScreen
+    return Point(location.x + x, location.y + y)
+  }
+
   private fun buildFocusDiagnostics(
     frame: JFrame,
     field: JTextField,
@@ -1413,15 +1457,29 @@ internal object WebViewFocusRobotTestSupport {
       .getOrElse { "<unavailable: ${it.javaClass.simpleName}: ${it.message}>" }
   }
 
-  private fun buildCurrentFocusDiagnostics(frame: JFrame, field: JTextField): String {
+  private fun buildCurrentFocusDiagnostics(frame: JFrame, field: JTextField, host: Component? = null): String {
     val focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
-    return buildFocusDiagnostics(
+    val swingDiagnostics = buildFocusDiagnostics(
       frame,
       field,
       focusManager.focusOwner,
       focusManager.permanentFocusOwner,
       requestFocusInWindowResult = false,
     )
+    val windowsDiagnostics = windowsFocusDiagnostics(host)
+    return if (windowsDiagnostics.isEmpty()) swingDiagnostics else "$swingDiagnostics; $windowsDiagnostics"
+  }
+
+  private fun windowsFocusDiagnostics(host: Component?): String {
+    if (!SystemInfoRt.isWindows || host == null) return ""
+    val hostComponent = (host as? Container)?.components?.firstOrNull() ?: host
+    return runCatching {
+      "hostBounds=${host.bounds}, hostShowing=${host.isShowing}, " +
+      "hostComponent=${hostComponent.javaClass.name}, hostComponentBounds=${hostComponent.bounds}, " +
+      "hostComponentShowing=${hostComponent.isShowing}"
+    }.getOrElse {
+      "win32FocusDiagnosticsUnavailable=${it.javaClass.name}:${it.message}"
+    }
   }
 
   private fun typeKey(robot: Robot, keyCode: Int) {
@@ -1462,6 +1520,12 @@ internal object WebViewFocusRobotTestSupport {
     robot.delay(80)
     robot.keyPress(keyCode)
     robot.keyRelease(keyCode)
+    robot.waitForIdle()
+  }
+
+  private fun pressEscape(robot: Robot) {
+    robot.keyPress(KeyEvent.VK_ESCAPE)
+    robot.keyRelease(KeyEvent.VK_ESCAPE)
     robot.waitForIdle()
   }
 
@@ -1619,38 +1683,9 @@ internal object WebViewFocusRobotTestSupport {
 
   private data class RecordedKeyEvent(val id: Int, val keyCode: Int, val modifiersEx: Int = 0)
 
-  private class RecordingNativeWebViewHostPeer : NativeWebViewHostPeer {
-    var clearFocusForSwingTransferCount = 0
-      private set
-
-    override fun attach(host: Component): Boolean = true
-
-    override fun detach() {
-    }
-
-    override fun scheduleFrameUpdate(host: Component) {
-    }
-
-    override fun updateVisibility(host: Component, hidden: Boolean) {
-    }
-
-    override fun requestFocus() {
-    }
-
-    override fun clearFocus() {
-    }
-
-    override fun clearFocusForSwingFocusTransfer() {
-      clearFocusForSwingTransferCount++
-    }
-
-    fun reset() {
-      clearFocusForSwingTransferCount = 0
-    }
-  }
-
-  private class NoopWebViewEngine : WebViewEngineBridge {
-    override val isHeavyweight: Boolean = false
+  private class NoopWebViewController : WebViewController {
+    override val component: Component = JPanel()
+    override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.NONE
 
     override suspend fun loadFile(file: Path) {
     }
@@ -1668,6 +1703,14 @@ internal object WebViewFocusRobotTestSupport {
 
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
+
+    override fun applyLayout(params: WebViewHostLayoutParams) {
+    }
+
+    override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    }
+
+    override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean = false
 
     override suspend fun close() {
     }

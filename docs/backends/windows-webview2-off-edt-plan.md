@@ -14,7 +14,7 @@ Recommended ordering: H1 (thread-id `debug_assert!`) from the rust review can la
 
 ## Motivation
 
-Today `WinWebViewEngine.runOnEdt` (`WinWebViewEngine.kt:437`) is `SwingUtilities.invokeLater` — the caller does not block. But **EDT is held for the duration of every WebView2 JNI call and every 16 ms pump tick**. Under load (heavy `ExecuteScript`, `Navigate` on a heavy page, WebMessage bursts) this introduces UI hitches in the IDE itself.
+Today `WinWebViewController.runOnEdt` (`WinWebViewEngine.kt:437`) is `SwingUtilities.invokeLater` — the caller does not block. But **EDT is held for the duration of every WebView2 JNI call and every 16 ms pump tick**. Under load (heavy `ExecuteScript`, `Navigate` on a heavy page, WebMessage bursts) this introduces UI hitches in the IDE itself.
 
 **Goal.** Move every WebView2 STA operation onto a dedicated `WebView2-Thread`, leaving EDT for AWT/Swing.
 
@@ -36,7 +36,7 @@ The Rust code-review issues (independent of this refactor) are documented separa
 - `CoInitializeEx COINIT_APARTMENTTHREADED` runs on `WebView2-Thread`, called once at thread start.
 - All JNI entry points (`createNative`, `evaluateJavaScriptNative`, `setBoundsNative`, …) execute only on `WebView2-Thread`. The single-thread invariant is unchanged in shape; only the owner thread changes.
 - WebView2 callbacks (`onMessage`, `resolveAsset`, `onAcceleratorKeyPressed`, …) arrive on `WebView2-Thread` (since the apartment is STA). Where Kotlin needs to touch Swing state, do an explicit `withContext(Dispatchers.Swing)` inside the callback.
-- The EDT pump timer in `WinWebViewEngine.startMessagePump` (`WinWebViewEngine.kt:412`) is **deleted** — `GetMessage` on `WebView2-Thread` is the only message loop now.
+- The EDT pump timer in `WinWebViewController.startMessagePump` (`WinWebViewEngine.kt:412`) is **deleted** — `GetMessage` on `WebView2-Thread` is the only message loop now.
 
 ### Pump strategy: blocking GetMessage loop (chosen)
 
@@ -69,7 +69,7 @@ An earlier draft chose a tick-based pump as "minimally invasive": keep `pumpMess
 | `GetKeyState` in `current_modifier_flags` (`src/lib.rs:1170`) | Per-thread input state. After `AttachThreadInput`, the queue is shared with EDT — values become correct. |
 | `SetParent` in `attachToParentNative` (`src/lib.rs:332`) | Cross-thread `SetParent` works; the existing pattern (hide → SetParent → restore) is preserved. |
 | AWT resize parent → child reflow | Already explicit: AWT sends `WM_SIZE` to the parent on EDT, Kotlin then calls `setBounds`. No change. |
-| AWT close window → tear-down ordering | `WinWebViewEngine.close` (`WinWebViewEngine.kt:307`) currently uses `runOnEdt` to invoke `destroyNative`; switch to `withContext(WebView2Dispatcher.coroutineDispatcher)`. Before destroying, call `AttachThreadInput(..., FALSE)` to detach. |
+| AWT close window → tear-down ordering | `WinWebViewController.close` (`WinWebViewEngine.kt:307`) currently uses `runOnEdt` to invoke `destroyNative`; switch to `withContext(WebView2Dispatcher.coroutineDispatcher)`. Before destroying, call `AttachThreadInput(..., FALSE)` to detach. |
 
 ## Step-by-step plan
 
@@ -106,7 +106,7 @@ internal object WebView2Dispatcher {
 
 The thread starts once on first reference and stays alive for the JVM lifetime. Bridge instances come and go; the dispatcher and its thread are shared. No explicit shutdown — the thread is daemon and dies on JVM exit. (If we later need explicit teardown, expose `WinWebView2Bridge.stopMessageLoopNative(threadTid)` to post `WM_QUIT`.)
 
-### Step 2. Replace `runOnEdt` with `WebView2Dispatcher` in `WinWebViewEngine`
+### Step 2. Replace `runOnEdt` with `WebView2Dispatcher` in `WinWebViewController`
 
 `WinWebViewEngine.kt:437-444`:
 
@@ -133,7 +133,7 @@ Replace every `runOnEdt { ... }` call site in the file (16 occurrences). The mut
 
 ### Step 3. Delete the EDT pump timer
 
-`WinWebViewEngine.startMessagePump` / `stopMessagePump` (`WinWebViewEngine.kt:412-433`) used a `javax.swing.Timer` to call `pumpMessagesNative` on EDT every 16 ms. With the blocking message loop, no pump is needed — `WebView2-Thread` already runs `GetMessage` and dispatches everything. Delete `messagePumpTimer`, both methods, the constants `PUMP_INTERVAL_MILLIS` and `MAX_PUMP_MESSAGES_PER_TICK`, and every `startMessagePump()` / `stopMessagePump()` call site.
+`WinWebViewController.startMessagePump` / `stopMessagePump` (`WinWebViewEngine.kt:412-433`) used a `javax.swing.Timer` to call `pumpMessagesNative` on EDT every 16 ms. With the blocking message loop, no pump is needed — `WebView2-Thread` already runs `GetMessage` and dispatches everything. Delete `messagePumpTimer`, both methods, the constants `PUMP_INTERVAL_MILLIS` and `MAX_PUMP_MESSAGES_PER_TICK`, and every `startMessagePump()` / `stopMessagePump()` call site.
 
 ### Step 4. `AttachThreadInput`
 
@@ -266,7 +266,7 @@ Set in `create_native`, check in `run_with_handle` and `destroyNative`.
 | `community/plugins/ui.webview/native/WinWebView2Bridge/src/lib.rs` | + `runMessageLoopNative` / `postTaskNative` / `stopMessageLoopNative` / `currentThreadIdNative` / `attachThreadInputNative` / `detachThreadInputNative`; − `pump_pending_messages_limited`, `should_leave_message_for_awt`, `is_message_in_range`, `PumpResult`, `Java_..._pumpMessagesNative` (~70 lines); add `assert_owning_thread` in `run_with_handle`. |
 | `community/plugins/ui.webview/src/com/intellij/ui/webview/impl/windows/WebView2Dispatcher.kt` | **New file:** daemon `WebView2-Thread` runs `runMessageLoopNative`; custom `CoroutineDispatcher.dispatch` posts via `postTaskNative`. |
 | `community/plugins/ui.webview/src/com/intellij/ui/webview/impl/windows/WinWebView2Bridge.kt` | + `external fun runMessageLoopNative()`, `postTaskNative(runnable: Runnable, targetTid: Long)`, `stopMessageLoopNative(targetTid: Long)`, `currentThreadIdNative(): Long`, `attachThreadInputNative(edtTid: Long)`, `detachThreadInputNative(edtTid: Long)`; − `pumpMessagesNative`; bump ABI sentinel `wvi-scoped-pump-v1` → `wvi-dedicated-thread-v1`. |
-| `community/plugins/ui.webview/src/com/intellij/ui/webview/impl/windows/WinWebViewEngine.kt` | `runOnEdt` → `invokeOnWebView`; **delete** `startMessagePump`, `stopMessagePump`, `messagePumpTimer`, `PUMP_INTERVAL_MILLIS`, `MAX_PUMP_MESSAGES_PER_TICK` and all call sites; `AttachThreadInput` on first attach; `DetachThreadInput` on close. Possible `withContext(Dispatchers.Swing)` wrappers in callbacks per Step 6. |
+| `../../src/com/intellij/ui/webview/impl/windows/WinWebViewController.kt` | `runOnEdt` → `invokeOnWebView`; **delete** `startMessagePump`, `stopMessagePump`, `messagePumpTimer`, `PUMP_INTERVAL_MILLIS`, `MAX_PUMP_MESSAGES_PER_TICK` and all call sites; `AttachThreadInput` on first attach; `DetachThreadInput` on close. Possible `withContext(Dispatchers.Swing)` wrappers in callbacks per Step 6. |
 | `community/plugins/ui.webview/src/com/intellij/ui/webview/impl/windows/WinWebViewShortcutInterop.kt` (if present) | Possible refactor — see Step 6. |
 
 ## Stages (each shippable independently)

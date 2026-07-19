@@ -3,11 +3,14 @@
 #![cfg(target_os = "windows")]
 
 use std::{
-    cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    cell::RefCell,
+    collections::HashMap,
     ffi::c_void,
-    panic::AssertUnwindSafe,
     rc::Rc,
+    sync::{
+        atomic::{AtomicIsize, AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::Instant,
 };
 
@@ -21,15 +24,17 @@ use windows::{
     core::{w, Interface, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::*,
-        Graphics::Gdi::*,
         System::{Com::*, LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LSHIFT, VK_LWIN, VK_MENU,
-                VK_RSHIFT, VK_RWIN, VK_SHIFT,
+                GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
             },
             Shell::SHCreateMemStream,
-            WindowsAndMessaging::*,
+            WindowsAndMessaging::{
+                CallNextHookEx, GetWindowThreadProcessId, IsChild, PostMessageW,
+                PostThreadMessageW, RegisterWindowMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+                HHOOK, MSG, PM_REMOVE, WH_GETMESSAGE, WM_KEYDOWN, WM_KEYUP, WM_NULL,
+            },
         },
     },
 };
@@ -38,13 +43,23 @@ type BridgeResult<T> = std::result::Result<T, String>;
 type NativeHandle = Rc<RefCell<NativeWebView>>;
 type EventRegistrationToken = i64;
 
-const MODIFIER_SHIFT: jint = 1;
-const MODIFIER_CONTROL: jint = 1 << 1;
-const MODIFIER_ALT: jint = 1 << 2;
-const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-custom-scheme-assets-v10";
-const WM_USER_INVOKE: u32 = WM_USER + 1;
-const WM_USER_SHIFT_FALLBACK: u32 = WM_USER + 2;
+const NATIVE_ABI_VERSION: &str = "wvi-host-controller-v14";
+const CONFIG_ALLOW_HOST_INPUT_PROCESSING: u64 = 1 << 0;
+const CONFIG_IS_SCRIPT_ENABLED: u64 = 1 << 1;
+const CONFIG_IS_WEB_MESSAGE_ENABLED: u64 = 1 << 2;
+const CONFIG_ARE_DEFAULT_SCRIPT_DIALOGS_ENABLED: u64 = 1 << 3;
+const CONFIG_IS_STATUS_BAR_ENABLED: u64 = 1 << 4;
+const CONFIG_ARE_DEV_TOOLS_ENABLED: u64 = 1 << 5;
+const CONFIG_ARE_DEFAULT_CONTEXT_MENUS_ENABLED: u64 = 1 << 6;
+const CONFIG_ARE_HOST_OBJECTS_ALLOWED: u64 = 1 << 7;
+const CONFIG_IS_ZOOM_CONTROL_ENABLED: u64 = 1 << 8;
+const CONFIG_IS_BUILT_IN_ERROR_PAGE_ENABLED: u64 = 1 << 9;
+const CONFIG_ARE_BROWSER_ACCELERATOR_KEYS_ENABLED: u64 = 1 << 10;
+const CONFIG_IS_GENERAL_AUTOFILL_ENABLED: u64 = 1 << 11;
+const CONFIG_IS_PASSWORD_AUTOSAVE_ENABLED: u64 = 1 << 12;
+const CONFIG_IS_SWIPE_NAVIGATION_ENABLED: u64 = 1 << 13;
+const ACCELERATOR_HANDLED: jint = 1;
+const ACCELERATOR_BROWSER_ENABLED: jint = 1 << 1;
 const WEBVIEW_ASSET_CUSTOM_SCHEME: &str = "ij-webview-asset";
 const WEBVIEW_ASSET_CUSTOM_SCHEME_FILTER: &str = "ij-webview-asset://assets/*";
 const WEBVIEW_ASSET_HTTPS_FILTER: &str = "https://ij-webview-assets.local/*";
@@ -53,23 +68,6 @@ const DIAGNOSTIC_DEBUG: jint = 1;
 const DIAGNOSTIC_INFO: jint = 2;
 const DIAGNOSTIC_WARN: jint = 3;
 const DIAGNOSTIC_ERROR: jint = 4;
-
-thread_local! {
-    static KEYBOARD_INTEROP_WINDOWS: RefCell<Vec<HWND>> = RefCell::new(Vec::new());
-    static KEYBOARD_INTEROP_HOOK: RefCell<Option<HHOOK>> = const { RefCell::new(None) };
-    static SHIFT_FALLBACK_EVENTS: RefCell<VecDeque<PendingShiftEvent>> = RefCell::new(VecDeque::new());
-    static SHIFT_FALLBACK_ACTIVE_WINDOWS: RefCell<HashMap<jint, HWND>> = RefCell::new(HashMap::new());
-    static NEXT_SHIFT_FALLBACK_EVENT_ID: Cell<usize> = const { Cell::new(1) };
-}
-
-struct PendingShiftEvent {
-    id: usize,
-    hwnd: HWND,
-    key_event_kind: jint,
-    virtual_key: jint,
-    modifiers: jint,
-    key_event_lparam: jint,
-}
 
 struct NativeAssetResponse {
     status_code: i32,
@@ -111,6 +109,13 @@ impl JavaCallbacks {
                 "(Ljava/lang/String;)V",
                 &[JValue::Object(&message)],
             )?;
+            Ok(())
+        });
+    }
+
+    fn on_destroyed(&self, handle: jlong) {
+        self.with_env(|env, object| {
+            env.call_method(object, "onDestroyed", "(J)V", &[JValue::Long(handle)])?;
             Ok(())
         });
     }
@@ -189,14 +194,14 @@ impl JavaCallbacks {
         virtual_key: jint,
         modifiers: jint,
         key_event_lparam: jint,
-    ) -> bool {
+    ) -> jint {
         let Ok(mut env) = self.vm.attach_current_thread() else {
-            return false;
+            return 0;
         };
         env.call_method(
             self.object.as_obj(),
             "onAcceleratorKeyPressed",
-            "(IIII)Z",
+            "(IIII)I",
             &[
                 JValue::Int(key_event_kind),
                 JValue::Int(virtual_key),
@@ -205,8 +210,8 @@ impl JavaCallbacks {
             ],
         )
         .ok()
-        .and_then(|value| value.z().ok())
-        .unwrap_or(false)
+        .and_then(|value| value.i().ok())
+        .unwrap_or(ACCELERATOR_HANDLED)
     }
 
     fn on_focus_gained(&self) {
@@ -216,11 +221,26 @@ impl JavaCallbacks {
         });
     }
 
-    fn on_before_mouse_focus(&self) {
+    fn on_focus_lost(&self) {
         self.with_env(|env, object| {
-            env.call_method(object, "onBeforeMouseFocus", "()V", &[])?;
+            env.call_method(object, "onFocusLost", "()V", &[])?;
             Ok(())
         });
+    }
+
+    fn on_move_focus_requested(&self, reason: jint) -> bool {
+        let Ok(mut env) = self.vm.attach_current_thread() else {
+            return false;
+        };
+        env.call_method(
+            self.object.as_obj(),
+            "onMoveFocusRequested",
+            "(I)Z",
+            &[JValue::Int(reason)],
+        )
+        .ok()
+        .and_then(|value| value.z().ok())
+        .unwrap_or(false)
     }
 
     #[allow(dead_code)]
@@ -497,6 +517,33 @@ thread_local! {
         RefCell::new(SharedWebView2EnvironmentManager::default());
 }
 
+type OwnerThreadAction = Box<dyn FnOnce(NativeHandle) -> BridgeResult<()> + Send + 'static>;
+
+struct OwnerThreadTask {
+    handle: jlong,
+    is_destroy: bool,
+    action: OwnerThreadAction,
+}
+
+struct OwnerThreadDispatcher {
+    wakeup_hwnd: AtomicIsize,
+    thread_id: u32,
+    hook: isize,
+    tasks: Mutex<HashMap<usize, OwnerThreadTask>>,
+    host_handles: Mutex<HashMap<isize, jlong>>,
+}
+
+struct HandleRouting {
+    dispatcher: Arc<OwnerThreadDispatcher>,
+    closing: bool,
+}
+
+static OWNER_THREAD_DISPATCHERS: OnceLock<Mutex<HashMap<u32, Arc<OwnerThreadDispatcher>>>> =
+    OnceLock::new();
+static HANDLE_ROUTING: OnceLock<Mutex<HashMap<jlong, HandleRouting>>> = OnceLock::new();
+static NEXT_OWNER_THREAD_TASK_ID: AtomicUsize = AtomicUsize::new(1);
+static OWNER_THREAD_MESSAGE: OnceLock<u32> = OnceLock::new();
+
 #[derive(Clone, Copy)]
 struct NavigationTiming {
     requested_at: Option<Instant>,
@@ -505,7 +552,6 @@ struct NavigationTiming {
 
 struct NativeWebView {
     handle: jlong,
-    parent: HWND,
     hwnd: HWND,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
@@ -522,10 +568,13 @@ struct NativeWebView {
     dev_tools_handlers: Vec<(u64, ICoreWebView2CallDevToolsProtocolMethodCompletedHandler)>,
     next_script_handler_id: u64,
     document_start_scripts: Vec<String>,
+    configuration_flags: u64,
     web_message_token: EventRegistrationToken,
     web_resource_requested_token: Option<EventRegistrationToken>,
     accelerator_key_pressed_token: Option<EventRegistrationToken>,
     got_focus_token: Option<EventRegistrationToken>,
+    lost_focus_token: Option<EventRegistrationToken>,
+    move_focus_requested_token: Option<EventRegistrationToken>,
     callbacks: Rc<JavaCallbacks>,
     destroyed: bool,
     visible: bool,
@@ -554,6 +603,18 @@ impl NativeWebView {
                 let _ = controller.remove_GotFocus(token);
             }
         }
+        if let (Some(controller), Some(token)) = (&self.controller, self.lost_focus_token.take()) {
+            unsafe {
+                let _ = controller.remove_LostFocus(token);
+            }
+        }
+        if let (Some(controller), Some(token)) =
+            (&self.controller, self.move_focus_requested_token.take())
+        {
+            unsafe {
+                let _ = controller.remove_MoveFocusRequested(token);
+            }
+        }
         if let (Some(webview), Some(token)) =
             (&self.webview, self.web_resource_requested_token.take())
         {
@@ -569,12 +630,340 @@ impl NativeWebView {
         self.add_script_handlers.clear();
         self.execute_script_handlers.clear();
         self.dev_tools_handlers.clear();
-        if !self.hwnd.0.is_null() {
-            unsafe {
-                let _ = DestroyWindow(self.hwnd);
+    }
+}
+
+fn owner_thread_dispatchers() -> &'static Mutex<HashMap<u32, Arc<OwnerThreadDispatcher>>> {
+    OWNER_THREAD_DISPATCHERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn handle_routing() -> &'static Mutex<HashMap<jlong, HandleRouting>> {
+    HANDLE_ROUTING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn owner_thread_message() -> u32 {
+    *OWNER_THREAD_MESSAGE.get_or_init(|| unsafe {
+        RegisterWindowMessageW(w!("JetBrains.WebView2.OwnerThreadTask.v1"))
+    })
+}
+
+fn dispatcher_for_host(hwnd: HWND) -> BridgeResult<Arc<OwnerThreadDispatcher>> {
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    if thread_id == 0 {
+        return Err("Failed to resolve the Canvas HWND owner thread".to_string());
+    }
+
+    let mut dispatchers = owner_thread_dispatchers()
+        .lock()
+        .map_err(|_| "WebView2 owner-thread dispatcher lock is poisoned".to_string())?;
+    if let Some(dispatcher) = dispatchers.get(&thread_id) {
+        // AWT can recreate a Canvas peer on the same owner thread. Keep the existing hook/queue,
+        // but wake it through the current live Canvas rather than the old, destroyed HWND.
+        dispatcher
+            .wakeup_hwnd
+            .store(hwnd.0 as isize, Ordering::Release);
+        return Ok(dispatcher.clone());
+    }
+
+    let module = unsafe { GetModuleHandleW(None).map_err(format_windows_error)? };
+    let hook = unsafe {
+        SetWindowsHookExW(
+            WH_GETMESSAGE,
+            Some(owner_thread_message_hook),
+            Some(module.into()),
+            thread_id,
+        )
+        .map_err(format_windows_error)?
+    };
+    let dispatcher = Arc::new(OwnerThreadDispatcher {
+        wakeup_hwnd: AtomicIsize::new(hwnd.0 as isize),
+        thread_id,
+        hook: hook.0 as isize,
+        tasks: Mutex::new(HashMap::new()),
+        host_handles: Mutex::new(HashMap::new()),
+    });
+    dispatchers.insert(thread_id, dispatcher.clone());
+    Ok(dispatcher)
+}
+
+fn register_handle_routing(
+    handle: jlong,
+    hwnd: HWND,
+    dispatcher: Arc<OwnerThreadDispatcher>,
+) -> BridgeResult<()> {
+    let mut routing = handle_routing()
+        .lock()
+        .map_err(|_| "WebView2 handle routing lock is poisoned".to_string())?;
+    routing.insert(
+        handle,
+        HandleRouting {
+            dispatcher: dispatcher.clone(),
+            closing: false,
+        },
+    );
+    drop(routing);
+    let mut host_handles = match dispatcher.host_handles.lock() {
+        Ok(host_handles) => host_handles,
+        Err(_) => {
+            if let Ok(mut routing) = handle_routing().lock() {
+                routing.remove(&handle);
             }
-            self.hwnd = HWND::default();
+            return Err("WebView2 host HWND routing lock is poisoned".to_string());
         }
+    };
+    host_handles.insert(hwnd.0 as isize, handle);
+    Ok(())
+}
+
+fn enqueue_owner_thread_task(handle: jlong, action: OwnerThreadAction) -> BridgeResult<()> {
+    let dispatcher = {
+        let routing = handle_routing()
+            .lock()
+            .map_err(|_| "WebView2 handle routing lock is poisoned".to_string())?;
+        let route = routing
+            .get(&handle)
+            .ok_or_else(|| "WebView2 native handle is not registered".to_string())?;
+        if route.closing {
+            return Err("WebView2 native handle is closing".to_string());
+        }
+        route.dispatcher.clone()
+    };
+
+    let task_id = NEXT_OWNER_THREAD_TASK_ID.fetch_add(1, Ordering::Relaxed);
+    dispatcher
+        .tasks
+        .lock()
+        .map_err(|_| "WebView2 owner-thread task queue lock is poisoned".to_string())?
+        .insert(
+            task_id,
+            OwnerThreadTask {
+                handle,
+                is_destroy: false,
+                action,
+            },
+        );
+    let posted = post_owner_thread_task(&dispatcher, task_id);
+    if posted.is_ok() {
+        return Ok(());
+    }
+
+    dispatcher
+        .tasks
+        .lock()
+        .map_err(|_| "WebView2 owner-thread task queue lock is poisoned".to_string())?
+        .remove(&task_id);
+    Err(format_windows_error(windows::core::Error::from_win32()))
+}
+
+fn enqueue_destroy_task(handle: jlong, action: OwnerThreadAction) -> BridgeResult<()> {
+    let dispatcher = {
+        let mut routing = handle_routing()
+            .lock()
+            .map_err(|_| "WebView2 handle routing lock is poisoned".to_string())?;
+        let route = routing
+            .get_mut(&handle)
+            .ok_or_else(|| "WebView2 native handle is not registered".to_string())?;
+        if route.closing {
+            return Ok(());
+        }
+        route.closing = true;
+        route.dispatcher.clone()
+    };
+
+    let task_id = NEXT_OWNER_THREAD_TASK_ID.fetch_add(1, Ordering::Relaxed);
+    dispatcher
+        .tasks
+        .lock()
+        .map_err(|_| "WebView2 owner-thread task queue lock is poisoned".to_string())?
+        .insert(
+            task_id,
+            OwnerThreadTask {
+                handle,
+                is_destroy: true,
+                action,
+            },
+        );
+    let posted = post_owner_thread_task(&dispatcher, task_id);
+    if posted.is_ok() {
+        return Ok(());
+    }
+
+    dispatcher
+        .tasks
+        .lock()
+        .map_err(|_| "WebView2 owner-thread task queue lock is poisoned".to_string())?
+        .remove(&task_id);
+    if let Ok(mut routing) = handle_routing().lock() {
+        if let Some(route) = routing.get_mut(&handle) {
+            route.closing = false;
+        }
+    }
+    Err(format_windows_error(windows::core::Error::from_win32()))
+}
+
+fn post_owner_thread_task(
+    dispatcher: &OwnerThreadDispatcher,
+    task_id: usize,
+) -> windows::core::Result<()> {
+    unsafe {
+        PostMessageW(
+            Some(HWND(
+                dispatcher.wakeup_hwnd.load(Ordering::Acquire) as *mut c_void
+            )),
+            owner_thread_message(),
+            WPARAM(task_id),
+            LPARAM(0),
+        )
+        // AWT can dispose the old peer before the controller schedules destroy. The owner
+        // thread's existing queue still wakes the same WH_GETMESSAGE hook in that case.
+        .or_else(|_| {
+            PostThreadMessageW(
+                dispatcher.thread_id,
+                owner_thread_message(),
+                WPARAM(task_id),
+                LPARAM(0),
+            )
+        })
+    }
+}
+
+fn unregister_handle_routing(handle: jlong) {
+    let dispatcher = handle_routing()
+        .lock()
+        .ok()
+        .and_then(|mut routing| routing.remove(&handle).map(|route| route.dispatcher));
+    let Some(dispatcher) = dispatcher else {
+        return;
+    };
+    if let Ok(mut host_handles) = dispatcher.host_handles.lock() {
+        host_handles.retain(|_, registered_handle| *registered_handle != handle);
+    }
+    let has_handles = handle_routing()
+        .lock()
+        .map(|routing| {
+            routing
+                .values()
+                .any(|route| Arc::ptr_eq(&route.dispatcher, &dispatcher))
+        })
+        .unwrap_or(true);
+    if has_handles {
+        return;
+    }
+    if let Ok(mut dispatchers) = owner_thread_dispatchers().lock() {
+        dispatchers.remove(&dispatcher.thread_id);
+    }
+    unsafe {
+        let _ = UnhookWindowsHookEx(HHOOK(dispatcher.hook as *mut c_void));
+    }
+}
+
+unsafe extern "system" fn owner_thread_message_hook(
+    code: i32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    if code >= 0 && w_param.0 as u32 == PM_REMOVE.0 && l_param.0 != 0 {
+        let message = &mut *(l_param.0 as *mut MSG);
+        forward_host_shift_message(message);
+        if message.message == owner_thread_message() {
+            let thread_id = GetCurrentThreadId();
+            let dispatcher = owner_thread_dispatchers()
+                .lock()
+                .ok()
+                .and_then(|dispatchers| dispatchers.get(&thread_id).cloned());
+            if let Some(dispatcher) = dispatcher {
+                execute_owner_thread_task(dispatcher, message.wParam.0);
+            }
+            message.message = WM_NULL;
+        }
+    }
+    CallNextHookEx(None, code, w_param, l_param)
+}
+
+fn forward_host_shift_message(message: &MSG) {
+    if !matches!(message.message, WM_KEYDOWN | WM_KEYUP) || message.wParam.0 != VK_SHIFT.0 as usize
+    {
+        return;
+    }
+    let dispatcher = owner_thread_dispatchers()
+        .try_lock()
+        .ok()
+        .and_then(|dispatchers| dispatchers.get(&unsafe { GetCurrentThreadId() }).cloned());
+    let Some(dispatcher) = dispatcher else {
+        return;
+    };
+    let registered_hosts = dispatcher.host_handles.try_lock().ok().map(|host_handles| {
+        host_handles
+            .iter()
+            .map(|(host_hwnd, handle)| (*host_hwnd, *handle))
+            .collect::<Vec<_>>()
+    });
+    let handle = registered_hosts.and_then(|registered_hosts| {
+        registered_hosts
+            .into_iter()
+            .find(|(host_hwnd, _)| {
+                *host_hwnd == message.hwnd.0 as isize
+                    || unsafe { IsChild(HWND(*host_hwnd as *mut c_void), message.hwnd).as_bool() }
+            })
+            .map(|(_, handle)| handle)
+    });
+    let Some(handle) = handle else {
+        return;
+    };
+    let Some(native) = clone_native_handle(handle) else {
+        return;
+    };
+    let callbacks = {
+        let view = native.borrow();
+        if view.destroyed {
+            return;
+        }
+        view.callbacks.clone()
+    };
+    callbacks.on_accelerator_key_pressed(
+        if message.message == WM_KEYDOWN { 0 } else { 1 },
+        VK_SHIFT.0 as jint,
+        current_modifier_flags(),
+        message.lParam.0 as jint,
+    );
+}
+
+fn execute_owner_thread_task(dispatcher: Arc<OwnerThreadDispatcher>, task_id: usize) {
+    let task = dispatcher
+        .tasks
+        .lock()
+        .ok()
+        .and_then(|mut tasks| tasks.remove(&task_id));
+    let Some(task) = task else {
+        return;
+    };
+    if !task.is_destroy
+        && !handle_routing()
+            .lock()
+            .map(|routing| routing.contains_key(&task.handle))
+            .unwrap_or(false)
+    {
+        return;
+    }
+    let native = clone_native_handle(task.handle);
+    let Some(native) = native else {
+        return;
+    };
+    let callbacks = native.borrow().callbacks.clone();
+    if let Err(message) = (task.action)(native) {
+        callbacks.on_log(DIAGNOSTIC_ERROR, message);
+    }
+}
+
+fn clone_native_handle(handle: jlong) -> Option<NativeHandle> {
+    if handle == 0 {
+        return None;
+    }
+    unsafe {
+        let native = Rc::from_raw(handle as *const RefCell<NativeWebView>);
+        let cloned = native.clone();
+        let _ = Rc::into_raw(native);
+        Some(cloned)
     }
 }
 
@@ -592,16 +981,18 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_createNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
-    parent_hwnd: jlong,
+    host_hwnd: jlong,
     user_data_dir: JString<'_>,
     document_start_script: JString<'_>,
+    configuration_flags: jlong,
     callbacks: JObject<'_>,
 ) -> jlong {
     match create_native(
         &mut env,
-        parent_hwnd,
+        host_hwnd,
         user_data_dir,
         document_start_script,
+        configuration_flags,
         callbacks,
     ) {
         Ok(handle) => handle,
@@ -614,60 +1005,22 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 
 #[no_mangle]
 pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_destroyNative(
-    _env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
 ) {
     if handle == 0 {
         return;
     }
-    unregister_shared_environment_view(handle);
-    unsafe {
-        let native = Rc::from_raw(handle as *const RefCell<NativeWebView>);
+    schedule_destroy(&mut env, handle, move |native| {
+        unregister_shared_environment_view(handle);
+        let callbacks = native.borrow().callbacks.clone();
         native.borrow_mut().destroy();
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_attachToParentNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-    parent_hwnd: jlong,
-) {
-    run_with_handle(&mut env, handle, |native| {
-        let parent = HWND(parent_hwnd as *mut c_void);
-        let mut view = native.borrow_mut();
-        view.parent = parent;
+        callbacks.on_destroyed(handle);
+        unregister_handle_routing(handle);
         unsafe {
-            if let Some(controller) = &view.controller {
-                controller
-                    .SetIsVisible(false)
-                    .map_err(format_windows_error)?;
-            }
-            let _ = ShowWindow(view.hwnd, SW_HIDE);
-            SetParent(view.hwnd, Some(parent)).map_err(format_windows_error)?;
+            drop(Rc::from_raw(handle as *const RefCell<NativeWebView>));
         }
-        Ok(())
-    });
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_detachFromParentNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-) {
-    run_with_handle(&mut env, handle, |native| {
-        let mut view = native.borrow_mut();
-        unsafe {
-            if let Some(controller) = &view.controller {
-                let _ = controller.SetIsVisible(false);
-            }
-            let _ = ShowWindow(view.hwnd, SW_HIDE);
-            let _ = SetParent(view.hwnd, None);
-        }
-        view.parent = HWND::default();
         Ok(())
     });
 }
@@ -683,7 +1036,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     height: jint,
     scale: jdouble,
 ) {
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let mut view = native.borrow_mut();
         view.x = x;
         view.y = y;
@@ -701,11 +1054,10 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     handle: jlong,
     visible: jboolean,
 ) {
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let mut view = native.borrow_mut();
         view.visible = visible != 0;
         unsafe {
-            let _ = ShowWindow(view.hwnd, if view.visible { SW_SHOW } else { SW_HIDE });
             if let Some(controller) = &view.controller {
                 controller
                     .SetIsVisible(view.visible)
@@ -722,30 +1074,14 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     _class: JClass<'_>,
     handle: jlong,
 ) {
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let view = native.borrow();
         unsafe {
-            let _ = SetFocus(Some(view.hwnd));
             if let Some(controller) = &view.controller {
                 controller
                     .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
                     .map_err(format_windows_error)?;
             }
-        }
-        Ok(())
-    });
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_clearFocusNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-) {
-    run_with_handle(&mut env, handle, |native| {
-        let view = native.borrow();
-        unsafe {
-            let _ = SetFocus(Some(view.parent));
         }
         Ok(())
     });
@@ -761,7 +1097,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     let Ok(url) = jstring_to_string(&mut env, url) else {
         return;
     };
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let webview = {
             let mut view = native.borrow_mut();
             view.last_navigation_requested_at = Some(Instant::now());
@@ -807,7 +1143,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
             return;
         }
     };
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let view = native.borrow();
         let webview = view
             .webview
@@ -828,7 +1164,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     let Ok(html) = jstring_to_string(&mut env, html) else {
         return;
     };
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let webview = {
             let mut view = native.borrow_mut();
             view.last_navigation_requested_at = Some(Instant::now());
@@ -863,7 +1199,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     let Ok(script) = jstring_to_string(&mut env, script) else {
         return;
     };
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let (webview, handler, handler_id) = {
             let mut view = native.borrow_mut();
             let webview = view
@@ -921,7 +1257,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
             return;
         }
     };
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let (webview, handler, handler_id) = {
             let mut view = native.borrow_mut();
             let webview = view
@@ -982,7 +1318,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
         /*language=JavaScript*/ "window.__WVI__ && window.__WVI__.__deliver({});",
         js_string_literal(&raw_json)
     );
-    run_with_handle(&mut env, handle, |native| {
+    schedule_with_handle(&mut env, handle, move |native| {
         let (webview, handler, handler_id) = {
             let mut view = native.borrow_mut();
             let webview = view
@@ -1009,157 +1345,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
     });
 }
 
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_currentThreadIdNative(
-    _env: JNIEnv<'_>,
-    _class: JClass<'_>,
-) -> jlong {
-    unsafe {
-        // Force creation of the message queue so that PostThreadMessageW from other
-        // threads cannot race with the queue's first use inside runMessageLoopNative.
-        let mut msg = MSG::default();
-        let _ = PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE);
-        GetCurrentThreadId() as jlong
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_runMessageLoopNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-) {
-    let mut msg = MSG::default();
-    unsafe {
-        loop {
-            let ret = GetMessageW(&mut msg, None, 0, 0).0;
-            if ret == 0 {
-                // WM_QUIT received; exit normally.
-                break;
-            }
-            if ret < 0 {
-                // System error in GetMessageW; the thread queue is broken.
-                report_dispatcher_error(
-                    &mut env,
-                    "WebView2 dispatcher: GetMessageW returned an error; exiting message loop",
-                );
-                break;
-            }
-            // Only thread-targeted messages (PostThreadMessageW) carry our task pointer.
-            // Window messages from WebView2/COM with msg.message == WM_USER_INVOKE must
-            // pass through to DispatchMessageW; reinterpreting their lParam as a Box
-            // would dereference a non-pointer value.
-            if msg.message == WM_USER_INVOKE && msg.hwnd.0.is_null() {
-                let task = Box::from_raw(msg.lParam.0 as *mut PostedTask);
-                let panic_result = {
-                    let env_ref = &mut env;
-                    std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        let _ = env_ref.call_method(task.runnable.as_obj(), "run", "()V", &[]);
-                    }))
-                };
-                report_task_exception_if_pending(&mut env);
-                if let Err(payload) = panic_result {
-                    let message = panic_payload_message(payload);
-                    report_dispatcher_error(
-                        &mut env,
-                        &format!("WebView2 dispatcher: Rust panic in task glue: {}", message),
-                    );
-                }
-                continue;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_postTaskNative(
-    env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    runnable: JObject<'_>,
-    target_tid: jlong,
-) {
-    if target_tid == 0 {
-        // Win32 would route the message to the calling thread which is never
-        // what we want. Drop the task instead of corrupting the caller's queue.
-        return;
-    }
-    let Ok(runnable) = env.new_global_ref(runnable) else {
-        return;
-    };
-    let task = Box::new(PostedTask { runnable });
-    let raw = Box::into_raw(task);
-    unsafe {
-        if PostThreadMessageW(
-            target_tid as u32,
-            WM_USER_INVOKE,
-            WPARAM(0),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            // Reclaim the box if posting failed so we do not leak the global ref.
-            drop(Box::from_raw(raw));
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_stopMessageLoopNative(
-    _env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    target_tid: jlong,
-) {
-    unsafe {
-        let _ = PostThreadMessageW(target_tid as u32, WM_QUIT, WPARAM(0), LPARAM(0));
-    }
-}
-
-struct PostedTask {
-    runnable: GlobalRef,
-}
-
-fn report_task_exception_if_pending(env: &mut JNIEnv<'_>) {
-    if !env.exception_check().unwrap_or(false) {
-        return;
-    }
-    let throwable = match env.exception_occurred() {
-        Ok(t) => t,
-        Err(_) => {
-            let _ = env.exception_clear();
-            return;
-        }
-    };
-    let _ = env.exception_clear();
-    let _ = env.call_static_method(
-        "com/intellij/ui/webview/impl/windows/WinWebView2Bridge",
-        "reportTaskException",
-        "(Ljava/lang/Throwable;)V",
-        &[(&throwable).into()],
-    );
-    // If the reporter itself threw, clear so we don't leak the pending exception
-    // back into the next iteration of the dispatcher loop.
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
-    }
-}
-
-fn report_dispatcher_error(env: &mut JNIEnv<'_>, message: &str) {
-    let java_message = match env.new_string(message) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let _ = env.call_static_method(
-        "com/intellij/ui/webview/impl/windows/WinWebView2Bridge",
-        "reportDispatcherError",
-        "(Ljava/lang/String;)V",
-        &[(&java_message).into()],
-    );
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
-    }
-}
-
+#[allow(dead_code)]
 fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         return (*s).to_owned();
@@ -1172,21 +1358,21 @@ fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 fn create_native(
     env: &mut JNIEnv<'_>,
-    parent_hwnd: jlong,
+    host_hwnd: jlong,
     user_data_dir: JString<'_>,
     document_start_script: JString<'_>,
+    configuration_flags: jlong,
     callbacks: JObject<'_>,
 ) -> BridgeResult<jlong> {
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
-    }
-
     let callbacks = Rc::new(JavaCallbacks {
         vm: env.get_java_vm().map_err(format_jni_error)?,
         object: env.new_global_ref(callbacks).map_err(format_jni_error)?,
     });
-    let parent = HWND(parent_hwnd as *mut c_void);
-    let hwnd = create_container_hwnd(parent, callbacks.clone())?;
+    if host_hwnd == 0 {
+        return Err("WebView2 host HWND must not be 0".to_string());
+    }
+    let hwnd = HWND(host_hwnd as *mut c_void);
+    let dispatcher = dispatcher_for_host(hwnd)?;
     let user_data_dir = jstring_to_string(env, user_data_dir)?;
     let document_start_script = jstring_to_string(env, document_start_script)?;
     let document_start_scripts = if document_start_script.is_empty() {
@@ -1197,7 +1383,6 @@ fn create_native(
 
     let native = Rc::new(RefCell::new(NativeWebView {
         handle: 0,
-        parent,
         hwnd,
         controller: None,
         webview: None,
@@ -1211,10 +1396,13 @@ fn create_native(
         dev_tools_handlers: Vec::new(),
         next_script_handler_id: 0,
         document_start_scripts,
+        configuration_flags: configuration_flags as u64,
         web_message_token: EventRegistrationToken::default(),
         web_resource_requested_token: None,
         accelerator_key_pressed_token: None,
         got_focus_token: None,
+        lost_focus_token: None,
+        move_focus_requested_token: None,
         callbacks,
         destroyed: false,
         visible: false,
@@ -1227,7 +1415,23 @@ fn create_native(
 
     let raw = Rc::into_raw(native.clone()) as jlong;
     native.borrow_mut().handle = raw;
-    if let Err(message) = ensure_shared_environment(native.clone(), user_data_dir) {
+    if let Err(message) = register_handle_routing(raw, hwnd, dispatcher) {
+        native.borrow_mut().destroy();
+        unsafe {
+            drop(Rc::from_raw(raw as *const RefCell<NativeWebView>));
+        }
+        return Err(message);
+    }
+    if let Err(message) = enqueue_owner_thread_task(
+        raw,
+        Box::new(move |native| {
+            if let Err(message) = initialize_native_on_owner(native.clone(), user_data_dir) {
+                fail_create(&native, message);
+            }
+            Ok(())
+        }),
+    ) {
+        unregister_handle_routing(raw);
         native.borrow_mut().destroy();
         unsafe {
             drop(Rc::from_raw(raw as *const RefCell<NativeWebView>));
@@ -1235,6 +1439,15 @@ fn create_native(
         return Err(message);
     }
     Ok(raw)
+}
+
+fn initialize_native_on_owner(native: NativeHandle, user_data_dir: String) -> BridgeResult<()> {
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(format_windows_error)?;
+    }
+    ensure_shared_environment(native, user_data_dir)
 }
 
 fn ensure_shared_environment(native: NativeHandle, user_data_dir: String) -> BridgeResult<()> {
@@ -1450,7 +1663,25 @@ fn begin_create_controller(
         view.controller_create_started_at = Some(Instant::now());
     }
     unsafe {
-        if let Err(error) = environment.CreateCoreWebView2Controller(hwnd, &handler) {
+        let environment10 = environment.cast::<ICoreWebView2Environment10>().map_err(|_| {
+            "WebView2 runtime does not support ICoreWebView2Environment10; controller host input processing is required".to_string()
+        })?;
+        let options = environment10
+            .CreateCoreWebView2ControllerOptions()
+            .map_err(format_windows_error)?;
+        let options4 = options.cast::<ICoreWebView2ControllerOptions4>().map_err(|_| {
+            "WebView2 runtime does not support ICoreWebView2ControllerOptions4; AllowHostInputProcessing is required".to_string()
+        })?;
+        let configuration_flags = native.borrow().configuration_flags;
+        options4
+            .SetAllowHostInputProcessing(configuration_enabled(
+                configuration_flags,
+                CONFIG_ALLOW_HOST_INPUT_PROCESSING,
+            ))
+            .map_err(format_windows_error)?;
+        if let Err(error) =
+            environment10.CreateCoreWebView2ControllerWithOptions(hwnd, &options, &handler)
+        {
             unregister_shared_environment_view(native_handle(&native));
             if let Ok(mut view) = native.try_borrow_mut() {
                 view.controller_create_started_at = None;
@@ -1479,7 +1710,10 @@ fn finish_create(
         &native,
         "perf.webview2.finish.settings",
         vec![("generation", generation.to_string())],
-        || configure_webview_application_settings(&webview),
+        || {
+            let configuration_flags = native.borrow().configuration_flags;
+            configure_webview_application_settings(&webview, configuration_flags)
+        },
     )?;
 
     let script_count = native
@@ -1519,9 +1753,23 @@ fn finish_create(
 
     let got_focus_token = measure_perf(
         &native,
-        "perf.webview2.finish.focus-handler",
+        "perf.webview2.finish.got-focus-handler",
         vec![("generation", generation.to_string())],
         || attach_got_focus_handler(&controller, native.clone()),
+    )?;
+
+    let lost_focus_token = measure_perf(
+        &native,
+        "perf.webview2.finish.lost-focus-handler",
+        vec![("generation", generation.to_string())],
+        || attach_lost_focus_handler(&controller, native.clone()),
+    )?;
+
+    let move_focus_requested_token = measure_perf(
+        &native,
+        "perf.webview2.finish.move-focus-requested-handler",
+        vec![("generation", generation.to_string())],
+        || attach_move_focus_requested_handler(&controller, native.clone()),
     )?;
 
     measure_perf(
@@ -1552,6 +1800,8 @@ fn finish_create(
         view.web_resource_requested_token = Some(web_resource_token);
         view.accelerator_key_pressed_token = Some(accelerator_token);
         view.got_focus_token = Some(got_focus_token);
+        view.lost_focus_token = Some(lost_focus_token);
+        view.move_focus_requested_token = Some(move_focus_requested_token);
         view.controller = Some(controller);
         view.webview = Some(webview);
         (
@@ -1575,7 +1825,6 @@ fn finish_create(
                 .SetIsVisible(visible)
                 .map_err(format_windows_error)?;
         }
-        let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
     }
 
     callbacks.on_created(handle);
@@ -1591,65 +1840,110 @@ fn finish_create(
     Ok(())
 }
 
-fn configure_webview_application_settings(webview: &ICoreWebView2) -> BridgeResult<()> {
+fn configure_webview_application_settings(
+    webview: &ICoreWebView2,
+    configuration_flags: u64,
+) -> BridgeResult<()> {
     let settings = unsafe { webview.Settings().map_err(format_windows_error)? };
     unsafe {
         settings
-            .SetIsScriptEnabled(true)
+            .SetIsScriptEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_IS_SCRIPT_ENABLED,
+            ))
             .map_err(format_windows_error)?;
         settings
-            .SetIsWebMessageEnabled(true)
+            .SetIsWebMessageEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_IS_WEB_MESSAGE_ENABLED,
+            ))
             .map_err(format_windows_error)?;
         settings
-            .SetAreDefaultScriptDialogsEnabled(false)
+            .SetAreDefaultScriptDialogsEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_ARE_DEFAULT_SCRIPT_DIALOGS_ENABLED,
+            ))
             .map_err(format_windows_error)?;
         settings
-            .SetIsStatusBarEnabled(false)
-            .map_err(format_windows_error)?;
-        // This blocks user entry points only; host code can still call OpenDevToolsWindow.
-        settings
-            .SetAreDevToolsEnabled(false)
-            .map_err(format_windows_error)?;
-        settings
-            .SetAreDefaultContextMenusEnabled(false)
+            .SetIsStatusBarEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_IS_STATUS_BAR_ENABLED,
+            ))
             .map_err(format_windows_error)?;
         settings
-            .SetAreHostObjectsAllowed(false)
+            .SetAreDevToolsEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_ARE_DEV_TOOLS_ENABLED,
+            ))
             .map_err(format_windows_error)?;
         settings
-            .SetIsZoomControlEnabled(false)
+            .SetAreDefaultContextMenusEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_ARE_DEFAULT_CONTEXT_MENUS_ENABLED,
+            ))
             .map_err(format_windows_error)?;
         settings
-            .SetIsBuiltInErrorPageEnabled(false)
+            .SetAreHostObjectsAllowed(configuration_enabled(
+                configuration_flags,
+                CONFIG_ARE_HOST_OBJECTS_ALLOWED,
+            ))
+            .map_err(format_windows_error)?;
+        settings
+            .SetIsZoomControlEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_IS_ZOOM_CONTROL_ENABLED,
+            ))
+            .map_err(format_windows_error)?;
+        settings
+            .SetIsBuiltInErrorPageEnabled(configuration_enabled(
+                configuration_flags,
+                CONFIG_IS_BUILT_IN_ERROR_PAGE_ENABLED,
+            ))
             .map_err(format_windows_error)?;
     }
 
     if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
         unsafe {
             settings3
-                .SetAreBrowserAcceleratorKeysEnabled(false)
+                .SetAreBrowserAcceleratorKeysEnabled(configuration_enabled(
+                    configuration_flags,
+                    CONFIG_ARE_BROWSER_ACCELERATOR_KEYS_ENABLED,
+                ))
                 .map_err(format_windows_error)?;
         }
     }
     if let Ok(settings4) = settings.cast::<ICoreWebView2Settings4>() {
         unsafe {
             settings4
-                .SetIsGeneralAutofillEnabled(false)
+                .SetIsGeneralAutofillEnabled(configuration_enabled(
+                    configuration_flags,
+                    CONFIG_IS_GENERAL_AUTOFILL_ENABLED,
+                ))
                 .map_err(format_windows_error)?;
             settings4
-                .SetIsPasswordAutosaveEnabled(false)
+                .SetIsPasswordAutosaveEnabled(configuration_enabled(
+                    configuration_flags,
+                    CONFIG_IS_PASSWORD_AUTOSAVE_ENABLED,
+                ))
                 .map_err(format_windows_error)?;
         }
     }
     if let Ok(settings6) = settings.cast::<ICoreWebView2Settings6>() {
         unsafe {
             settings6
-                .SetIsSwipeNavigationEnabled(false)
+                .SetIsSwipeNavigationEnabled(configuration_enabled(
+                    configuration_flags,
+                    CONFIG_IS_SWIPE_NAVIGATION_ENABLED,
+                ))
                 .map_err(format_windows_error)?;
         }
     }
 
     Ok(())
+}
+
+fn configuration_enabled(configuration_flags: u64, flag: u64) -> bool {
+    configuration_flags & flag != 0
 }
 
 fn emit_diagnostic(native: &NativeHandle, level: jint, event: &str, message: String, data: String) {
@@ -2602,7 +2896,7 @@ fn attach_accelerator_key_handler(
                     let mut key_event_lparam = 0;
                     args.KeyEventLParam(&mut key_event_lparam)?;
 
-                    let handled = native
+                    let result = native
                         .try_borrow()
                         .map(|view| {
                             view.callbacks.on_accelerator_key_pressed(
@@ -2612,17 +2906,12 @@ fn attach_accelerator_key_handler(
                                 key_event_lparam,
                             )
                         })
-                        .unwrap_or(false);
-                    let handled = handled
-                        || forward_system_key_to_awt_root_window_if_unhandled(
-                            &native,
-                            key_event_kind.0,
-                            virtual_key,
-                            key_event_lparam,
-                        );
-                    if handled {
-                        args.SetHandled(true)?;
-                    }
+                        .unwrap_or(0);
+                    let args2 = args.cast::<ICoreWebView2AcceleratorKeyPressedEventArgs2>()?;
+                    args2.SetIsBrowserAcceleratorKeyEnabled(
+                        result & ACCELERATOR_BROWSER_ENABLED != 0,
+                    )?;
+                    args.SetHandled(result & ACCELERATOR_HANDLED != 0)?;
                     Ok(())
                 })),
                 &mut token,
@@ -2630,6 +2919,25 @@ fn attach_accelerator_key_handler(
             .map_err(format_windows_error)?;
     }
     Ok(token)
+}
+
+fn current_modifier_flags() -> jint {
+    let mut modifiers = 0;
+    unsafe {
+        if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+            modifiers |= 1;
+        }
+        if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+            modifiers |= 1 << 1;
+        }
+        if GetKeyState(VK_MENU.0 as i32) < 0 {
+            modifiers |= 1 << 2;
+        }
+        if GetKeyState(VK_LWIN.0 as i32) < 0 || GetKeyState(VK_RWIN.0 as i32) < 0 {
+            modifiers |= 1 << 3;
+        }
+    }
+    modifiers
 }
 
 fn attach_got_focus_handler(
@@ -2653,6 +2961,57 @@ fn attach_got_focus_handler(
     Ok(token)
 }
 
+fn attach_lost_focus_handler(
+    controller: &ICoreWebView2Controller,
+    native: NativeHandle,
+) -> BridgeResult<EventRegistrationToken> {
+    let mut token = EventRegistrationToken::default();
+    unsafe {
+        controller
+            .add_LostFocus(
+                &FocusChangedEventHandler::create(Box::new(move |_, _| {
+                    if let Ok(view) = native.try_borrow() {
+                        view.callbacks.on_focus_lost();
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(format_windows_error)?;
+    }
+    Ok(token)
+}
+
+fn attach_move_focus_requested_handler(
+    controller: &ICoreWebView2Controller,
+    native: NativeHandle,
+) -> BridgeResult<EventRegistrationToken> {
+    let mut token = EventRegistrationToken::default();
+    unsafe {
+        controller
+            .add_MoveFocusRequested(
+                &MoveFocusRequestedEventHandler::create(Box::new(move |_, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut reason = COREWEBVIEW2_MOVE_FOCUS_REASON::default();
+                    args.Reason(&mut reason)?;
+                    let handled = native
+                        .try_borrow()
+                        .map(|view| view.callbacks.on_move_focus_requested(reason.0))
+                        .unwrap_or(false);
+                    if handled {
+                        args.SetHandled(true)?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )
+            .map_err(format_windows_error)?;
+    }
+    Ok(token)
+}
+
 fn fail_create(native: &NativeHandle, message: String) {
     let callbacks = match native.try_borrow() {
         Ok(view) => view.callbacks.clone(),
@@ -2666,6 +3025,18 @@ fn fail_create(native: &NativeHandle, message: String) {
         view.destroy();
     }
     callbacks.on_create_failed(message);
+
+    let destroy_is_already_queued = handle_routing()
+        .lock()
+        .ok()
+        .and_then(|routing| routing.get(&handle).map(|route| route.closing))
+        .unwrap_or(false);
+    if handle != 0 && !destroy_is_already_queued {
+        unregister_handle_routing(handle);
+        unsafe {
+            drop(Rc::from_raw(handle as *const RefCell<NativeWebView>));
+        }
+    }
 }
 
 fn remove_execute_script_handler(native: &NativeHandle, handler_id: u64) {
@@ -2731,83 +3102,6 @@ fn remove_add_script_handler(native: &NativeHandle, handler_id: u64) {
     }
 }
 
-fn create_container_hwnd(parent: HWND, callbacks: Rc<JavaCallbacks>) -> BridgeResult<HWND> {
-    unsafe extern "system" fn window_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        if is_mouse_focus_message(msg, wparam) {
-            unsafe {
-                notify_before_mouse_focus(hwnd);
-            }
-        }
-        if msg == WM_SETFOCUS {
-            if let Ok(child) = GetWindow(hwnd, GW_CHILD) {
-                let _ = SetFocus(Some(child));
-            }
-        }
-        if msg == WM_USER_SHIFT_FALLBACK {
-            unsafe {
-                dispatch_pending_shift_event(hwnd, wparam.0);
-            }
-            return LRESULT(0);
-        }
-        let result = DefWindowProcW(hwnd, msg, wparam, lparam);
-        if msg == WM_NCDESTROY {
-            unsafe {
-                unregister_keyboard_interop_window(hwnd);
-                clear_container_callbacks(hwnd);
-            }
-        }
-        result
-    }
-
-    let class_name = w!("IJ_WEBVIEW2_BRIDGE");
-    let class = WNDCLASSEXW {
-        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(window_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: unsafe { HINSTANCE(GetModuleHandleW(PCWSTR::null()).unwrap_or_default().0) },
-        hIcon: HICON::default(),
-        hCursor: HCURSOR::default(),
-        hbrBackground: HBRUSH::default(),
-        lpszMenuName: PCWSTR::null(),
-        lpszClassName: class_name,
-        hIconSm: HICON::default(),
-    };
-    unsafe {
-        RegisterClassExW(&class);
-    }
-
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            class_name,
-            PCWSTR::null(),
-            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            None,
-            GetModuleHandleW(PCWSTR::null()).map(Into::into).ok(),
-            None,
-        )
-        .map_err(format_windows_error)?
-    };
-
-    unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::into_raw(callbacks) as isize);
-        register_keyboard_interop_window(hwnd);
-    }
-    Ok(hwnd)
-}
-
 fn apply_bounds(view: &NativeWebView) -> BridgeResult<()> {
     apply_bounds_values(
         view.hwnd,
@@ -2823,8 +3117,8 @@ fn apply_bounds(view: &NativeWebView) -> BridgeResult<()> {
 fn apply_bounds_values(
     hwnd: HWND,
     controller: Option<&ICoreWebView2Controller>,
-    x: i32,
-    y: i32,
+    _x: i32,
+    _y: i32,
     width: i32,
     height: i32,
     scale: f64,
@@ -2835,25 +3129,10 @@ fn apply_bounds_values(
 
     let width = width.max(0);
     let height = height.max(0);
-    let left = scale_to_i32(x, scale);
-    let top = scale_to_i32(y, scale);
-    let right = scale_to_i32(x.saturating_add(width), scale);
-    let bottom = scale_to_i32(y.saturating_add(height), scale);
-    let width = right.saturating_sub(left).max(0);
-    let height = bottom.saturating_sub(top).max(0);
+    let width = scale_to_i32(width, scale);
+    let height = scale_to_i32(height, scale);
 
     unsafe {
-        SetWindowPos(
-            hwnd,
-            None,
-            left,
-            top,
-            width,
-            height,
-            SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOZORDER,
-        )
-        .map_err(format_windows_error)?;
-
         if let Some(controller) = controller {
             controller
                 .SetBounds(RECT {
@@ -2871,9 +3150,9 @@ fn apply_bounds_values(
     Ok(())
 }
 
-fn run_with_handle<F>(env: &mut JNIEnv<'_>, handle: jlong, action: F)
+fn schedule_with_handle<F>(env: &mut JNIEnv<'_>, handle: jlong, action: F)
 where
-    F: FnOnce(NativeHandle) -> BridgeResult<()>,
+    F: FnOnce(NativeHandle) -> BridgeResult<()> + Send + 'static,
 {
     if handle == 0 {
         let _ = env.throw_new(
@@ -2883,307 +3162,21 @@ where
         return;
     }
 
-    let native = unsafe {
-        let native = Rc::from_raw(handle as *const RefCell<NativeWebView>);
-        let cloned = native.clone();
-        let _ = Rc::into_raw(native);
-        cloned
-    };
-
-    if let Err(message) = action(native) {
+    if let Err(message) = enqueue_owner_thread_task(handle, Box::new(action)) {
         let _ = env.throw_new("java/lang/IllegalStateException", message);
     }
 }
 
-fn current_modifier_flags() -> jint {
-    let mut flags = 0;
-    unsafe {
-        if is_key_down(VK_SHIFT) {
-            flags |= MODIFIER_SHIFT;
-        }
-        if is_key_down(VK_CONTROL) {
-            flags |= MODIFIER_CONTROL;
-        }
-        if is_key_down(VK_MENU) {
-            flags |= MODIFIER_ALT;
-        }
-        if is_key_down(VK_LWIN) || is_key_down(VK_RWIN) {
-            flags |= MODIFIER_META;
-        }
-    }
-    flags
-}
-
-unsafe fn is_key_down(virtual_key: VIRTUAL_KEY) -> bool {
-    (GetKeyState(virtual_key.0 as i32) as u16 & 0x8000) != 0
-}
-
-fn modifier_flags_for_shift_event(key_event_kind: jint) -> jint {
-    let mut flags = current_modifier_flags();
-    if key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN.0
-        || key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0
-    {
-        flags |= MODIFIER_SHIFT;
-    } else {
-        flags &= !MODIFIER_SHIFT;
-    }
-    flags
-}
-
-fn is_shift_key(virtual_key: jint) -> bool {
-    virtual_key == VK_SHIFT.0 as jint
-        || virtual_key == VK_LSHIFT.0 as jint
-        || virtual_key == VK_RSHIFT.0 as jint
-}
-
-fn forward_system_key_to_awt_root_window_if_unhandled(
-    native: &NativeHandle,
-    key_event_kind: jint,
-    virtual_key: u32,
-    key_event_lparam: i32,
-) -> bool {
-    let Some(message) = system_key_message_from_event_kind(key_event_kind) else {
-        return false;
-    };
-    let Ok(view) = native.try_borrow() else {
-        return false;
-    };
-    unsafe {
-        forward_system_key_to_awt_root_window(
-            view.hwnd,
-            message,
-            WPARAM(virtual_key as usize),
-            LPARAM(key_event_lparam as isize),
-        )
-    }
-}
-
-unsafe fn forward_system_key_to_awt_root_window(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> bool {
-    // Kotlin gets the first chance to claim SYSTEM_KEY_* as an IDE shortcut. Unclaimed system keys
-    // are posted here with their original native MSG payload so AWT/JBR can run Windows-level
-    // handling such as Alt+F4 close through the peer/DefWindowProc path.
-    let root = GetAncestor(hwnd, GA_ROOT);
-    if !is_system_key_message(message) {
-        return false;
-    }
-    !root.0.is_null() && PostMessageW(Some(root), message, wparam, lparam).is_ok()
-}
-
-fn is_system_key_message(message: u32) -> bool {
-    matches!(message, WM_SYSKEYDOWN | WM_SYSKEYUP)
-}
-
-fn system_key_message_from_event_kind(key_event_kind: jint) -> Option<u32> {
-    match key_event_kind {
-        kind if kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0 => Some(WM_SYSKEYDOWN),
-        kind if kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP.0 => Some(WM_SYSKEYUP),
-        _ => None,
-    }
-}
-
-unsafe fn register_keyboard_interop_window(hwnd: HWND) {
-    KEYBOARD_INTEROP_WINDOWS.with(|windows| {
-        let mut windows = windows.borrow_mut();
-        if !windows.contains(&hwnd) {
-            windows.push(hwnd);
-        }
-    });
-    KEYBOARD_INTEROP_HOOK.with(|hook| {
-        let mut hook = hook.borrow_mut();
-        if hook.is_none() {
-            if let Ok(installed_hook) =
-                SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_interop_proc), None, 0)
-            {
-                *hook = Some(installed_hook);
-            }
-        }
-    });
-}
-
-unsafe fn unregister_keyboard_interop_window(hwnd: HWND) {
-    KEYBOARD_INTEROP_WINDOWS.with(|windows| {
-        let mut windows = windows.borrow_mut();
-        windows.retain(|registered_hwnd| *registered_hwnd != hwnd);
-        if windows.is_empty() {
-            KEYBOARD_INTEROP_HOOK.with(|hook| {
-                if let Some(installed_hook) = hook.borrow_mut().take() {
-                    let _ = UnhookWindowsHookEx(installed_hook);
-                }
-            });
-        }
-    });
-    SHIFT_FALLBACK_EVENTS.with(|events| {
-        events.borrow_mut().retain(|event| event.hwnd != hwnd);
-    });
-    SHIFT_FALLBACK_ACTIVE_WINDOWS.with(|windows| {
-        windows
-            .borrow_mut()
-            .retain(|_, active_hwnd| *active_hwnd != hwnd);
-    });
-}
-
-unsafe extern "system" fn keyboard_interop_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if code >= 0 {
-        let keyboard_event = *(lparam.0 as *const KBDLLHOOKSTRUCT);
-        handle_keyboard_interop_event(wparam.0 as u32, keyboard_event);
-    }
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-unsafe fn handle_keyboard_interop_event(message: u32, keyboard_event: KBDLLHOOKSTRUCT) {
-    if !is_key_down_or_up_message(message) {
+fn schedule_destroy<F>(env: &mut JNIEnv<'_>, handle: jlong, action: F)
+where
+    F: FnOnce(NativeHandle) -> BridgeResult<()> + Send + 'static,
+{
+    if handle == 0 {
         return;
     }
-
-    schedule_shift_fallback_if_needed(message, keyboard_event);
-}
-
-unsafe fn schedule_shift_fallback_if_needed(message: u32, keyboard_event: KBDLLHOOKSTRUCT) {
-    let virtual_key = keyboard_event.vkCode as jint;
-    if !is_shift_key(virtual_key) {
-        return;
+    if let Err(message) = enqueue_destroy_task(handle, Box::new(action)) {
+        let _ = env.throw_new("java/lang/IllegalStateException", message);
     }
-
-    let key_event_kind = key_event_kind_from_message(message);
-    // WebView2 AcceleratorKeyPressed does not report bare Shift transitions, but the IDE gesture
-    // handler needs them for double-Shift. Pair key-up with the key-down HWND because the second
-    // Shift press can open an IDE popup and move focus before the physical key-up arrives.
-    let Some(hwnd) = shift_fallback_target_window(virtual_key, key_event_kind) else {
-        return;
-    };
-
-    let id = NEXT_SHIFT_FALLBACK_EVENT_ID.with(|next_id| {
-        let id = next_id.get();
-        next_id.set(id.wrapping_add(1).max(1));
-        id
-    });
-    let event = PendingShiftEvent {
-        id,
-        hwnd,
-        key_event_kind,
-        virtual_key,
-        modifiers: modifier_flags_for_shift_event(key_event_kind),
-        key_event_lparam: key_event_lparam_from_low_level_keyboard_event(&keyboard_event),
-    };
-    SHIFT_FALLBACK_EVENTS.with(|events| {
-        events.borrow_mut().push_back(event);
-    });
-    let _ = PostMessageW(Some(hwnd), WM_USER_SHIFT_FALLBACK, WPARAM(id), LPARAM(0));
-}
-
-unsafe fn shift_fallback_target_window(virtual_key: jint, key_event_kind: jint) -> Option<HWND> {
-    let active_key = shift_fallback_active_key(virtual_key);
-    if is_key_down_event_kind(key_event_kind) {
-        let hwnd = focused_keyboard_interop_window()?;
-        SHIFT_FALLBACK_ACTIVE_WINDOWS.with(|windows| {
-            windows.borrow_mut().insert(active_key, hwnd);
-        });
-        return Some(hwnd);
-    }
-
-    let stored_hwnd =
-        SHIFT_FALLBACK_ACTIVE_WINDOWS.with(|windows| windows.borrow_mut().remove(&active_key));
-    stored_hwnd.or_else(|| focused_keyboard_interop_window())
-}
-
-fn shift_fallback_active_key(_virtual_key: jint) -> jint {
-    VK_SHIFT.0 as jint
-}
-
-unsafe fn focused_keyboard_interop_window() -> Option<HWND> {
-    let foreground = GetForegroundWindow();
-    if foreground.0.is_null() {
-        return None;
-    }
-    let foreground_thread_id = GetWindowThreadProcessId(foreground, None);
-    let mut gui_thread_info = GUITHREADINFO {
-        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    if GetGUIThreadInfo(foreground_thread_id, &mut gui_thread_info).is_err() {
-        return None;
-    }
-
-    let focus = gui_thread_info.hwndFocus;
-    if focus.0.is_null() {
-        return None;
-    }
-    KEYBOARD_INTEROP_WINDOWS.with(|windows| {
-        windows
-            .borrow()
-            .iter()
-            .copied()
-            .find(|hwnd| *hwnd == focus || IsChild(*hwnd, focus).as_bool())
-    })
-}
-
-fn is_key_down_or_up_message(message: u32) -> bool {
-    matches!(message, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP)
-}
-
-fn is_key_down_event_kind(key_event_kind: jint) -> bool {
-    key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN.0
-        || key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0
-}
-
-fn key_event_kind_from_message(message: u32) -> jint {
-    match message {
-        WM_SYSKEYDOWN => COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0,
-        WM_SYSKEYUP => COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP.0,
-        WM_KEYUP => COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP.0,
-        _ => COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN.0,
-    }
-}
-
-fn key_event_lparam_from_low_level_keyboard_event(event: &KBDLLHOOKSTRUCT) -> jint {
-    let mut lparam = 1 | ((event.scanCode as i32) << 16);
-    if event.flags.contains(LLKHF_EXTENDED) {
-        lparam |= 1 << 24;
-    }
-    if event.flags.contains(LLKHF_ALTDOWN) {
-        lparam |= 1 << 29;
-    }
-    if event.flags.contains(LLKHF_UP) {
-        lparam |= 1 << 30;
-        lparam |= i32::MIN;
-    }
-    lparam
-}
-
-unsafe fn dispatch_pending_shift_event(hwnd: HWND, id: usize) {
-    let event = SHIFT_FALLBACK_EVENTS.with(|events| {
-        let mut events = events.borrow_mut();
-        events
-            .iter()
-            .position(|event| event.id == id)
-            .and_then(|index| events.remove(index))
-    });
-    let Some(event) = event else {
-        return;
-    };
-    if event.hwnd != hwnd {
-        return;
-    }
-
-    let callbacks_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const JavaCallbacks;
-    if callbacks_ptr.is_null() {
-        return;
-    }
-    (*callbacks_ptr).on_accelerator_key_pressed(
-        event.key_event_kind,
-        event.virtual_key,
-        event.modifiers,
-        event.key_event_lparam,
-    );
 }
 
 fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> BridgeResult<String> {
@@ -3329,36 +3322,6 @@ where
     let mut value = COREWEBVIEW2_PERMISSION_KIND::default();
     read(&mut value).ok()?;
     Some(value)
-}
-
-fn is_mouse_focus_message(msg: u32, wparam: WPARAM) -> bool {
-    match msg {
-        WM_MOUSEACTIVATE | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-            true
-        }
-        WM_PARENTNOTIFY => matches!(
-            (wparam.0 & 0xffff) as u32,
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
-        ),
-        _ => false,
-    }
-}
-
-unsafe fn notify_before_mouse_focus(hwnd: HWND) {
-    let callbacks_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const JavaCallbacks;
-    if callbacks_ptr.is_null() {
-        return;
-    }
-    (*callbacks_ptr).on_before_mouse_focus();
-}
-
-unsafe fn clear_container_callbacks(hwnd: HWND) {
-    let callbacks_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const JavaCallbacks;
-    if callbacks_ptr.is_null() {
-        return;
-    }
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-    drop(Rc::from_raw(callbacks_ptr));
 }
 
 fn diagnostic_data(pairs: Vec<(&str, String)>) -> String {

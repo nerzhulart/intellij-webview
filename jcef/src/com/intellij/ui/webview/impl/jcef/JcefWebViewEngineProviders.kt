@@ -2,13 +2,14 @@
 package com.intellij.ui.webview.impl.jcef
 
 import com.intellij.openapi.util.SystemInfo
-import com.intellij.ui.webview.impl.WebViewEngineBridge
 import com.intellij.ui.webview.impl.engine.WebViewEngineAvailability
 import com.intellij.ui.webview.impl.engine.WebViewEngineCapabilities
 import com.intellij.ui.webview.impl.engine.WebViewEngineCreationOptions
 import com.intellij.ui.webview.impl.engine.WebViewEngineId
 import com.intellij.ui.webview.impl.engine.WebViewEngineKind
 import com.intellij.ui.webview.impl.engine.WebViewEngineProvider
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import kotlinx.coroutines.CoroutineScope
 
 internal class JcefEngineProvider : WebViewEngineProvider {
@@ -25,8 +26,8 @@ internal class JcefEngineProvider : WebViewEngineProvider {
 
   override fun availabilityBlocking(): WebViewEngineAvailability = JcefWebViewRuntime.availabilityBlocking()
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
-    return createJcefWebViewEngine(parentScope = scope, documentStartScripts = options.documentStartScripts)
+  override fun createController(scope: CoroutineScope, options: WebViewEngineCreationOptions, hostEventSink: WebViewHostEventSink): WebViewController {
+    return createJcefWebViewController(parentScope = scope, documentStartScripts = options.documentStartScripts)
   }
 }
 

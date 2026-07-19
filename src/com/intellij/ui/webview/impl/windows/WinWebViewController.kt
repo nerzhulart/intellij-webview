@@ -7,7 +7,6 @@ import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.ui.webview.api.WebViewAssetPath
 import com.intellij.ui.webview.api.WebViewAssetRoot
-import com.intellij.ui.webview.impl.WebViewEngineBridge
 import com.intellij.ui.webview.impl.WebViewAssetResolver
 import com.intellij.ui.webview.impl.WebViewAssetResponse
 import com.intellij.ui.webview.impl.WEBVIEW_CONSOLE_NOTIFICATION_METHOD
@@ -15,13 +14,20 @@ import com.intellij.ui.webview.impl.resolveWebViewAssetUrl
 import com.intellij.ui.webview.impl.webViewAssetCustomSchemeUrl
 import com.intellij.ui.webview.impl.webViewAssetHttpsUrl
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewEditCommand
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewHostEvent
+import com.intellij.ui.webview.impl.WebViewHostEventSink
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
+import com.intellij.ui.webview.impl.engine.WebViewFocusDirection
 import com.intellij.ui.webview.impl.engine.WebViewScript
 import com.intellij.ui.webview.impl.traceWebViewPerf
 import com.intellij.ui.webview.impl.traceWebViewPerfSince
 import com.intellij.ui.webview.impl.webViewLifecycle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,7 +39,11 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.annotations.ApiStatus
+import java.awt.Canvas
 import java.awt.Component
+import java.awt.Toolkit
+import java.awt.Rectangle
+import java.awt.event.KeyEvent
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -42,28 +52,34 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.coroutines.EmptyCoroutineContext
+import javax.swing.SwingUtilities
 import kotlin.coroutines.resume
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
-private val LOG = logger<WinWebViewEngine>()
+private val LOG = logger<WinWebViewController>()
 
 @ApiStatus.Internal
-internal class WinWebViewEngine(
+internal class WinWebViewController(
   parentScope: CoroutineScope,
   private val bridge: WinWebView2BridgeApi = NativeWinWebView2BridgeApi,
+  private val webView2Configuration: WinWebView2Configuration = WinWebView2Configuration(),
   private val debugName: String? = null,
   documentStartScripts: List<WebViewScript> = emptyList(),
-  private val webViewDispatcher: CoroutineDispatcher = WebView2Dispatcher.coroutineDispatcher,
-  private val devToolsCpuProfilingEnabled: () -> Boolean = { Registry.get(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY).asBoolean() },
-  private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
-) : WebViewEngineBridge {
-  override val isHeavyweight: Boolean = true
+  postNavigationScripts: List<WebViewScript> = emptyList(),
+  private val hostEventSink: WebViewHostEventSink,
+  private val devToolsCpuProfilingEnabled: () -> Boolean = { registryBoolean(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY, default = false) },
+  private val customSchemeAssetLoadingEnabled: () -> Boolean = { registryBoolean(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY, default = true) },
+) : WebViewController {
+  override val component: Component = Canvas().apply {
+    isFocusable = true
+  }
+
+  override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.BYPASS_IDE_DISPATCHER
+
+  private val awtEventQueue = Toolkit.getDefaultToolkit().systemEventQueue
 
   private enum class State { New, Creating, Active, Closing, Closed }
-
-  private enum class FocusOp { Focus, Clear }
 
   private sealed interface PendingLoad {
     data class Url(val url: String) : PendingLoad
@@ -95,6 +111,7 @@ internal class WinWebViewEngine(
   private val activeAssetResolver = AtomicReference<WebViewAssetResolver?>(null)
   private val recoveryAttempts = ArrayDeque<Long>()
   private val documentStartScript = documentStartScripts.joinToString("\n;\n") { it.script }
+  private val postNavigationScript = postNavigationScripts.joinToString("\n;\n") { it.script }
   private val nativeCreateStartedAt = AtomicReference<TimeMark?>(null)
   private val firstLoadRequestedAt = AtomicReference<TimeMark?>(null)
   private val firstLoadApplied = AtomicBoolean(false)
@@ -125,22 +142,17 @@ internal class WinWebViewEngine(
   private var lastBounds: PendingBounds? = null
 
   private val visibilityScheduled = AtomicBoolean(false)
-  private val pendingFocusOp = AtomicReference<FocusOp?>(null)
   private val focusScheduled = AtomicBoolean(false)
-  private val pendingAttachParent = AtomicLong(0)
-  private val attachScheduled = AtomicBoolean(false)
+  private val pendingHostHwnd = AtomicLong(0)
+  private val hostRecreateScheduled = AtomicBoolean(false)
+  private val hostHwndCreateRetryScheduled = AtomicBoolean(false)
+
+  /** Accessed only from [invokeOnWebView]. A replacement controller must not be created before native destroy confirms. */
+  private var recreateAfterDestroy = false
+  private var hostHwndCreateRetryCount = 0
 
   @Volatile
-  private var currentParentHwnd: Long = 0
-
-  @Volatile
-  private var shortcutTarget: Component? = null
-
-  @Volatile
-  private var focusGainedHandler: () -> Unit = {}
-
-  @Volatile
-  private var beforeMouseFocusHandler: () -> Unit = {}
+  private var currentHostHwnd: Long = 0
 
   @Volatile
   private var hidden = false
@@ -149,34 +161,72 @@ internal class WinWebViewEngine(
 
   private val callbacks = object : WinWebView2Bridge.Callbacks {
     override fun onCreated(handle: Long) {
-      if (state.get() != State.Creating || (nativeHandle != 0L && nativeHandle != handle)) {
-        bridge.destroy(handle)
-        return
-      }
+      invokeOnWebView {
+        if (state.get() != State.Creating || (nativeHandle != 0L && nativeHandle != handle)) {
+          bridge.destroy(handle)
+          return@invokeOnWebView
+        }
 
-      nativeHandle = handle
-      state.set(State.Active)
-      consecutiveRenderUnresponsiveCount = 0
-      handleReady.get().complete(handle)
-      nativeCreateStartedAt.getAndSet(null)?.let { startedAt ->
-        LOG.traceWebViewPerfSince("win-webview2.create.untilReady", startedAt, diagnosticDetails())
+        nativeHandle = handle
+        state.set(State.Active)
+        hostHwndCreateRetryCount = 0
+        consecutiveRenderUnresponsiveCount = 0
+        handleReady.get().complete(handle)
+        nativeCreateStartedAt.getAndSet(null)?.let { startedAt ->
+          LOG.traceWebViewPerfSince("win-webview2.create.untilReady", startedAt, diagnosticDetails())
+        }
+        startDevToolsCpuProfileIfNeeded(handle)
+        applyPendingState(handle)
+        LOG.webViewLifecycle("win-webview2-create", "WebView2 ready${diagnosticContext()}")
       }
-      startDevToolsCpuProfileIfNeeded(handle)
-      applyPendingState(handle)
-      LOG.webViewLifecycle("win-webview2-create", "WebView2 ready${diagnosticContext()}")
     }
 
     override fun onCreateFailed(message: String) {
-      state.set(State.Closed)
-      handleReady.get().completeExceptionally(IllegalStateException(message))
-      cancelPendingEvaluations()
-      clearActiveAssetResolver()
-      LOG.error("Failed to initialize WebView2${messageWithContext(message)}")
+      invokeOnWebView {
+        nativeHandle = 0
+        state.set(State.Closed)
+        handleReady.get().completeExceptionally(IllegalStateException(message))
+        cancelPendingEvaluations()
+        clearActiveAssetResolver()
+        scope.cancel()
+        LOG.error("Failed to initialize WebView2${messageWithContext(message)}")
+      }
+    }
+
+    override fun onDestroyed(handle: Long) {
+      invokeOnWebView {
+        if (nativeHandle != handle) return@invokeOnWebView
+
+        nativeHandle = 0
+        replayStateAfterDestroy()
+        if (state.get() != State.Closing) return@invokeOnWebView
+
+        if (recreateAfterDestroy && currentHostHwnd != 0L) {
+          recreateAfterDestroy = false
+          state.set(State.New)
+          pendingHostHwnd.set(currentHostHwnd)
+          if (state.compareAndSet(State.New, State.Creating)) {
+            performCreate()
+          }
+        }
+        else {
+          recreateAfterDestroy = false
+          val detached = currentHostHwnd == 0L
+          state.set(if (detached) State.New else State.Closed)
+          if (!detached) {
+            handleReady.get().cancel(CancellationException("WebView2 controller was destroyed"))
+            scope.cancel()
+          }
+          LOG.webViewLifecycle("win-webview2-destroy", "native cleanup confirmed")
+        }
+      }
     }
 
     override fun onMessage(raw: String) {
-      recordConsoleStartupFrame(raw)
-      inboundMessageHandler(raw)
+      invokeOnWebView {
+        recordConsoleStartupFrame(raw)
+        inboundMessageHandler(raw)
+      }
     }
 
     override fun onEvaluationResult(evalId: Long, result: String?) {
@@ -192,16 +242,31 @@ internal class WinWebViewEngine(
       pendingDevToolsCalls.remove(callId)?.invoke(result, error)
     }
 
-    override fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Boolean {
-      return WinWebViewShortcutInterop.handleAcceleratorKeyPressed(shortcutTarget, keyEventKind, virtualKey, modifiers, keyEventLParam)
-    }
-
-    override fun onBeforeMouseFocus() {
-      beforeMouseFocusHandler()
+    override fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Int {
+      return WinWebViewShortcutInterop.handleAccelerator(
+        target = component,
+        eventQueue = awtEventQueue,
+        keyEventKind = keyEventKind,
+        virtualKey = virtualKey,
+        modifiers = modifiers,
+        keyEventLParam = keyEventLParam,
+      )
     }
 
     override fun onFocusGained() {
-      focusGainedHandler()
+      invokeOnWebView {
+        hostEventSink.handle(WebViewHostEvent.NativeFocusGained)
+      }
+    }
+
+    override fun onFocusLost() {
+    }
+
+    override fun onMoveFocusRequested(reason: Int): Boolean {
+      invokeOnWebView {
+        hostEventSink.handle(WebViewHostEvent.MoveFocusRequested(reason.toWebViewFocusDirection()))
+      }
+      return true
     }
 
     override fun onLog(level: Int, message: String) {
@@ -213,9 +278,12 @@ internal class WinWebViewEngine(
     }
 
     override fun onNativeDiagnostic(level: Int, event: String, message: String, data: String) {
-      if (event == NATIVE_EVENT_NAVIGATION_COMPLETED && firstNavigationCompleted.compareAndSet(false, true)) {
-        logConsoleStartupSummary(event, force = true)
-        scheduleDevToolsCpuProfileStopAfterFirstNavigation()
+      if (event == NATIVE_EVENT_NAVIGATION_COMPLETED) {
+        injectPostNavigationScripts()
+        if (firstNavigationCompleted.compareAndSet(false, true)) {
+          logConsoleStartupSummary(event, force = true)
+          scheduleDevToolsCpuProfileStopAfterFirstNavigation()
+        }
       }
       logNativeDiagnostic(level, event, message, data)
       when (event) {
@@ -238,28 +306,62 @@ internal class WinWebViewEngine(
     inboundMessageHandler = receiver::transferFromJs
   }
 
-  internal fun attachToParent(parentHwnd: Long) {
-    currentParentHwnd = parentHwnd
-    pendingAttachParent.set(parentHwnd)
+  override fun applyLayout(params: WebViewHostLayoutParams) {
+    if (!params.displayable) {
+      setHidden(true)
+      destroyForMissingHost()
+      return
+    }
+
+    val hostHwnd = WindowsHwndUtil.resolveComponentHwnd(component) ?: run {
+      setHidden(true)
+      return
+    }
+    val bounds = PendingBounds(0, 0, component.width.coerceAtLeast(0), component.height.coerceAtLeast(0), params.scale)
+    if (hostHwnd != currentHostHwnd) {
+      recreateOnHost(hostHwnd, bounds.x, bounds.y, bounds.width, bounds.height, bounds.scale)
+    }
+    else if (bounds != lastBounds) {
+      setBounds(bounds.x, bounds.y, bounds.width, bounds.height, bounds.scale)
+    }
+    setHidden(!params.showing || params.clippedBoundsInWindow.isEmpty || bounds.width == 0 || bounds.height == 0)
+  }
+
+  override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    // AWT focus transfer away from the Canvas makes WebView2 emit LostFocus.
+  }
+
+  override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean = false
+
+  internal fun recreateOnHost(hostHwnd: Long) {
+    check(hostHwnd != 0L) { "WebView2 host HWND must not be 0" }
+    val previousHostHwnd = currentHostHwnd
+    currentHostHwnd = hostHwnd
+    pendingHostHwnd.set(hostHwnd)
     if (state.compareAndSet(State.New, State.Creating)) {
       invokeOnWebView { performCreate() }
       return
     }
     val currentState = state.get()
-    if (currentState == State.Creating || currentState == State.Active) {
-      scheduleAttachApply()
+    if (currentState == State.Creating) {
+      if (previousHostHwnd != hostHwnd) {
+        scheduleHostRecreate()
+      }
+      return
+    }
+    if (currentState == State.Active) {
+      if (previousHostHwnd != hostHwnd) {
+        scheduleHostRecreate()
+      }
+      else {
+        scheduleBoundsApply()
+      }
     }
   }
 
-  internal fun attachToParent(parentHwnd: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
+  internal fun recreateOnHost(hostHwnd: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
     pendingBounds.set(PendingBounds(x, y, width, height, scale))
-    attachToParent(parentHwnd)
-  }
-
-  internal fun detachFromParent() {
-    val handle = nativeHandle
-    if (handle == 0L || state.get() == State.Closed) return
-    invokeOnWebView { bridge.detachFromParent(handle) }
+    recreateOnHost(hostHwnd)
   }
 
   internal fun setBounds(x: Int, y: Int, width: Int, height: Int, scale: Double) {
@@ -274,28 +376,9 @@ internal class WinWebViewEngine(
     scheduleVisibilityApply()
   }
 
-  internal fun requestFocus() {
+  override fun requestWebViewFocus() {
     if (state.get() != State.Active) return
-    pendingFocusOp.set(FocusOp.Focus)
     scheduleFocusApply()
-  }
-
-  internal fun clearFocus() {
-    if (state.get() != State.Active) return
-    pendingFocusOp.set(FocusOp.Clear)
-    scheduleFocusApply()
-  }
-
-  internal fun setShortcutTarget(target: Component?) {
-    shortcutTarget = target
-  }
-
-  internal fun setFocusGainedHandler(handler: (() -> Unit)?) {
-    focusGainedHandler = handler ?: {}
-  }
-
-  internal fun setBeforeMouseFocusHandler(handler: (() -> Unit)?) {
-    beforeMouseFocusHandler = handler ?: {}
   }
 
   override suspend fun loadFile(file: Path) {
@@ -341,6 +424,7 @@ internal class WinWebViewEngine(
     if (state.get() == State.New || state.get() == State.Closing || state.get() == State.Closed) return null
     val handle = awaitHandle() ?: return null
     if (state.get() != State.Active) return null
+    val scriptToEvaluate = script.withPostNavigationScripts()
 
     val evalId = nextEvalId.incrementAndGet()
     return suspendCancellableCoroutine { continuation ->
@@ -359,7 +443,7 @@ internal class WinWebViewEngine(
           pendingEvals.remove(evalId)?.invoke(null)
           return@invokeOnWebView
         }
-        bridge.evaluateJavaScript(handle, evalId, script)
+        bridge.evaluateJavaScript(handle, evalId, scriptToEvaluate)
       }
     }
   }
@@ -389,7 +473,7 @@ internal class WinWebViewEngine(
             scope.cancel()
             cancelPendingEvaluations()
             clearActiveAssetResolver()
-            handleReady.get().cancel(CancellationException("Engine closed before initialization"))
+            handleReady.get().cancel(CancellationException("Controller closed before initialization"))
             LOG.webViewLifecycle("win-webview2-close", "closed from New state")
             return
           }
@@ -408,20 +492,15 @@ internal class WinWebViewEngine(
     clearActiveAssetResolver()
 
     val handle = nativeHandle
-    nativeHandle = 0
     if (handle != 0L) {
       invokeOnWebView {
         bridge.destroy(handle)
-        handleReady.get().cancel(CancellationException("Engine closed"))
-        state.set(State.Closed)
-        LOG.webViewLifecycle("win-webview2-close", "native cleanup complete")
       }
     }
     else {
-      handleReady.get().cancel(CancellationException("Engine closed"))
+      handleReady.get().cancel(CancellationException("Controller closed"))
       state.set(State.Closed)
     }
-    scope.cancel()
   }
 
   private fun applyPendingState(handle: Long) {
@@ -442,17 +521,25 @@ internal class WinWebViewEngine(
   }
 
   private fun performCreate() {
-    val parent = pendingAttachParent.getAndSet(0)
-    if (parent == 0L || state.get() == State.Closed) return
+    val hostHwnd = pendingHostHwnd.getAndSet(0)
+    if (hostHwnd == 0L || state.get() == State.Closed) return
     try {
       LOG.webViewLifecycle("win-webview2-create", "initializing WebView2${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", diagnosticDetails()) {
-        bridge.create(parent, userDataDir().toString(), documentStartScript, callbacks)
+        bridge.create(hostHwnd, userDataDir().toString(), documentStartScript, webView2Configuration, callbacks)
       }
       applyAttachmentState(nativeHandle)
     }
     catch (t: Throwable) {
+      if (isTransientInvalidHostHwnd(t) && hostHwndCreateRetryCount < MAX_INVALID_HOST_HWND_RETRIES) {
+        hostHwndCreateRetryCount++
+        nativeHandle = 0
+        pendingHostHwnd.set(hostHwnd)
+        state.set(State.New)
+        scheduleHostHwndCreateRetry(hostHwnd)
+        return
+      }
       state.set(State.Closed)
       handleReady.get().completeExceptionally(t)
       cancelPendingEvaluations()
@@ -461,17 +548,70 @@ internal class WinWebViewEngine(
     }
   }
 
-  private fun scheduleAttachApply() {
-    if (!attachScheduled.compareAndSet(false, true)) return
+  /** AWT may expose an old peer briefly during addNotify; retry from the next EDT turn with the current Canvas HWND. */
+  private fun scheduleHostHwndCreateRetry(hostHwnd: Long) {
+    if (!hostHwndCreateRetryScheduled.compareAndSet(false, true)) return
     invokeOnWebView {
-      attachScheduled.set(false)
-      val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      val parent = pendingAttachParent.getAndSet(0)
-      if (parent == 0L) return@invokeOnWebView
-      bridge.attachToParent(handle, parent)
-      applyAttachmentState(handle)
+      hostHwndCreateRetryScheduled.set(false)
+      if (!component.isDisplayable || currentHostHwnd != hostHwnd || !state.compareAndSet(State.New, State.Creating)) return@invokeOnWebView
+      performCreate()
     }
+  }
+
+  private fun isTransientInvalidHostHwnd(t: Throwable): Boolean {
+    return t.message?.contains("Invalid window handle") == true
+  }
+
+  private fun scheduleHostRecreate() {
+    if (!hostRecreateScheduled.compareAndSet(false, true)) return
+    invokeOnWebView {
+      hostRecreateScheduled.set(false)
+      recreateNativeHandleForCurrentHost()
+    }
+  }
+
+  private fun destroyForMissingHost() {
+    val oldHandle = nativeHandle
+    currentHostHwnd = 0
+    pendingHostHwnd.set(0)
+    if (state.get() == State.Closed || state.get() == State.Closing) return
+
+    cancelPendingEvaluations()
+    resetHandleReady("WebView2 host Canvas peer was destroyed")
+    recreateAfterDestroy = false
+    if (oldHandle == 0L) {
+      state.set(State.New)
+    }
+    else {
+      state.set(State.Closing)
+      bridge.destroy(oldHandle)
+    }
+  }
+
+  private fun recreateNativeHandleForCurrentHost() {
+    val hostHwnd = pendingHostHwnd.getAndSet(0).takeIf { it != 0L } ?: currentHostHwnd
+    if (hostHwnd == 0L || state.get() == State.Closed) return
+    val oldHandle = nativeHandle
+    cancelPendingEvaluations()
+    resetHandleReady("WebView2 is recreating for a new host HWND")
+    pendingHostHwnd.set(hostHwnd)
+    recreateAfterDestroy = true
+    if (oldHandle != 0L) {
+      state.set(State.Closing)
+      bridge.destroy(oldHandle)
+    }
+    else {
+      state.set(State.New)
+      if (state.compareAndSet(State.New, State.Creating)) {
+        performCreate()
+      }
+    }
+  }
+
+  /** Replays state only after native destroy has confirmed that the old controller no longer exists. */
+  private fun replayStateAfterDestroy() {
+    lastLoad?.let { pendingLoad.compareAndSet(null, it) }
+    lastBounds?.let { pendingBounds.compareAndSet(null, it) }
   }
 
   private fun applyBounds(handle: Long, bounds: PendingBounds) {
@@ -483,7 +623,7 @@ internal class WinWebViewEngine(
     invokeOnWebView {
       boundsScheduled.set(false)
       val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
+      if (handle == 0L || state.get() != State.Active) return@invokeOnWebView
       val bounds = pendingBounds.getAndSet(null) ?: return@invokeOnWebView
       lastBounds = bounds
       applyBounds(handle, bounds)
@@ -495,7 +635,7 @@ internal class WinWebViewEngine(
     invokeOnWebView {
       visibilityScheduled.set(false)
       val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
+      if (handle == 0L || state.get() != State.Active) return@invokeOnWebView
       applyVisibility(handle)
     }
   }
@@ -509,20 +649,12 @@ internal class WinWebViewEngine(
     invokeOnWebView {
       focusScheduled.set(false)
       val handle = nativeHandle
-      if (handle == 0L || state.get() != State.Active) {
-        pendingFocusOp.set(null)
-        return@invokeOnWebView
-      }
-      val focusOp = pendingFocusOp.getAndSet(null)
+      if (handle == 0L || state.get() != State.Active) return@invokeOnWebView
       try {
-        when (focusOp) {
-          FocusOp.Focus -> bridge.focus(handle)
-          FocusOp.Clear -> bridge.clearFocus(handle)
-          null -> Unit
-        }
+        bridge.focus(handle)
       }
       catch (e: IllegalStateException) {
-        LOG.trace("Failed to apply WebView2 focus operation: operation=$focusOp${diagnosticContext()}")
+        LOG.trace("Failed to focus WebView2${diagnosticContext()}")
         LOG.trace(e)
       }
     }
@@ -577,6 +709,26 @@ internal class WinWebViewEngine(
     }
   }
 
+  private fun injectPostNavigationScripts() {
+    if (postNavigationScript.isBlank()) return
+    val handle = nativeHandle
+    if (handle == 0L || state.get() != State.Active) return
+    invokeOnWebView {
+      if (nativeHandle != handle || state.get() != State.Active) return@invokeOnWebView
+      try {
+        bridge.evaluateJavaScript(handle, nextEvalId.incrementAndGet(), postNavigationScript)
+      }
+      catch (t: IllegalStateException) {
+        LOG.trace("Failed to inject WebView2 post-navigation script${diagnosticContext()}")
+        LOG.trace(t)
+      }
+    }
+  }
+
+  private fun String.withPostNavigationScripts(): String {
+    return if (postNavigationScript.isBlank()) this else "$postNavigationScript\n;\n$this"
+  }
+
   private fun handleRenderProcessUnresponsive(message: String, data: String) {
     consecutiveRenderUnresponsiveCount++
     if (consecutiveRenderUnresponsiveCount >= MAX_RENDER_UNRESPONSIVE_BEFORE_RECOVERY) {
@@ -588,9 +740,9 @@ internal class WinWebViewEngine(
     val current = state.get()
     if (current == State.Closing || current == State.Closed) return
 
-    val parentHwnd = currentParentHwnd
-    if (parentHwnd == 0L) {
-      closeAfterFatalNativeFailure(event, message, data, IllegalStateException("Cannot recover WebView2 without a parent HWND"))
+    val hostHwnd = currentHostHwnd
+    if (hostHwnd == 0L) {
+      closeAfterFatalNativeFailure(event, message, data, IllegalStateException("Cannot recover WebView2 without a host HWND"))
       return
     }
     if (!recordRecoveryAttempt()) {
@@ -616,7 +768,7 @@ internal class WinWebViewEngine(
       LOG.webViewLifecycle("win-webview2-recovery", "recreating after $event${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", "recovery=true, ${diagnosticDetails()}") {
-        bridge.create(parentHwnd, userDataDir().toString(), documentStartScript, callbacks)
+        bridge.create(hostHwnd, userDataDir().toString(), documentStartScript, webView2Configuration, callbacks)
       }
       bridge.setVisible(nativeHandle, !hidden)
     }
@@ -908,17 +1060,13 @@ internal class WinWebViewEngine(
 
   private fun userDataDir(): Path = Path.of(PathManager.getSystemPath(), "webview2")
 
-  /**
-   * Schedules [action] for execution on the dedicated WebView2 STA thread.
-   *
-   * Returns immediately; safe to call from EDT or any other thread.
-   * Tasks are delivered in FIFO order via `PostThreadMessageW` and are not
-   * tied to the engine's coroutine scope — they will run even if the scope
-   * is cancelled, which is required to let `close()` actually destroy the
-   * native handle.
-   */
+  private fun Int.toWebViewFocusDirection(): WebViewFocusDirection {
+    return if (this == CORE_WEBVIEW2_MOVE_FOCUS_REASON_PREVIOUS) WebViewFocusDirection.BACKWARD else WebViewFocusDirection.FORWARD
+  }
+
+  /** Serializes controller state and Swing interaction on the EDT. */
   private fun invokeOnWebView(action: () -> Unit) {
-    webViewDispatcher.dispatch(EmptyCoroutineContext, Runnable { action() })
+    if (SwingUtilities.isEventDispatchThread()) action() else SwingUtilities.invokeLater(action)
   }
 
   private companion object {
@@ -927,6 +1075,7 @@ internal class WinWebViewEngine(
     private const val MAX_RECOVERY_ATTEMPTS = 2
     private const val RECOVERY_WINDOW_MILLIS = 60_000L
     private const val MAX_RENDER_UNRESPONSIVE_BEFORE_RECOVERY = 2
+    private const val MAX_INVALID_HOST_HWND_RETRIES = 2
     private const val NATIVE_EVENT_PROCESS_FAILED_FATAL = "process-failed.fatal"
     private const val NATIVE_EVENT_PROCESS_FAILED_UNRESPONSIVE = "process-failed.unresponsive"
     private const val NATIVE_EVENT_BROWSER_PROCESS_EXITED_FATAL = "browser-process-exited.fatal"
@@ -935,14 +1084,25 @@ internal class WinWebViewEngine(
     private const val DEVTOOLS_CPU_PROFILE_STOP_TIMEOUT_MILLIS = 3_000L
     private const val DEVTOOLS_CPU_PROFILE_POST_NAVIGATION_DELAY_MILLIS = 2_000L
     private const val WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY = "ide.webview.windows.asset.custom.scheme.enabled"
+    private const val CORE_WEBVIEW2_MOVE_FOCUS_REASON_PREVIOUS = 1
+
+    private fun registryBoolean(key: String, default: Boolean): Boolean {
+      return Registry.`is`(key, default)
+    }
   }
 }
 
 @ApiStatus.Internal
-internal fun createWinWebViewEngine(
+internal fun createWinWebViewController(
   parentScope: CoroutineScope,
   debugName: String? = null,
   documentStartScripts: List<WebViewScript> = emptyList(),
-): WinWebViewEngine {
-  return WinWebViewEngine(parentScope, debugName = debugName, documentStartScripts = documentStartScripts)
+  hostEventSink: WebViewHostEventSink,
+): WinWebViewController {
+  return WinWebViewController(
+    parentScope,
+    debugName = debugName,
+    documentStartScripts = documentStartScripts,
+    hostEventSink = hostEventSink,
+  )
 }

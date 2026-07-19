@@ -6,6 +6,7 @@ import com.intellij.ui.webview.api.WebViewInterop
 import com.intellij.ui.webview.api.WebViewMessageRegistration
 import com.intellij.ui.webview.impl.SwingWebViewHostPanel
 import com.intellij.ui.webview.impl.WebViewFocusEntrySink
+import com.intellij.ui.webview.impl.WebViewHostEvent
 
 private val LOG = fileLogger()
 
@@ -31,13 +32,14 @@ internal fun WebViewInterop.createWebViewFocusEntrySink(): WebViewFocusEntrySink
 }
 
 internal fun WebViewInterop.registerWebViewFocusExitHandler(host: SwingWebViewHostPanel): WebViewMessageRegistration {
-  return implement(WebViewFocusHostApi.ID, object : WebViewFocusHostApi {
+  val focusRegistration = implement(WebViewFocusHostApi.ID, object : WebViewFocusHostApi {
     override fun activated() {
-      host.activateWebViewFocus()
+      host.handleHostEvent(WebViewHostEvent.NativeFocusGained)
     }
 
     override fun exit(params: WebViewFocusExit) {
-      host.exitWebViewFocus(params.direction)
+      host.handleHostEvent(WebViewHostEvent.MoveFocusRequested(params.direction))
     }
   })
+  return focusRegistration
 }

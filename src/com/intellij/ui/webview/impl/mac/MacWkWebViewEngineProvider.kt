@@ -6,10 +6,10 @@ import com.intellij.ui.webview.impl.engine.WebViewEngineAvailability
 import com.intellij.ui.webview.impl.engine.WebViewEngineCapabilities
 import com.intellij.ui.webview.impl.engine.WebViewEngineId
 import com.intellij.ui.webview.impl.engine.WebViewEngineKind
-import com.intellij.ui.webview.impl.WebViewEngineBridge
 import com.intellij.ui.webview.impl.engine.WebViewEngineCreationOptions
 import com.intellij.ui.webview.impl.engine.WebViewEngineProvider
-import com.intellij.ui.webview.impl.host.NativeWebViewHostPeer
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewHostEventSink
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 
@@ -30,15 +30,9 @@ internal class MacWkWebViewEngineProvider : WebViewEngineProvider {
     return if (SystemInfo.isMac) WebViewEngineAvailability.Available else WebViewEngineAvailability.Unavailable("macOS is required")
   }
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+  override fun createController(scope: CoroutineScope, options: WebViewEngineCreationOptions, hostEventSink: WebViewHostEventSink): WebViewController {
     check(SystemInfo.isMac) { "System WebView is supported only on macOS" }
-    val engine = createMacWebViewEngine(scope, options.documentStartScripts)
-    engine.initialize()
-    return engine
-  }
-
-  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-    return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
+    return createMacWkWebViewController(scope, options.documentStartScripts, hostEventSink)
   }
 }
 

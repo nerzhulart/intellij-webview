@@ -13,7 +13,6 @@ import com.intellij.util.concurrency.annotations.RequiresEdt
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 import java.awt.BorderLayout
-import java.nio.file.Path
 import java.util.MissingResourceException
 import javax.swing.JPanel
 
@@ -58,39 +57,6 @@ class WebViewRuntime {
         )
       }.webView
     }
-  }
-
-  internal fun createEngine(
-    scope: CoroutineScope,
-    engineKind: WebViewEngineKind = WebViewEngineKind.System,
-    jcefNativeBundlePath: Path? = null,
-  ): WebViewEngine {
-    return createEngine(
-      scope = scope,
-      preference = resolveEnginePreference(engineKind),
-      strictPreference = true,
-      jcefNativeBundlePath = jcefNativeBundlePath,
-    )
-  }
-
-  internal fun createEngine(
-    scope: CoroutineScope,
-    preference: WebViewEngineKind,
-    strictPreference: Boolean,
-    jcefNativeBundlePath: Path? = null,
-  ): WebViewEngine {
-    val provider = selectProviderBlocking(
-      preference = preference,
-      requirements = WebViewEngineRequirements(),
-    )
-    return provider.createEngine(
-      scope = scope,
-      options = WebViewEngineCreationOptions(
-        strictPreference = strictPreference,
-        jcefNativeBundlePath = jcefNativeBundlePath,
-        debugName = null,
-      ),
-    )
   }
 
   @RequiresEdt
@@ -185,45 +151,6 @@ class WebViewRuntime {
           "webview.provider.availability",
           "provider=${provider.id}, preference=$preference, priority=$priority",
         ) { availability(provider) }) {
-          WebViewEngineAvailability.Available -> {
-            logProviderSelected(preference, provider, priority)
-            return@traceWebViewPerf provider
-          }
-          is WebViewEngineAvailability.Unavailable -> {
-            diagnostics += "${provider.id} unavailable: ${availability.reason}"
-            logProviderRejected(preference, provider, priority, "unavailable: ${availability.reason}")
-          }
-        }
-      }
-      failSelection(preference, requirements, diagnostics)
-    }
-  }
-
-  private fun selectProviderBlocking(
-    preference: WebViewEngineKind,
-    requirements: WebViewEngineRequirements,
-  ): WebViewEngineProvider {
-    val diagnostics = ArrayList<String>()
-    val candidates = candidateProviders(preference)
-    logSelectionStart(preference, requirements, candidates)
-    return LOG.traceWebViewPerf(
-      "webview.provider.select.blocking",
-      "preference=$preference, requirements=$requirements, candidates=${candidates.size}",
-    ) {
-      if (candidates.isEmpty()) {
-        diagnostics += "no candidate providers"
-      }
-      for ((provider, priority) in candidates) {
-        val missingRequirements = provider.capabilities.missingRequirements(requirements)
-        if (missingRequirements.isNotEmpty()) {
-          diagnostics += "${provider.id} rejected: missing ${missingRequirements.joinToString()}"
-          logProviderRejected(preference, provider, priority, "missing ${missingRequirements.joinToString()}")
-          continue
-        }
-        when (val availability = LOG.traceWebViewPerf(
-          "webview.provider.availability.blocking",
-          "provider=${provider.id}, preference=$preference, priority=$priority",
-        ) { availabilityBlocking(provider) }) {
           WebViewEngineAvailability.Available -> {
             logProviderSelected(preference, provider, priority)
             return@traceWebViewPerf provider

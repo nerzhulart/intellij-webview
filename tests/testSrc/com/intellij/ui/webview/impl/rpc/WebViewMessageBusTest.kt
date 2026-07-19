@@ -7,8 +7,12 @@ import com.intellij.ui.webview.api.WebViewApiId
 import com.intellij.ui.webview.api.WebViewNotification
 import com.intellij.ui.webview.api.WebViewCallable
 import com.intellij.ui.webview.api.WebViewImplementable
-import com.intellij.ui.webview.impl.WebViewEngineBridge
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewEditCommand
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
@@ -24,7 +28,10 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
+import java.awt.event.KeyEvent
 import java.nio.file.Path
+import javax.swing.JPanel
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -464,8 +471,9 @@ internal class WebViewMessageBusTest {
     suspend fun declared(params: TestPayload): TestPayload
   }
 
-  private class RecordingEngine : WebViewEngineBridge {
-    override val isHeavyweight: Boolean = false
+  private class RecordingEngine : WebViewController {
+    override val component: Component = JPanel()
+    override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.NONE
 
     val transferredMessages = ArrayList<String>()
     private val transfers = Channel<String>(Channel.UNLIMITED)
@@ -492,6 +500,14 @@ internal class WebViewMessageBusTest {
 
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
+
+    override fun applyLayout(params: WebViewHostLayoutParams) {
+    }
+
+    override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    }
+
+    override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean = false
 
     override suspend fun close() {
     }

@@ -3,9 +3,13 @@ package com.intellij.ui.webview.impl.linux
 
 import com.intellij.ui.webview.api.WebViewAssetPath
 import com.intellij.ui.webview.api.WebViewAssetRoot
-import com.intellij.ui.webview.impl.WebViewEngineBridge
 import com.intellij.ui.webview.impl.WebViewLogger
 import com.intellij.ui.webview.impl.WebViewJsMessageReceiver
+import com.intellij.ui.webview.impl.WebViewController
+import com.intellij.ui.webview.impl.WebViewEditCommand
+import com.intellij.ui.webview.impl.WebViewEditShortcutPolicy
+import com.intellij.ui.webview.impl.WebViewHostLayoutParams
+import com.intellij.ui.webview.impl.WebViewSwingFocusExit
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.EDT
 import kotlinx.coroutines.CancellationException
@@ -16,6 +20,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.jetbrains.annotations.ApiStatus
+import java.awt.Canvas
+import java.awt.Component
+import java.awt.event.KeyEvent
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -24,11 +31,16 @@ import javax.swing.SwingUtilities
 import kotlin.coroutines.resume
 
 @ApiStatus.Internal
-internal class LinuxWebKitWebViewEngine(
+internal class LinuxWebKitController(
   parentScope: CoroutineScope,
   internal val backend: LinuxWebKitBackend,
-) : WebViewEngineBridge {
-  override val isHeavyweight: Boolean = backend == LinuxWebKitBackend.X11
+) : WebViewController {
+
+  override val component: Component = Canvas().apply {
+    isFocusable = true
+  }
+
+  override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.NONE
 
   private enum class State { New, Creating, Active, Closing, Closed }
 
@@ -122,6 +134,31 @@ internal class LinuxWebKitWebViewEngine(
 
   override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     inboundMessageHandler = receiver::transferFromJs
+  }
+
+  override fun applyLayout(params: WebViewHostLayoutParams) {
+    if (!params.displayable) {
+      setHidden(true)
+      detach()
+      return
+    }
+
+    when (backend) {
+      LinuxWebKitBackend.X11 -> LinuxX11WindowUtil.resolveWindowXid(component)?.let(::attachToX11Parent)
+      LinuxWebKitBackend.WaylandSnapshot -> attachOffscreen()
+    }
+    val bounds = params.clippedBoundsInWindow
+    setBounds(bounds.x, bounds.y, bounds.width, bounds.height, params.scale)
+    setHidden(!params.showing || bounds.isEmpty)
+  }
+
+  override fun swingFocusMovedOutside(event: WebViewSwingFocusExit) {
+    clearFocus()
+  }
+
+  override fun handleEditShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean {
+    // WebKitGTK receives editing input through its native focus path.
+    return false
   }
 
   internal fun setSnapshotHandler(handler: ((Int, Int, IntArray) -> Unit)?) {
@@ -224,7 +261,7 @@ internal class LinuxWebKitWebViewEngine(
     runOnEdt { LinuxWebKitGtkBridge.setVisible(handle, !hidden) }
   }
 
-  internal fun requestFocus() {
+  override fun requestWebViewFocus() {
     val handle = nativeHandle
     if (handle == 0L || state.get() != State.Active) return
     runOnEdt { LinuxWebKitGtkBridge.focus(handle) }
@@ -405,6 +442,6 @@ internal class LinuxWebKitWebViewEngine(
 }
 
 @ApiStatus.Internal
-internal fun createLinuxWebKitWebViewEngine(parentScope: CoroutineScope, backend: LinuxWebKitBackend): LinuxWebKitWebViewEngine {
-  return LinuxWebKitWebViewEngine(parentScope, backend)
+internal fun createLinuxWebKitController(parentScope: CoroutineScope, backend: LinuxWebKitBackend): LinuxWebKitController {
+  return LinuxWebKitController(parentScope, backend)
 }
