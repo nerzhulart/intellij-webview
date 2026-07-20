@@ -30,4 +30,22 @@ Useful local entry points:
 - `tests/testSrc/com/intellij/ui/webview/LightweightStandaloneSampleApp.kt` - standalone JFrame smoke app.
 - `tests/testSrc/com/intellij/ui/webview/*WebViewSmokeTest.kt` and `WebViewRuntimeTest.kt` - runtime, backend, and smoke coverage.
 
+## Standalone SDK build
+
+The Gradle build is independent of the IntelliJ source checkout and targets IntelliJ IDEA SDK
+`262.8665.294-EAP-CANDIDATE` from the JetBrains snapshot repository. It requires JDK 25 and produces three plugin
+archives:
+
+```shell
+./gradlew buildPlugin :demo:buildPlugin :markdown-preview:buildPlugin
+```
+
+- `build/distributions/webview-0.1.0-SNAPSHOT.zip`
+- `demo/build/distributions/platform-ui-webview-demo-0.1.0-SNAPSHOT.zip`
+- `markdown-preview/build/distributions/markdown-webview-preview-0.1.0-SNAPSHOT.zip`
+
+The Gradle profile packages the checked-in web assets and does not run Bun. Existing test sources rely on the
+IntelliJ source-build test framework and remain available to the monorepo test runner, but are intentionally not
+part of the standalone SDK build.
+
 Design docs start at `docs/directory.md`. They explain the runtime and frontend design in depth, but they are not required for ordinary framework usage. For practical UI authoring, use `docs/guides/WebView-UI-Authoring-Guide.md` first.

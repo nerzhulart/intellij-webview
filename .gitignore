@@ -1,2 +1,5 @@
-test-results/
-playwright-report/
+.gradle/
+.intellijPlatform/
+build/
+**/build/
+**/test-results/
