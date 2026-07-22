@@ -1,6 +1,8 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
+import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
+import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
 
 plugins {
   kotlin("jvm") version "2.4.10"
@@ -28,6 +30,7 @@ dependencies {
     intellijIdea(providers.gradleProperty("platformVersion")) {
       useInstaller = false
     }
+    pluginModule(project(":jcef"))
   }
 }
 
@@ -59,22 +62,19 @@ intellijPlatform {
 
 tasks {
   prepareSandbox {
-    dependsOn(":jcef:jar")
-    from(project(":jcef").layout.buildDirectory.file("libs/intellij.platform.ui.webview.jcef.jar")) {
-      into("lib/modules")
-    }
     from("lib/webview-native") {
-      into("lib/webview-native")
+      into(pluginName.map { "$it/lib/webview-native" })
     }
   }
 
-  buildPlugin {
-    dependsOn(":jcef:jar")
-    from(project(":jcef").layout.buildDirectory.file("libs/intellij.platform.ui.webview.jcef.jar")) {
-      into("lib/modules")
-    }
-    from("lib/webview-native") {
-      into("lib/webview-native")
-    }
+  named<RunIdeTask>("runIde") {
+    val allPluginsSandbox = project(":demo").tasks.named<PrepareSandboxTask>("prepareSandbox")
+    sandboxDirectory.set(allPluginsSandbox.flatMap { it.sandboxDirectory })
+    sandboxConfigDirectory.set(allPluginsSandbox.flatMap { it.sandboxConfigDirectory })
+    sandboxPluginsDirectory.set(allPluginsSandbox.flatMap { it.sandboxPluginsDirectory })
+    sandboxSystemDirectory.set(allPluginsSandbox.flatMap { it.sandboxSystemDirectory })
+    sandboxLogDirectory.set(allPluginsSandbox.flatMap { it.sandboxLogDirectory })
+    testSandbox.set(allPluginsSandbox.flatMap { it.testSandbox })
+    dependsOn(allPluginsSandbox)
   }
 }

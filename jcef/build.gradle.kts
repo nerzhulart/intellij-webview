@@ -48,4 +48,8 @@ tasks {
   jar {
     archiveFileName.set("intellij.platform.ui.webview.jcef.jar")
   }
+
+  composedJar {
+    archiveFileName.set("intellij.platform.ui.webview.jcef.jar")
+  }
 }

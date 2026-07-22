@@ -28,6 +28,7 @@ dependencies {
       useInstaller = false
     }
     localPlugin(project(":"))
+    localPlugin(project(":markdown-preview"))
     bundledPlugin("org.intellij.plugins.markdown")
   }
 }
