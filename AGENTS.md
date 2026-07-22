@@ -6,7 +6,7 @@
 - Do not copy raw `WebViewMessageBus`, raw method string, or direct `window.__WVI__` usage into new feature code unless the task is explicitly about the low-level runtime.
 - For browser-only preview or smoke tests, use `@jetbrains/intellij-webview-testkit`; do not add mock-mode branches to production view code.
 - Put WebView mocks under `webview-src/test/<view-id>/mocks`, keep browser smoke tests under `webview-src/test/<view-id>`, and do not put mocks into `resources/webview`.
-- Prefer a runnable `webview-src/test/<view-id>/preview.ts` entry point using `@jetbrains/intellij-webview-testkit/node` for IDE Run UI. Keep `bun webview-preview <view-id> --mock <mock-name>` available for parameterized CLI runs. The demo references are `bun test/acp-chat/preview.ts` and `bun webview-preview acp-chat --mock default` in `community/plugins/ui.webview/demo/webview-src`.
+- Prefer a runnable `webview-src/test/<view-id>/preview.ts` entry point using `@jetbrains/intellij-webview-testkit/node` for IDE Run UI. Keep `bun webview-preview <view-id> --mock <mock-name>` available for parameterized CLI runs. The demo references are `bun test/acp-chat/preview.ts` and `bun webview-preview acp-chat --mock default` from `demo/webview-src`.
 - Add a `preview:<view-id>` package script, for example `"preview:acp-chat": "bun test/acp-chat/preview.ts"`, so the IDE can run the preview through Bun even when direct `.ts` Run defaults to Node.js.
 - For direct IDE Run on `preview.ts`, the project JavaScript runtime must be Bun (`Settings | Languages & Frameworks | JavaScript Runtime | Preferred runtime: Bun`). If the IDE already created a Node.js run configuration for the file, delete or recreate it after switching the runtime.
 - `runWebViewMockPreview(...)` must work regardless of the process working directory. If Vite reports that `views/<view-id>/index.html` is outside the serving allow list, fix the testkit Vite `server.fs.allow` roots, not production view code or mock code.
@@ -19,6 +19,6 @@
 ## WebView Local Code Style
 
 - In WebView Kotlin, Java, and native bridge code, mark string literals that embed HTML or JavaScript code.
-- Apply the same rule to related WebView native bridge files under `community/plugins/ui.webview/native/LinuxWebKitGtkBridge` and `community/plugins/ui.webview/native/WinWebView2Bridge`.
+- Apply the same rule to related WebView native bridge files under `native/LinuxWebKitGtkBridge` and `native/WinWebView2Bridge`.
 - Prefer `@Language("HTML")` or `@Language("JavaScript")` on a parameter, property, local variable, or helper function when the language applies to the whole value.
 - If an annotation cannot be attached cleanly, put an IntelliLang marker immediately before the literal: `/*language=HTML*/` or `/*language=JavaScript*/`.

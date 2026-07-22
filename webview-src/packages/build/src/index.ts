@@ -102,8 +102,7 @@ function webViewViewEntryId(view: string | WebViewViewEntry): string {
  * - fonts/images/other assets: assets/<original-name>.
  *
  * Common WebView runtime scripts are injected into index.html by this helper.
- * See community/plugins/ui.webview/docs/frontend/WebView-Frontend-Build-Strategy.md#current-view-build-pipeline
- * for the full build pipeline and commit policy.
+ * See docs/frontend/WebView-Frontend-Build-Strategy.md for the build pipeline and commit policy.
  */
 export function defineWebViewViewConfig(options: WebViewViewConfigOptions): UserConfig {
   const sourceDir = options.sourceDir ?? resolve(options.webviewSrcDir, "views", options.id)

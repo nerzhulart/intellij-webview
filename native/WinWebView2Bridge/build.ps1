@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..\..\..\..")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 $CargoToml = Join-Path $ScriptDir "Cargo.toml"
 $SupportedTargets = @(
   "x86_64-pc-windows-msvc",
@@ -112,7 +112,7 @@ try {
     }
 
     $ArtifactPath = Join-Path $ScriptDir "target\$BuildTarget\release\win_webview2_bridge.dll"
-    $CommittedPath = Join-Path $RepoRoot "community\plugins\ui.webview\lib\webview-native\win\$PluginArch\win_webview2_bridge.dll"
+    $CommittedPath = Join-Path $RepoRoot "lib\webview-native\win\$PluginArch\win_webview2_bridge.dll"
 
     Invoke-CargoBuild -BuildTarget $BuildTarget
 

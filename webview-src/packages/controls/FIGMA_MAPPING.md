@@ -23,4 +23,4 @@ Library key: `lk-b9deb84885ea88e6a5da782bc75f38162be6a7e9af8bc413a6ce9caf9144935
 | Segmented Control | `c470d2d281c9168ea7a301df1993dfeb96e2c982` | `jb-segmented-control` | segmentedButton style. |
 | Toggle | `b2dadab21a925420cdaa5d05a37fc70528c1c057` | future `jb-toggle` | Tracked in inventory; not exposed in batch API yet. |
 
-The MCP session could not import component sets because the Figma file was exposed in read-only mode, so per-variant inspection is captured through library component metadata plus the IntelliJ UI Guidelines state model: focus, hover, pressed, selected, disabled, readonly, validation error/warning, expanded, and light/dark theme rendering.
+Validate every mapped control in focus, hover, pressed, selected, disabled, readonly, validation, expanded, light-theme, and dark-theme states. The package source and `custom-elements.json` remain authoritative when this mapping and the implementation differ.
