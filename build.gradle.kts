@@ -9,6 +9,7 @@ plugins {
   kotlin("plugin.serialization") version "2.4.10"
   id("org.jetbrains.intellij.platform") version "2.18.1"
   id("org.jetbrains.intellij.platform.module") version "2.18.1" apply false
+  id("webview-frontend")
 }
 
 group = "com.intellij.platform.ui.webview"
@@ -61,6 +62,16 @@ intellijPlatform {
 }
 
 tasks {
+  register("buildAllWebViewAssets") {
+    group = "webview"
+    description = "Builds WebView frontend assets for all plugin modules."
+    dependsOn(
+      ":buildWebViewAssets",
+      ":demo:buildWebViewAssets",
+      ":markdown-preview:buildWebViewAssets",
+    )
+  }
+
   prepareSandbox {
     from("lib/webview-native") {
       into(pluginName.map { "$it/lib/webview-native" })

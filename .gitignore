@@ -2,4 +2,9 @@
 .intellijPlatform/
 build/
 **/build/
+**/node_modules/
+.kotlin/
 **/test-results/
+resources/webview/
+demo/resources/webview/
+markdown-preview/resources/webview/

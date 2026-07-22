@@ -33,8 +33,8 @@ Useful local entry points:
 ## Standalone SDK build
 
 The Gradle build is independent of the IntelliJ source checkout and targets IntelliJ IDEA SDK
-`262.8665.294-EAP-CANDIDATE` from the JetBrains snapshot repository. It requires JDK 25 and produces three plugin
-archives:
+`262.8665.294-EAP-CANDIDATE` from the JetBrains snapshot repository. It requires JDK 25 and Bun 1.3.14 and produces
+three plugin archives:
 
 ```shell
 ./gradlew buildPlugin :demo:buildPlugin :markdown-preview:buildPlugin
@@ -44,8 +44,10 @@ archives:
 - `demo/build/distributions/platform-ui-webview-demo-0.1.0-SNAPSHOT.zip`
 - `markdown-preview/build/distributions/markdown-webview-preview-0.1.0-SNAPSHOT.zip`
 
-The Gradle profile packages the checked-in web assets and does not run Bun. Existing test sources rely on the
-IntelliJ source-build test framework and remain available to the monorepo test runner, but are intentionally not
-part of the standalone SDK build.
+Gradle runs each module's locked Bun/Vite build before `processResources` and packages the generated
+`build/generated-resources/webview/main/webview` tree as ordinary classpath resources. Use
+`./gradlew buildAllWebViewAssets` to build only the frontend assets for all plugin modules. Existing test sources rely
+on the IntelliJ source-build test framework and remain available to the monorepo test runner, but are intentionally
+not part of the standalone SDK build.
 
 Design docs start at `docs/directory.md`. They explain the runtime and frontend design in depth, but they are not required for ordinary framework usage. For practical UI authoring, use `docs/guides/WebView-UI-Authoring-Guide.md` first.

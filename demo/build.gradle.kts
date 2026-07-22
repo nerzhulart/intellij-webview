@@ -6,6 +6,7 @@ plugins {
   kotlin("jvm")
   kotlin("plugin.serialization")
   id("org.jetbrains.intellij.platform")
+  id("webview-frontend")
 }
 
 group = "com.intellij.platform.ui.webview"

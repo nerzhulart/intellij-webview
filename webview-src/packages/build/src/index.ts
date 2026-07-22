@@ -25,6 +25,8 @@ export interface WebViewViewConfigOptions extends WebViewViewEntry {
 export interface WebViewViewsConfigOptions {
   webviewSrcDir: string
   views: ReadonlyArray<string | WebViewViewEntry>
+  /** Directory corresponding to the classpath `webview/` resource root. */
+  outputRoot?: string
 }
 
 export interface WebViewViewBuildSelection {
@@ -49,7 +51,8 @@ export interface WebViewPlatformFeaturesConfigOptions {
 export function defineWebViewViewConfigs(options: WebViewViewsConfigOptions): UserConfig[] {
   return options.views.map((view) => {
     const entry = typeof view === "string" ? { id: view } : view
-    return defineWebViewViewConfig({ ...entry, webviewSrcDir: options.webviewSrcDir })
+    const outDir = entry.outDir ?? (options.outputRoot == null ? undefined : resolve(options.outputRoot, "views", entry.id))
+    return defineWebViewViewConfig({ ...entry, outDir, webviewSrcDir: options.webviewSrcDir })
   })
 }
 
@@ -89,8 +92,8 @@ function webViewViewEntryId(view: string | WebViewViewEntry): string {
 
 /**
  * Builds one WebView view from webview-src/views/<view-id> into
- * resources/webview/views/<view-id>. The generated output is meant to be
- * committed until WebView frontend sources are wired into the main build graph.
+ * resources/webview/views/<view-id> by default, or into an explicit generated
+ * resource root when the owning JVM build supplies one.
  *
  * Stable output contract:
  * - local view entry: view.js;

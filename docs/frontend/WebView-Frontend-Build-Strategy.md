@@ -1,11 +1,14 @@
 # WebView Frontend Build Strategy
 
-Status: ⏳ **PARTIAL**. Vite helper (`defineWebViewViewConfig` / `defineWebViewViewConfigs`) and monorepo `@jetbrains/intellij-webview` aliasing ship in `webview-src/`. Full Bazel graph integration and the published `@jetbrains/intellij-webview` SDK pipeline are deferred — current repository integration is manual / semi-manual.
+Status: ⏳ **PARTIAL**. Vite helpers, monorepo `@jetbrains/intellij-webview` aliasing, and the standalone Gradle
+resource pipeline ship in `webview-src/`. Full Bazel graph integration and the published
+`@jetbrains/intellij-webview` SDK pipeline are deferred.
 
 | Item | Status |
 |---|---|
 | Vite helper for view config + dev/production HTML transforms | ✅ |
 | Monorepo `@jetbrains/intellij-webview` packages under `webview-src/packages/` | ✅ |
+| Standalone Gradle `processResources` integration | ✅ |
 | Manual `bun run build` / `vite build` per module | ✅ |
 | Bazel `webview_assets` rule integrating into the main graph | ⬜ deferred |
 | SDK publication path (versioned npm or tarball-in-jar) | ⬜ see [SDK Distribution](WebView-Frontend-SDK-Distribution.md) |
@@ -47,7 +50,12 @@ some/java/module/
             KaTeX_Main-Regular.woff2
 ```
 
-The generated `resources/webview/views/...` files are the browser artifact. The source of truth for the UI is `webview-src/views/...`. A Java module may contain multiple independent views under `webview-src/views/<view-id>`; every view maps to `resources/webview/views/<view-id>`. The Vite helper writes stable file names: the entry bundle is `view.js`, CSS is `styles.css`, and additional JavaScript chunks, fonts, images, or other assets go under `assets/` without content-hash suffixes.
+The generated `webview/views/...` classpath files are the browser artifact. The source of truth for the UI is
+`webview-src/views/...`. In the standalone Gradle build, each view is generated under
+`build/generated-resources/webview/main/webview/views/<view-id>` and included by `processResources`. Direct Bun and
+manual Bazel builds retain `resources/webview/views/<view-id>` as their local output. The Vite helper writes stable
+file names: the entry bundle is `view.js`, CSS is `styles.css`, and additional JavaScript chunks, fonts, images, or
+other assets go under `assets/` without content-hash suffixes.
 
 ## Recommended Toolchain
 
@@ -62,7 +70,11 @@ Use `tsc -b` for shared frontend packages when they need declaration output or i
 
 ## Current View Build Pipeline
 
-The current repository integration is explicit and commit-oriented. There is no automatic TypeScript-to-Bazel resource graph for WebView views yet, so generated files under `resources/webview/` are produced by the frontend build and committed to the repository.
+The standalone Gradle build owns the production frontend edge. Its `buildWebViewAssets` task runs the locked Bun/Vite
+build with `WEBVIEW_OUTPUT_ROOT` pointing into the module build directory, and `processResources` packages that task's
+output. The aggregate `buildAllWebViewAssets` task builds all three plugin frontend packages. There is still no
+automatic TypeScript-to-Bazel resource graph for WebView views; manual Bun/Bazel builds write ignored output under
+`resources/webview/`.
 
 For each module-level `webview-src/build.ts`, the build script calls `defineWebViewViewConfigs({ webviewSrcDir, views })` and then runs `vite.build(...)` once per view. Each view gets an independent Vite config:
 
@@ -114,7 +126,9 @@ The repository also has manual Bazel targets that run the same asset builds:
 ./bazel.cmd run @community//plugins/ui.webview/markdown-preview:build_web_assets
 ```
 
-After running the frontend build, commit the generated `resources/webview/` output together with the source changes. Do not hand-edit generated `resources/webview/views/<view-id>/index.html`, `view.js`, `styles.css`, or `assets/*`; change the corresponding `webview-src/views/<view-id>` source and rebuild.
+Do not commit or hand-edit generated `resources/webview/views/<view-id>/index.html`, `view.js`, `styles.css`, or
+`assets/*`; change the corresponding `webview-src/views/<view-id>` source and rebuild. Production plugin archives
+must be built through Gradle so they consume the generated resource directory rather than source-tree leftovers.
 
 ## Resolver Policy
 

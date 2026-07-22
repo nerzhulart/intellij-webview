@@ -11,7 +11,9 @@ For new UI code, use this stack:
 - Kotlin host: `createWebViewPanel(...)`, `WebViewPanelOptions`, `WebViewAssetRoot`, `WebViewAssetPath`.
 - Kotlin bridge contracts: `WebViewApi`, `WebViewImplementable`, `WebViewCallable`, `WebViewApiId`, `WebViewInterop`.
 - TypeScript runtime package: `@jetbrains/intellij-webview`, especially `apiId`, `webView.callable(...)`, and `webView.implement(...)`.
-- Frontend layout: `webview-src/views/<view-id>` as source and `resources/webview/views/<view-id>` as static output.
+- Frontend layout: `webview-src/views/<view-id>` as source and `webview/views/<view-id>` as the packaged classpath
+  resource. The standalone Gradle build generates that resource under `build/generated-resources`; direct Bun and
+  manual Bazel builds keep using `resources/webview` as their local output.
 
 Avoid new feature code that talks directly to `window.__WVI__`, raw method strings, or `WebViewMessageBus`. Those APIs are low-level runtime details and test/runtime escape hatches. Use them only when changing the bridge itself.
 
@@ -29,7 +31,7 @@ my/module/
     package.json
     tsconfig.json
     vite.config.ts
-  resources/
+  build/generated-resources/webview/main/
     webview/
       views/
         my-view/
@@ -64,7 +66,11 @@ for (const config of defineWebViewViewConfigs({ webviewSrcDir, views: selectedVi
 }
 ```
 
-The helper emits commit-friendly static files. The view entry is `view.js`, CSS is `styles.css`, and dependencies from `node_modules` are split into stable package-name chunks under `assets/`, for example `assets/react.js` or `assets/mermaid.js`. Fonts and other emitted assets also live under `assets/` with stable names. Generated `resources/webview/` files should be committed until the frontend build is integrated into the main build graph.
+The helper emits predictable static files. The view entry is `view.js`, CSS is `styles.css`, and dependencies from
+`node_modules` are split into stable package-name chunks under `assets/`, for example `assets/react.js` or
+`assets/mermaid.js`. Fonts and other emitted assets also live under `assets/` with stable names. Gradle supplies an
+explicit generated-resource root and packages the output automatically; generated `resources/webview/` files from
+direct Bun or manual Bazel builds are local artifacts and must not be committed.
 
 ## Preview And Mock A View In A Browser
 

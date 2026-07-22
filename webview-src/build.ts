@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { defineWebViewBridgeConfig, defineWebViewPlatformFeaturesConfig } from "@jetbrains/intellij-webview/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
+const outputRoot = process.env.WEBVIEW_OUTPUT_ROOT
 
-await build(defineWebViewBridgeConfig({ webviewSrcDir }))
-await build(defineWebViewPlatformFeaturesConfig({ webviewSrcDir }))
+await build(defineWebViewBridgeConfig({ webviewSrcDir, outDir: outputRoot }))
+await build(defineWebViewPlatformFeaturesConfig({ webviewSrcDir, outDir: outputRoot }))

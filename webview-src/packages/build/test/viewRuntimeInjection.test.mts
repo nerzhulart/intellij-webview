@@ -2,7 +2,8 @@
 /// <reference path="../../impl/test/bun-test.d.ts" />
 
 import { describe, expect, test } from "bun:test"
-import { defineWebViewViewConfig } from "../src/index.ts"
+import { resolve } from "node:path"
+import { defineWebViewViewConfig, defineWebViewViewConfigs } from "../src/index.ts"
 
 const VIEW_HTML = `<!doctype html>
 <html lang="en">
@@ -37,6 +38,21 @@ describe("WebView view runtime injection", () => {
     expect(bridgeIndex < metaIndex).toBe(true)
     expect(metaIndex < platformFeaturesIndex).toBe(true)
     expect(platformFeaturesIndex < viewIndex).toBe(true)
+  })
+})
+
+describe("WebView view output", () => {
+  test("maps views into an explicit generated resource root", () => {
+    const outputRoot = resolve("tmp", "generated", "webview")
+    const explicitOutDir = resolve("tmp", "custom-view")
+    const configs = defineWebViewViewConfigs({
+      webviewSrcDir: resolve("tmp", "webview-src"),
+      outputRoot,
+      views: ["sample", { id: "custom", outDir: explicitOutDir }],
+    })
+
+    expect(configs[0]?.build?.outDir).toBe(resolve(outputRoot, "views", "sample"))
+    expect(configs[1]?.build?.outDir).toBe(explicitOutDir)
   })
 })
 
