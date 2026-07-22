@@ -84,7 +84,7 @@ The facade keeps the details that were needed to avoid rectangular shadow/border
 - `window.isAutoRequestFocus = false`;
 - `window.isFocusable = false`;
 - `window.focusableWindowState = false`;
-- `JdkEx.setTransparent(window)`.
+- `setTransparent(window)`.
 
 ### Mouse redispatch
 

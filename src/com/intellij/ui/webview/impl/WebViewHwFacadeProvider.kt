@@ -3,7 +3,6 @@ package com.intellij.ui.webview.impl
 
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.util.registry.Registry
-import com.intellij.platform.jbr.JdkEx
 import com.intellij.ui.HwFacadeHelper
 import com.intellij.ui.HwFacadeProvider
 import com.intellij.util.concurrency.annotations.RequiresEdt
@@ -195,7 +194,7 @@ internal class WebViewHwFacadeHelper(
     window.isAutoRequestFocus = false
     window.isFocusable = false
     window.focusableWindowState = false
-    JdkEx.setTransparent(window)
+    setTransparent(window)
     window.isVisible = true
     delegate.hide()
   }
