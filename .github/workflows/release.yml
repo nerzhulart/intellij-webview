@@ -1,0 +1,133 @@
+name: Publish selected build
+run-name: Publish ${{ inputs.tag }} from build ${{ inputs.run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful "Build plugins" run ID
+        required: true
+        type: string
+      tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        type: string
+      prerelease:
+        description: Mark the release as a prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release:
+    name: Publish plugin archives
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate selected build
+        id: build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git check-ref-format "refs/tags/$TAG"
+
+          metadata="$(gh run view "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,headSha,url,workflowName)"
+
+          conclusion="$(jq -r '.conclusion' <<<"$metadata")"
+          head_sha="$(jq -r '.headSha' <<<"$metadata")"
+          run_url="$(jq -r '.url' <<<"$metadata")"
+          workflow_name="$(jq -r '.workflowName' <<<"$metadata")"
+
+          if [[ "$workflow_name" != "Build plugins" ]]; then
+            echo "::error::Run $RUN_ID belongs to '$workflow_name', not 'Build plugins'."
+            exit 1
+          fi
+
+          if [[ "$conclusion" != "success" ]]; then
+            echo "::error::Build run $RUN_ID did not succeed (conclusion: $conclusion)."
+            exit 1
+          fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists."
+            exit 1
+          fi
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq '.sha')"
+            if [[ "$tag_sha" != "$head_sha" ]]; then
+              echo "::error::Tag $TAG points to $tag_sha, but build $RUN_ID used $head_sha."
+              exit 1
+            fi
+          fi
+
+          echo "head_sha=$head_sha" >>"$GITHUB_OUTPUT"
+          echo "run_url=$run_url" >>"$GITHUB_OUTPUT"
+
+      - name: Download plugin archives
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name webview-plugin-zips \
+            --dir release-assets
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.build.outputs.head_sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          RUN_URL: ${{ steps.build.outputs.run_url }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' archives < <(
+            find release-assets -type f -name '*.zip' -print0 | sort -z
+          )
+
+          if [[ "${#archives[@]}" -ne 3 ]]; then
+            echo "::error::Expected 3 plugin ZIP files, found ${#archives[@]}."
+            exit 1
+          fi
+
+          printf 'Publishing %s\n' "${archives[@]}"
+
+          release_args=(
+            release create "$TAG"
+            "${archives[@]}"
+            --repo "$GITHUB_REPOSITORY"
+            --target "$HEAD_SHA"
+            --title "$TAG"
+            --generate-notes
+          )
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          release_url="$(gh "${release_args[@]}")"
+
+          {
+            echo "## Release published"
+            echo
+            echo "- Release: [$TAG]($release_url)"
+            echo "- Source build: [run ${{ inputs.run_id }}]($RUN_URL)"
+            echo "- Commit: \`$HEAD_SHA\`"
+          } >>"$GITHUB_STEP_SUMMARY"
