@@ -5,8 +5,8 @@ import { existsSync } from "node:fs"
 import { dirname, isAbsolute, resolve } from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
-import type { StartWebViewMockPreviewOptions, WebViewMockPreviewServer } from "./core.ts"
-import { startWebViewMockPreview } from "./preview.ts"
+import type { StartWebViewMockPreviewOptions, WebViewMockPreviewServer } from "./core"
+import { startWebViewMockPreview } from "./preview"
 
 export interface RunWebViewMockPreviewOptions {
   importMetaUrl?: string

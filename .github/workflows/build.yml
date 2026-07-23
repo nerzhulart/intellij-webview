@@ -2,6 +2,11 @@ name: Build plugins
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix, for example 0.1.0 or 0.1.0-rc.0
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -26,6 +31,13 @@ jobs:
         with:
           bun-version: "1.3.14"
 
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -33,10 +45,40 @@ jobs:
 
       - name: Build plugin archives
         shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::Invalid SemVer release version: $VERSION"
+            exit 1
+          fi
+          version_without_build="${VERSION%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            prerelease="${version_without_build#*-}"
+            IFS='.' read -ra identifiers <<<"$prerelease"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^[0-9]+$ && ${#identifier} -gt 1 && "$identifier" == 0* ]]; then
+                echo "::error::Invalid numeric prerelease identifier with a leading zero: $identifier"
+                exit 1
+              fi
+            done
+          fi
           chmod +x gradlew
           gradle wrapper --gradle-version 9.1.0 --distribution-type bin
-          ./gradlew buildPlugin :demo:buildPlugin :markdown-preview:buildPlugin --stacktrace
+          ./gradlew \
+            -PpluginVersion="$VERSION" \
+            buildPlugin :demo:buildPlugin :markdown-preview:buildPlugin \
+            --stacktrace
+
+      - name: Build and verify npm packages
+        working-directory: webview-src
+        env:
+          NPM_PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          bun run pack:npm
+          bun run verify:npm
 
       - name: Upload plugin archives
         uses: actions/upload-artifact@v7
@@ -47,3 +89,12 @@ jobs:
             build/distributions/*.zip
             demo/build/distributions/*.zip
             markdown-preview/build/distributions/*.zip
+
+      - name: Upload npm packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: webview-npm-packages
+          if-no-files-found: error
+          path: |
+            build/npm/*.tgz
+            build/npm/npm-packages.json

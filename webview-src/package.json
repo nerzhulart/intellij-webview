@@ -22,6 +22,8 @@
     "build:bridge": "bun run build.ts",
     "build:controls": "tsc -p packages/controls/tsconfig.json --noEmit",
     "build:react-controls": "tsc -p packages/react-controls/tsconfig.json --noEmit",
+    "pack:npm": "bun run scripts/build-npm-packages.ts",
+    "verify:npm": "bun run scripts/verify-npm-packages.ts",
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

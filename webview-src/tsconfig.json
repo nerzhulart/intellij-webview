@@ -12,7 +12,13 @@
     "jsx": "react-jsx",
     "forceConsistentCasingInFileNames": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@jetbrains/intellij-webview": ["packages/api/src/index.ts"],
+      "@jetbrains/intellij-webview/runtime": ["packages/runtime/src/index.ts"],
+      "@jetbrains/intellij-webview/vite": ["packages/build/src/index.ts"]
+    }
   },
   "include": ["build.ts", "packages/**/*.ts", "packages/**/*.mts"]
 }

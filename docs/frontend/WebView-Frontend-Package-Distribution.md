@@ -1,48 +1,60 @@
 # Frontend Package Distribution
 
-The TypeScript packages in `webview-src` are private and are not currently published to a package registry. Repository modules consume them through local `file:` dependencies.
+WebView Runtime releases produce two public TypeScript packages alongside the three plugin ZIPs. Source manifests under `webview-src` remain private; the release build creates clean ESM tarballs containing compiled JavaScript, TypeScript declarations, package metadata, and only the runtime assets required by the public build helpers.
 
-## Versioning Policy
+## Package Coordinates
 
-The following packages form one compatibility set and must be sourced from the same WebView Runtime plugin release:
+The npm artifacts are an unofficial personal-scope mirror. Consumer source code keeps the canonical package names by installing aliases:
 
-- `@jetbrains/intellij-webview`
-- `@jetbrains/intellij-webview-controls`
-- `@jetbrains/intellij-webview-react-controls`
-- `@jetbrains/intellij-webview-testkit`
-
-Their public package version, once published, must follow the external plugin version. Do not version the bridge package from the target IDE build number.
-
-There are two separate compatibility questions:
-
-1. **Frontend-to-plugin compatibility:** the TypeScript package set must match the installed WebView Runtime plugin API and wire protocol.
-2. **Plugin-to-IDE compatibility:** the plugin ZIP declares the supported IntelliJ-based IDE build range.
-
-Changing the target IDE without changing the frontend API does not require a new frontend protocol version, although it still produces a new plugin build.
-
-## Current Consumption
-
-Until registry publication exists, consumers must use a checkout or source artifact from the same release tag:
+| Canonical dependency and import | Published npm package |
+| --- | --- |
+| `@jetbrains/intellij-webview` | `@nerzhulart/intellij-webview` |
+| `@jetbrains/intellij-webview-testkit` | `@nerzhulart/intellij-webview-testkit` |
 
 ```json
 {
-  "dependencies": {
-    "@jetbrains/intellij-webview": "file:../webview-runtime/webview-src",
-    "@jetbrains/intellij-webview-controls": "file:../webview-runtime/webview-src/packages/controls"
+  "devDependencies": {
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@0.1.0",
+    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-testkit@0.1.0"
   }
 }
 ```
 
-Commit the consumer's lockfile, but do not commit `node_modules`.
+The controls and React controls packages remain private and are not part of this distribution.
 
-## Release Requirements
+## Versioning Contract
 
-A distributable package set must:
+The plugin ZIP, SDK package, and testkit package built by one release have the same SemVer version. Consumers must pin that exact version; floating ranges and npm tags can select a frontend API newer than the installed runtime plugin.
 
-- carry the external plugin release version in every package manifest;
-- preserve the documented package exports;
-- include TypeScript declarations and runtime/build sources required by consumers;
-- be verified with a clean install, typecheck, build, testkit preview, and one browser smoke test;
-- document its required WebView Runtime plugin version separately from the supported IDE build range.
+Frontend-to-plugin compatibility and plugin-to-IDE compatibility are separate:
 
-GitHub Releases currently publish three plugin ZIPs only. Publishing frontend package artifacts remains distribution work, not a completed capability.
+1. The npm package version identifies the matching WebView Runtime plugin API and wire protocol.
+2. The plugin descriptor identifies the supported IntelliJ-based IDE build range.
+
+Changing the target IDE without changing the frontend API does not require a separate frontend version.
+
+## Public Package Surface
+
+`@nerzhulart/intellij-webview` provides:
+
+- `.` — typed browser APIs such as `apiId` and `webView`;
+- `./vite` — supported Vite configuration helpers;
+- `./tsconfig.view.json` — the shared view compiler configuration;
+- package-local bridge assets used only by the Vite development server.
+
+The low-level `./runtime` entry is intentionally not published. The installed runtime plugin supplies and injects the bridge in IDE-hosted views.
+
+`@nerzhulart/intellij-webview-testkit` provides:
+
+- `.` — mock definitions and preview server API;
+- `./node` — runnable preview helpers;
+- `./vite` — mock-bridge Vite integration;
+- the `webview-preview` Bun executable.
+
+## Release Guarantees
+
+The build workflow creates plugin ZIPs and npm tarballs from one commit and version. Before upload, a clean fixture installs the tarballs under their canonical aliases, typechecks all public exports, builds a view, starts a testkit preview outside the checkout, and requests the packaged bridge asset.
+
+The release workflow validates the selected build SHA, version, package names, and SHA-512 integrity. A retry skips an existing npm version only when its registry integrity matches the selected tarball; npm versions are never overwritten.
+
+Runtime capability negotiation is not implemented yet. Exact version matching is therefore the compatibility requirement.

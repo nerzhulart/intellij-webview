@@ -87,7 +87,18 @@ Build or download the WebView Runtime ZIP, install it in the target IDE, and dec
 
 `com.intellij.platform.ui.webview` is the existing technical plugin ID. The runtime is not bundled with the IDE and must be installed alongside the consumer plugin.
 
-The TypeScript packages are currently private workspace packages. Consumer projects must use a local package artifact until versioned packages are published. See [Frontend Package Distribution](docs/frontend/WebView-Frontend-Package-Distribution.md).
+The source manifests remain private workspace packages, while releases publish an unofficial npm mirror. Keep the canonical imports and install the exact package version that matches the runtime plugin:
+
+```json
+{
+  "devDependencies": {
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@0.1.0",
+    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-testkit@0.1.0"
+  }
+}
+```
+
+Do not use floating semver ranges for these aliases. See [Frontend Package Distribution](docs/frontend/WebView-Frontend-Package-Distribution.md) for the package contract.
 
 ## Backend Support
 
@@ -105,7 +116,7 @@ The runtime and its public APIs are experimental. Compatibility may change betwe
 Current distribution limitations:
 
 - Releases are GitHub Release assets, not Marketplace publications.
-- TypeScript packages are not published to a registry yet.
+- The npm packages are published from a personal scope as an unofficial mirror; official `@jetbrains/*` registry coordinates are not available.
 - Kotlin IDE test sources remain in the repository but are not wired into the standalone Gradle build.
 - The target IDE build and minimum compatible build are configured in `gradle.properties` and `build.gradle.kts`.
 

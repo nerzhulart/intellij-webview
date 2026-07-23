@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "rootDir": "./packages/testkit/src",
+    "baseUrl": ".",
+    "paths": {
+      "@jetbrains/intellij-webview": ["../build/npm/staging/intellij-webview/types/api/src/index.d.ts"],
+      "@jetbrains/intellij-webview/vite": ["../build/npm/staging/intellij-webview/types/build/src/index.d.ts"]
+    }
+  },
+  "include": ["packages/testkit/src/**/*.ts"],
+  "exclude": ["packages/testkit/src/**/*.test.ts"]
+}

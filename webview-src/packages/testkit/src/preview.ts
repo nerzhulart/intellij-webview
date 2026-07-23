@@ -2,10 +2,10 @@
 
 import { createServer as createNetServer } from "node:net"
 import { createServer, type Plugin, type UserConfig } from "vite"
-import { defineWebViewViewConfig } from "../../build/src/index.ts"
-import { resolveWebViewMockIconSetAsset } from "./iconSetAssetResolver.ts"
-import { withWebViewMockBridge } from "./vite.ts"
-import type { StartWebViewMockPreviewOptions, WebViewMockPreviewServer } from "./core.ts"
+import { defineWebViewViewConfig } from "@jetbrains/intellij-webview/vite"
+import { resolveWebViewMockIconSetAsset } from "./iconSetAssetResolver"
+import { withWebViewMockBridge } from "./vite"
+import type { StartWebViewMockPreviewOptions, WebViewMockPreviewServer } from "./core"
 
 export async function startWebViewMockPreview(options: StartWebViewMockPreviewOptions): Promise<WebViewMockPreviewServer> {
   const port = options.port ?? await findAvailablePort()

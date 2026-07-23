@@ -4,6 +4,8 @@
     "allowImportingTsExtensions": true,
     "types": ["node"],
     "paths": {
+      "@jetbrains/intellij-webview": ["../../webview-src/packages/api/src/index.ts"],
+      "@jetbrains/intellij-webview/vite": ["../../webview-src/packages/build/src/index.ts"],
       "@jetbrains/intellij-webview-testkit": ["../../webview-src/packages/testkit/src/index.ts"],
       "@jetbrains/intellij-webview-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"]
     }

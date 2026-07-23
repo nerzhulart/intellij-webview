@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "rootDir": "./packages"
+  },
+  "include": [
+    "packages/api/src/**/*.ts",
+    "packages/build/src/**/*.ts"
+  ]
+}

@@ -41,6 +41,20 @@ build/generated-resources/webview/main/webview/views/my-view/
 
 Direct Bun builds use the ignored `resources/webview` tree for local iteration. Never commit or hand-edit generated WebView resources.
 
+Install the exact TypeScript package versions matching the WebView Runtime plugin. The public artifacts use a personal npm scope, while application imports stay canonical through npm aliases:
+
+```json
+{
+  "devDependencies": {
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@0.1.0",
+    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-testkit@0.1.0",
+    "vite": "^8.0.0"
+  }
+}
+```
+
+Replace `0.1.0` with the installed runtime plugin version and commit the resulting lockfile. Do not use `^`, `~`, or `latest` for the aliased WebView packages.
+
 Use the shared Vite helpers:
 
 ```ts

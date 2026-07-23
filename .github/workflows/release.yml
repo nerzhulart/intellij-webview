@@ -9,11 +9,16 @@ on:
         required: true
         type: string
       tag:
-        description: Release tag, for example v0.1.0
+        description: Release tag, for example v0.1.0 or v0.1.0-rc.0
         required: true
         type: string
       prerelease:
-        description: Mark the release as a prerelease
+        description: Publish with npm dist-tag next and mark the GitHub release as a prerelease
+        required: true
+        default: false
+        type: boolean
+      bootstrap_npm:
+        description: Use the one-time NPM_BOOTSTRAP_TOKEN instead of npm Trusted Publishing
         required: true
         default: false
         type: boolean
@@ -21,11 +26,13 @@ on:
 permissions:
   actions: read
   contents: write
+  id-token: write
 
 jobs:
   release:
-    name: Publish plugin archives
+    name: Publish plugin archives and npm packages
     runs-on: ubuntu-latest
+    environment: npm
 
     steps:
       - name: Validate selected build
@@ -39,6 +46,26 @@ jobs:
           set -euo pipefail
 
           git check-ref-format "refs/tags/$TAG"
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::Release tag must start with v: $TAG"
+            exit 1
+          fi
+          version="${TAG#v}"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::Tag does not contain a valid SemVer version: $TAG"
+            exit 1
+          fi
+          version_without_build="${version%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            prerelease="${version_without_build#*-}"
+            IFS='.' read -ra identifiers <<<"$prerelease"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^[0-9]+$ && ${#identifier} -gt 1 && "$identifier" == 0* ]]; then
+                echo "::error::Tag contains an invalid numeric prerelease identifier with a leading zero: $identifier"
+                exit 1
+              fi
+            done
+          fi
 
           metadata="$(gh run view "$RUN_ID" \
             --repo "$GITHUB_REPOSITORY" \
@@ -53,14 +80,8 @@ jobs:
             echo "::error::Run $RUN_ID belongs to '$workflow_name', not 'Build plugins'."
             exit 1
           fi
-
           if [[ "$conclusion" != "success" ]]; then
             echo "::error::Build run $RUN_ID did not succeed (conclusion: $conclusion)."
-            exit 1
-          fi
-
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Release $TAG already exists."
             exit 1
           fi
 
@@ -74,6 +95,7 @@ jobs:
 
           echo "head_sha=$head_sha" >>"$GITHUB_OUTPUT"
           echo "run_url=$run_url" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
       - name: Download plugin archives
         shell: bash
@@ -87,47 +109,201 @@ jobs:
             --name webview-plugin-zips \
             --dir release-assets
 
-      - name: Create GitHub release
+      - name: Download npm packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name webview-npm-packages \
+            --dir release-npm
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Validate release artifacts
+        id: artifacts
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.build.outputs.head_sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' plugin_archives < <(find release-assets -type f -name '*.zip' -print0 | sort -z)
+          if [[ "${#plugin_archives[@]}" -ne 3 ]]; then
+            echo "::error::Expected 3 plugin ZIP files, found ${#plugin_archives[@]}."
+            exit 1
+          fi
+          for archive in "${plugin_archives[@]}"; do
+            archive_name="$(basename "$archive")"
+            if [[ "$archive_name" != *-"$VERSION".zip ]]; then
+              echo "::error::Plugin archive $archive_name does not match release version $VERSION."
+              exit 1
+            fi
+          done
+
+          manifest="release-npm/npm-packages.json"
+          jq -e \
+            --arg version "$VERSION" \
+            --arg head_sha "$HEAD_SHA" \
+            '.schemaVersion == 1 and .version == $version and .commitSha == $head_sha and (.packages | length) == 2' \
+            "$manifest" >/dev/null
+
+          jq -e '
+            ([.packages[] | [.canonicalName, .publishedName]] | sort_by(.[0])) ==
+            [
+              ["@jetbrains/intellij-webview", "@nerzhulart/intellij-webview"],
+              ["@jetbrains/intellij-webview-testkit", "@nerzhulart/intellij-webview-testkit"]
+            ]
+          ' "$manifest" >/dev/null
+
+          while IFS=$'\t' read -r published_name file expected_integrity; do
+            if [[ "$file" == */* || "$file" == *\\* ]]; then
+              echo "::error::Unsafe npm archive path in manifest: $file"
+              exit 1
+            fi
+            archive="release-npm/$file"
+            if [[ ! -f "$archive" ]]; then
+              echo "::error::Missing npm archive: $archive"
+              exit 1
+            fi
+
+            package_json="$(tar -xOf "$archive" package/package.json)"
+            actual_name="$(jq -r '.name' <<<"$package_json")"
+            actual_version="$(jq -r '.version' <<<"$package_json")"
+            if [[ "$actual_name" != "$published_name" || "$actual_version" != "$VERSION" ]]; then
+              echo "::error::$file contains $actual_name@$actual_version, expected $published_name@$VERSION."
+              exit 1
+            fi
+
+            actual_integrity="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+            if [[ "$actual_integrity" != "$expected_integrity" ]]; then
+              echo "::error::Integrity mismatch for $file."
+              exit 1
+            fi
+          done < <(jq -r '.packages[] | [.publishedName, .file, .integrity] | @tsv' "$manifest")
+
+          if [[ "$VERSION" == *-* ]]; then
+            if [[ "$PRERELEASE" != "true" ]]; then
+              echo "::error::Prerelease version $VERSION requires prerelease=true."
+              exit 1
+            fi
+            dist_tag="next"
+          else
+            if [[ "$PRERELEASE" == "true" ]]; then
+              echo "::error::Stable version $VERSION must use prerelease=false."
+              exit 1
+            fi
+            dist_tag="latest"
+          fi
+          echo "dist_tag=$dist_tag" >>"$GITHUB_OUTPUT"
+
+      - name: Publish npm packages
+        shell: bash
+        env:
+          BOOTSTRAP_NPM: ${{ inputs.bootstrap_npm }}
+          DIST_TAG: ${{ steps.artifacts.outputs.dist_tag }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$BOOTSTRAP_NPM" == "true" ]]; then
+            if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+              echo "::error::bootstrap_npm=true requires the NPM_BOOTSTRAP_TOKEN secret."
+              exit 1
+            fi
+          else
+            unset NODE_AUTH_TOKEN
+          fi
+
+          publish_or_verify() {
+            local published_name="$1"
+            local file="$2"
+            local expected_integrity="$3"
+            local view_error
+            view_error="$(mktemp)"
+
+            if existing_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>"$view_error" | jq -r '.')"; then
+              if [[ "$existing_integrity" != "$expected_integrity" ]]; then
+                echo "::error::$published_name@$VERSION already exists with different integrity."
+                exit 1
+              fi
+              echo "$published_name@$VERSION is already published with matching integrity."
+              return
+            fi
+            if ! grep -q 'E404' "$view_error"; then
+              cat "$view_error" >&2
+              echo "::error::Unable to query $published_name@$VERSION before publishing."
+              exit 1
+            fi
+
+            npm publish "release-npm/$file" --access public --tag "$DIST_TAG"
+            actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json | jq -r '.')"
+            if [[ "$actual_integrity" != "$expected_integrity" ]]; then
+              echo "::error::Registry integrity mismatch after publishing $published_name@$VERSION."
+              exit 1
+            fi
+          }
+
+          while IFS=$'\t' read -r published_name file integrity; do
+            publish_or_verify "$published_name" "$file" "$integrity"
+          done < <(jq -r '.packages | sort_by(.publishedName)[] | [.publishedName, .file, .integrity] | @tsv' release-npm/npm-packages.json)
+
+      - name: Create or reconcile GitHub release
+        id: github_release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.build.outputs.head_sha }}
           PRERELEASE: ${{ inputs.prerelease }}
-          RUN_URL: ${{ steps.build.outputs.run_url }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          mapfile -d '' archives < <(find release-assets -type f -name '*.zip' -print0 | sort -z)
 
-          mapfile -d '' archives < <(
-            find release-assets -type f -name '*.zip' -print0 | sort -z
-          )
-
-          if [[ "${#archives[@]}" -ne 3 ]]; then
-            echo "::error::Expected 3 plugin ZIP files, found ${#archives[@]}."
-            exit 1
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${archives[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            release_url="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq '.url')"
+          else
+            release_args=(
+              release create "$TAG"
+              "${archives[@]}"
+              --repo "$GITHUB_REPOSITORY"
+              --target "$HEAD_SHA"
+              --title "$TAG"
+              --generate-notes
+            )
+            if [[ "$PRERELEASE" == "true" ]]; then
+              release_args+=(--prerelease)
+            fi
+            release_url="$(gh "${release_args[@]}")"
           fi
+          echo "url=$release_url" >>"$GITHUB_OUTPUT"
 
-          printf 'Publishing %s\n' "${archives[@]}"
-
-          release_args=(
-            release create "$TAG"
-            "${archives[@]}"
-            --repo "$GITHUB_REPOSITORY"
-            --target "$HEAD_SHA"
-            --title "$TAG"
-            --generate-notes
-          )
-
-          if [[ "$PRERELEASE" == "true" ]]; then
-            release_args+=(--prerelease)
-          fi
-
-          release_url="$(gh "${release_args[@]}")"
-
+      - name: Summarize release
+        shell: bash
+        env:
+          DIST_TAG: ${{ steps.artifacts.outputs.dist_tag }}
+          RELEASE_URL: ${{ steps.github_release.outputs.url }}
+          RUN_URL: ${{ steps.build.outputs.run_url }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
           {
             echo "## Release published"
             echo
-            echo "- Release: [$TAG]($release_url)"
+            echo "- Release: [$VERSION]($RELEASE_URL)"
             echo "- Source build: [run ${{ inputs.run_id }}]($RUN_URL)"
-            echo "- Commit: \`$HEAD_SHA\`"
+            echo "- Commit: \`${{ steps.build.outputs.head_sha }}\`"
+            echo "- npm: \`@nerzhulart/intellij-webview@$VERSION\` ($DIST_TAG)"
+            echo "- npm: \`@nerzhulart/intellij-webview-testkit@$VERSION\` ($DIST_TAG)"
           } >>"$GITHUB_STEP_SUMMARY"

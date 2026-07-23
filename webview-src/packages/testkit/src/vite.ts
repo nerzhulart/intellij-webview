@@ -3,9 +3,10 @@
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Alias, AliasOptions, Plugin, UserConfig } from "vite"
-import { mockWebViewBridgeBrowserScript } from "./browserScript.ts"
+import { mockWebViewBridgeBrowserScript } from "./browserScript"
 
 const testkitSrcDir = dirname(fileURLToPath(import.meta.url))
+const testkitEntryExtension = fileURLToPath(import.meta.url).endsWith(".ts") ? ".ts" : ".js"
 
 export interface WebViewMockBridgeViteOptions {
   mock: string
@@ -94,8 +95,8 @@ function asPluginArray(plugins: UserConfig["plugins"]): Plugin[] {
 
 function testkitPackageAliases(): Alias[] {
   return [
-    { find: /^@jetbrains\/intellij-webview-testkit$/, replacement: resolve(testkitSrcDir, "index.ts") },
-    { find: /^@jetbrains\/intellij-webview-testkit\/vite$/, replacement: resolve(testkitSrcDir, "vite.ts") },
+    { find: /^@jetbrains\/intellij-webview-testkit$/, replacement: resolve(testkitSrcDir, `index${testkitEntryExtension}`) },
+    { find: /^@jetbrains\/intellij-webview-testkit\/vite$/, replacement: resolve(testkitSrcDir, `vite${testkitEntryExtension}`) },
   ]
 }
 

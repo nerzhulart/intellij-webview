@@ -219,7 +219,7 @@ describe("WebView bridge bootstrap", () => {
     const themeStyleText = themeStyles?.textContent ?? ""
     expect(themeStyleText.includes("/__webview/fonts/inter/Inter-Regular.otf")).toBe(true)
     expect(themeStyleText.includes("/__webview/fonts/jetbrains-mono/JetBrainsMono-Regular.ttf")).toBe(true)
-    expect(themeStyleText.includes("/__webview/fonts/inter/Inter-SemiBold.otf\") format(\"opentype\");\n  font-weight: 700;")).toBe(true)
+    expect(themeStyleText.replaceAll("\r\n", "\n").includes("/__webview/fonts/inter/Inter-SemiBold.otf\") format(\"opentype\");\n  font-weight: 700;")).toBe(true)
     expect(themeStyleText.includes("-webkit-font-smoothing")).toBe(false)
     expect(themeStyleText.includes("-moz-osx-font-smoothing")).toBe(false)
     expect(documentStub.documentElement.getAttribute("data-theme")).toBe("light")

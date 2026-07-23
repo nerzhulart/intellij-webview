@@ -148,9 +148,11 @@ Until standalone Kotlin tests are added:
 
 ## CI and Releases
 
-The manually triggered **Build plugins** workflow builds and uploads the three ZIPs. The **Publish selected build** workflow verifies a successful build run and publishes those exact ZIPs as a GitHub Release.
+The manually triggered **Build plugins** workflow takes a release version and produces the three plugin ZIPs plus the matching SDK and testkit npm tarballs. It also installs those tarballs in a clean fixture and verifies their public exports, Vite build, and mock preview.
 
-The workflows do not publish to JetBrains Marketplace or an npm registry.
+The **Publish selected build** workflow validates a successful build run, publishes its npm tarballs, and creates or reconciles the GitHub Release containing the exact three ZIPs. See [Publish the WebView npm Packages](Publish-NPM-Packages.md) for first-release authentication, trusted publishing, normal releases, and retries.
+
+The workflows do not publish to JetBrains Marketplace.
 
 ## Documentation Verification
 

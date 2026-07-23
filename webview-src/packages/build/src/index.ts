@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Plugin, UserConfig } from "vite"
@@ -8,7 +8,12 @@ import type { Plugin, UserConfig } from "vite"
 const COMMON_WEBVIEW_ASSET_PREFIX = "/__webview/"
 const COMMON_WEBVIEW_BRIDGE_ASSET = "wvi-bridge.js"
 const COMMON_WEBVIEW_PLATFORM_FEATURES_ASSET = "wvi-platform-features.js"
-const webViewCommonAssetsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../resources/webview")
+const webViewBuildModuleDir = dirname(realpathSync(fileURLToPath(import.meta.url)))
+const webViewCommonAssetsDirs = [
+  resolve(webViewBuildModuleDir, "../../runtime-assets"),
+  resolve(webViewBuildModuleDir, "../../../runtime-assets"),
+  resolve(webViewBuildModuleDir, "../../../../resources/webview"),
+]
 
 export interface WebViewViewEntry {
   id: string
@@ -207,7 +212,7 @@ function injectCommonWebViewRuntimeAssetsPlugin(enableDefaultTextSelectionGuard:
         try {
           res.statusCode = 200
           res.setHeader("Content-Type", "text/javascript; charset=utf-8")
-          res.end(readFileSync(resolve(webViewCommonAssetsDir, assetName)))
+          res.end(readCommonWebViewRuntimeAsset(assetName))
         }
         catch {
           next()
@@ -215,6 +220,16 @@ function injectCommonWebViewRuntimeAssetsPlugin(enableDefaultTextSelectionGuard:
       })
     },
   }
+}
+
+function readCommonWebViewRuntimeAsset(assetName: string): Buffer {
+  for (const assetsDir of webViewCommonAssetsDirs) {
+    const asset = resolve(assetsDir, assetName)
+    if (existsSync(asset)) {
+      return readFileSync(asset)
+    }
+  }
+  throw new Error(`Cannot find ${assetName} in ${webViewCommonAssetsDirs.join(", ")}`)
 }
 
 function injectCommonWebViewRuntimeAssets(html: string, bridgeUrl: string, platformFeaturesUrl: string, enableDefaultTextSelectionGuard: boolean): string {

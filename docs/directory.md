@@ -6,12 +6,14 @@ WebView Runtime is an independently installed plugin for IntelliJ-based IDEs. Us
 
 - [WebView UI Authoring Guide](guides/WebView-UI-Authoring-Guide.md) — create, host, preview, and test a WebView UI.
 - [Standalone Development and Verification](guides/Standalone-Development-and-Verification.md) — build this repository, run the demo IDE, and verify changes.
+- [Publish the WebView npm Packages](guides/Publish-NPM-Packages.md) — bootstrap npm publishing, enable OIDC, and release matching ZIPs and packages.
 - [Runtime Architecture](architecture/WebView-Runtime-Architecture.md) — understand the public plugin boundary and internal engine selection.
 
 ## How-to Guides
 
 - [WebView UI Authoring Guide](guides/WebView-UI-Authoring-Guide.md)
 - [Standalone Development and Verification](guides/Standalone-Development-and-Verification.md)
+- [Publish the WebView npm Packages](guides/Publish-NPM-Packages.md)
 - [Coding Guides](guides/Coding-Guides.md)
 - [Kotlin Reactive Stream Ownership](guides/kotlin-reactive-stream-ownership-guideline.md)
 
