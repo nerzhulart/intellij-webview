@@ -174,7 +174,7 @@ function sdkPackageJson(): Record<string, unknown> {
   return {
     name: "@nerzhulart/intellij-webview-sdk",
     version,
-    description: "Unofficial npm distribution of the IntelliJ WebView TypeScript SDK",
+    description: "TypeScript SDK for IntelliJ WebView",
     type: "module",
     license: "Apache-2.0",
     repository: repositoryMetadata("webview-src"),
@@ -207,7 +207,7 @@ function testkitPackageJson(): Record<string, unknown> {
   return {
     name: "@nerzhulart/intellij-webview-sdk-testkit",
     version,
-    description: "Unofficial browser mock and preview testkit for the IntelliJ WebView TypeScript SDK",
+    description: "Browser mock and preview testkit for the IntelliJ WebView TypeScript SDK",
     type: "module",
     license: "Apache-2.0",
     repository: repositoryMetadata("webview-src/packages/testkit"),

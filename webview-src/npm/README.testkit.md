@@ -1,6 +1,6 @@
 # IntelliJ WebView Testkit
 
-This is an unofficial npm distribution of the browser mock and preview testkit from
+This package provides the browser mock and preview testkit from
 [`nerzhulart/intellij-webview`](https://github.com/nerzhulart/intellij-webview).
 
 Install it together with the matching SDK version through npm aliases:

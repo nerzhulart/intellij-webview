@@ -87,7 +87,7 @@ Build or download the WebView Runtime ZIP, install it in the target IDE, and dec
 
 `com.intellij.platform.ui.webview` is the existing technical plugin ID. The runtime is not bundled with the IDE and must be installed alongside the consumer plugin.
 
-The source manifests remain private workspace packages, while releases publish an unofficial npm mirror. Keep the canonical imports and install the exact package version that matches the runtime plugin:
+The source manifests remain private workspace packages, while releases publish public npm packages under `@nerzhulart`. Keep the canonical imports and install the exact package version that matches the runtime plugin:
 
 ```json
 {
@@ -116,7 +116,7 @@ The runtime and its public APIs are experimental. Compatibility may change betwe
 Current distribution limitations:
 
 - Releases are GitHub Release assets, not Marketplace publications.
-- The npm packages are published from a personal scope as an unofficial mirror; official `@jetbrains/*` registry coordinates are not available.
+- The public npm packages use `@nerzhulart/*`; the internal `@jetbrains/*` workspace coordinates are consumed through aliases.
 - Kotlin IDE test sources remain in the repository but are not wired into the standalone Gradle build.
 - The target IDE build and minimum compatible build are configured in `gradle.properties` and `build.gradle.kts`.
 

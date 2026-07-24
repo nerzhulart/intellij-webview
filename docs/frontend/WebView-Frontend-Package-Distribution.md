@@ -4,7 +4,7 @@ WebView Runtime releases produce two public TypeScript packages alongside the th
 
 ## Package Coordinates
 
-The npm artifacts are an unofficial personal-scope mirror. Consumer source code keeps the canonical package names by installing aliases:
+The npm artifacts are published under the project owner's npm scope. Consumer source code keeps the canonical package names by installing aliases:
 
 | Canonical dependency and import | Published npm package |
 | --- | --- |
