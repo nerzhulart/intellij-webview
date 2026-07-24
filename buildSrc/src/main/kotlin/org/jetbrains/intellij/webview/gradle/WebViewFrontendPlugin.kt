@@ -20,6 +20,8 @@ import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.SourceSet
+import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.TaskAction
 import org.gradle.language.jvm.tasks.ProcessResources
 import org.gradle.process.ExecOperations
@@ -191,6 +193,11 @@ class WebViewFrontendPlugin : Plugin<Project> {
     }
 
     project.pluginManager.withPlugin("java") {
+      // Direct Bun builds use the ignored resources/webview tree; Gradle packages only its own generated output.
+      project.extensions.getByType(SourceSetContainer::class.java)
+        .named(SourceSet.MAIN_SOURCE_SET_NAME) {
+          resources.exclude("webview/**")
+        }
       project.tasks.named("processResources", ProcessResources::class.java) {
         dependsOn(buildWebViewAssets)
         from(buildWebViewAssets.flatMap { it.generatedResourcesDirectory })
