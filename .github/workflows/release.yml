@@ -247,7 +247,7 @@ jobs:
               exit 1
             fi
 
-            npm publish "release-npm/$file" --access public --tag "$DIST_TAG"
+            npm publish "./release-npm/$file" --access public --tag "$DIST_TAG"
             actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json | jq -r '.')"
             if [[ "$actual_integrity" != "$expected_integrity" ]]; then
               echo "::error::Registry integrity mismatch after publishing $published_name@$VERSION."
