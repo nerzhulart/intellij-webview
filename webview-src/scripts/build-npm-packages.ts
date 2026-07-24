@@ -30,7 +30,7 @@ await writePackageFiles()
 const packages = await Promise.all([
   packPackage({
     canonicalName: "@jetbrains/intellij-webview",
-    publishedName: "@nerzhulart/intellij-webview",
+    publishedName: "@nerzhulart/intellij-webview-sdk",
     stage: sdkStage,
     requiredFiles: [
       "dist/api/index.js",
@@ -46,7 +46,7 @@ const packages = await Promise.all([
   }),
   packPackage({
     canonicalName: "@jetbrains/intellij-webview-testkit",
-    publishedName: "@nerzhulart/intellij-webview-testkit",
+    publishedName: "@nerzhulart/intellij-webview-sdk-testkit",
     stage: testkitStage,
     requiredFiles: [
       "dist/index.js",
@@ -172,7 +172,7 @@ async function writePackageReadme(templatePath: string, outputPath: string): Pro
 
 function sdkPackageJson(): Record<string, unknown> {
   return {
-    name: "@nerzhulart/intellij-webview",
+    name: "@nerzhulart/intellij-webview-sdk",
     version,
     description: "Unofficial npm distribution of the IntelliJ WebView TypeScript SDK",
     type: "module",
@@ -205,7 +205,7 @@ function sdkPackageJson(): Record<string, unknown> {
 
 function testkitPackageJson(): Record<string, unknown> {
   return {
-    name: "@nerzhulart/intellij-webview-testkit",
+    name: "@nerzhulart/intellij-webview-sdk-testkit",
     version,
     description: "Unofficial browser mock and preview testkit for the IntelliJ WebView TypeScript SDK",
     type: "module",

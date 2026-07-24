@@ -8,14 +8,14 @@ The npm artifacts are an unofficial personal-scope mirror. Consumer source code 
 
 | Canonical dependency and import | Published npm package |
 | --- | --- |
-| `@jetbrains/intellij-webview` | `@nerzhulart/intellij-webview` |
-| `@jetbrains/intellij-webview-testkit` | `@nerzhulart/intellij-webview-testkit` |
+| `@jetbrains/intellij-webview` | `@nerzhulart/intellij-webview-sdk` |
+| `@jetbrains/intellij-webview-testkit` | `@nerzhulart/intellij-webview-sdk-testkit` |
 
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@0.1.0",
-    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-testkit@0.1.0"
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@0.1.0",
+    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-sdk-testkit@0.1.0"
   }
 }
 ```
@@ -35,7 +35,7 @@ Changing the target IDE without changing the frontend API does not require a sep
 
 ## Public Package Surface
 
-`@nerzhulart/intellij-webview` provides:
+`@nerzhulart/intellij-webview-sdk` provides:
 
 - `.` — typed browser APIs such as `apiId` and `webView`;
 - `./vite` — supported Vite configuration helpers;
@@ -44,7 +44,7 @@ Changing the target IDE without changing the frontend API does not require a sep
 
 The low-level `./runtime` entry is intentionally not published. The installed runtime plugin supplies and injects the bridge in IDE-hosted views.
 
-`@nerzhulart/intellij-webview-testkit` provides:
+`@nerzhulart/intellij-webview-sdk-testkit` provides:
 
 - `.` — mock definitions and preview server API;
 - `./node` — runnable preview helpers;

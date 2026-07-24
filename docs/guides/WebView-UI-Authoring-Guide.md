@@ -46,8 +46,8 @@ Install the exact TypeScript package versions matching the WebView Runtime plugi
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@0.1.0",
-    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-testkit@0.1.0",
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@0.1.0",
+    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-sdk-testkit@0.1.0",
     "vite": "^8.0.0"
   }
 }

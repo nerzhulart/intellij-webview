@@ -8,8 +8,8 @@ Install it together with the matching SDK version through npm aliases:
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@{{VERSION}}",
-    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-testkit@{{VERSION}}"
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@{{VERSION}}",
+    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-sdk-testkit@{{VERSION}}"
   }
 }
 ```

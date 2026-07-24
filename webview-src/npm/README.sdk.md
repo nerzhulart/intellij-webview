@@ -9,7 +9,7 @@ Keep the canonical `@jetbrains/intellij-webview` import in application code and 
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview@{{VERSION}}"
+    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@{{VERSION}}"
   }
 }
 ```
