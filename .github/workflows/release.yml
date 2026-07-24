@@ -248,7 +248,17 @@ jobs:
             fi
 
             npm publish "./release-npm/$file" --access public --tag "$DIST_TAG"
-            actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json | jq -r '.')"
+            actual_integrity=""
+            for attempt in {1..60}; do
+              if actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>/dev/null | jq -r '.')"; then
+                break
+              fi
+              if [[ "$attempt" -eq 60 ]]; then
+                echo "::error::Unable to verify $published_name@$VERSION after publishing."
+                exit 1
+              fi
+              sleep 5
+            done
             if [[ "$actual_integrity" != "$expected_integrity" ]]; then
               echo "::error::Registry integrity mismatch after publishing $published_name@$VERSION."
               exit 1
