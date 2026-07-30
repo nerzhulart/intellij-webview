@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import type { WebViewBridge } from "@jetbrains/intellij-webview"
+import type { WebViewBridge } from "@nerzhulart/webview-sdk"
 import { createWebViewBridge } from "./messageBus"
 
 export function installWebViewBridge(): WebViewBridge {

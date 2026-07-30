@@ -1,11 +1,11 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import "@jetbrains/intellij-webview-controls/define/all"
-import "@jetbrains/intellij-webview-controls/jsx"
+import "@nerzhulart/webview-controls/define/all"
+import "@nerzhulart/webview-controls/jsx"
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
-import type { JbControlOption } from "@jetbrains/intellij-webview-controls"
-import { AllIcons, defineWebViewNotification, webView } from "@jetbrains/intellij-webview"
+import type { JbControlOption } from "@nerzhulart/webview-controls"
+import { AllIcons, defineWebViewNotification, webView } from "@nerzhulart/webview-sdk"
 
 const root = document.getElementById("root")
 if (!root) {

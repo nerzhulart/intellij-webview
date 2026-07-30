@@ -44,7 +44,7 @@ function fileSystemAllowList(config: UserConfig, mockPath: string): string[] {
 function webViewMockBridgePlugin(mockPath: string): Plugin {
   const mockUrl = `/@fs/${normalizePath(mockPath)}`
   return {
-    name: "intellij-webview-mock-bridge",
+    name: "webview-mock-bridge",
     enforce: "pre",
     transformIndexHtml(html) {
       return injectMockEntry(html)
@@ -95,8 +95,8 @@ function asPluginArray(plugins: UserConfig["plugins"]): Plugin[] {
 
 function testkitPackageAliases(): Alias[] {
   return [
-    { find: /^@jetbrains\/intellij-webview-testkit$/, replacement: resolve(testkitSrcDir, `index${testkitEntryExtension}`) },
-    { find: /^@jetbrains\/intellij-webview-testkit\/vite$/, replacement: resolve(testkitSrcDir, `vite${testkitEntryExtension}`) },
+    { find: /^@nerzhulart\/webview-testkit$/, replacement: resolve(testkitSrcDir, `index${testkitEntryExtension}`) },
+    { find: /^@nerzhulart\/webview-testkit\/vite$/, replacement: resolve(testkitSrcDir, `vite${testkitEntryExtension}`) },
   ]
 }
 

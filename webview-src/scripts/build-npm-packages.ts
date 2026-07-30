@@ -9,8 +9,8 @@ const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const repositoryRoot = resolve(sourceRoot, "..")
 const outputRoot = resolve(repositoryRoot, "build", "npm")
 const stagingRoot = resolve(outputRoot, "staging")
-const sdkStage = resolve(stagingRoot, "intellij-webview")
-const testkitStage = resolve(stagingRoot, "intellij-webview-testkit")
+const sdkStage = resolve(stagingRoot, "webview-sdk")
+const testkitStage = resolve(stagingRoot, "webview-testkit")
 const version = requiredPackageVersion()
 const commitSha = await resolveCommitSha()
 
@@ -29,8 +29,8 @@ await writePackageFiles()
 
 const packages = await Promise.all([
   packPackage({
-    canonicalName: "@jetbrains/intellij-webview",
-    publishedName: "@nerzhulart/intellij-webview-sdk",
+    canonicalName: "@nerzhulart/webview-sdk",
+    publishedName: "@nerzhulart/webview-sdk",
     stage: sdkStage,
     requiredFiles: [
       "dist/api/index.js",
@@ -45,8 +45,8 @@ const packages = await Promise.all([
     ],
   }),
   packPackage({
-    canonicalName: "@jetbrains/intellij-webview-testkit",
-    publishedName: "@nerzhulart/intellij-webview-sdk-testkit",
+    canonicalName: "@nerzhulart/webview-testkit",
+    publishedName: "@nerzhulart/webview-testkit",
     stage: testkitStage,
     requiredFiles: [
       "dist/index.js",
@@ -129,7 +129,7 @@ async function buildJavaScript(): Promise<void> {
       outdir: resolve(testkitStage, "dist"),
       target: "node",
       packages: "external",
-      external: ["@jetbrains/intellij-webview", "@jetbrains/intellij-webview/*", "vite"],
+      external: ["@nerzhulart/webview-sdk", "@nerzhulart/webview-sdk/*", "vite"],
       splitting: true,
       naming: {
         entry: "[name].[ext]",
@@ -172,7 +172,7 @@ async function writePackageReadme(templatePath: string, outputPath: string): Pro
 
 function sdkPackageJson(): Record<string, unknown> {
   return {
-    name: "@nerzhulart/intellij-webview-sdk",
+    name: "@nerzhulart/webview-sdk",
     version,
     description: "TypeScript SDK for IntelliJ WebView",
     type: "module",
@@ -205,7 +205,7 @@ function sdkPackageJson(): Record<string, unknown> {
 
 function testkitPackageJson(): Record<string, unknown> {
   return {
-    name: "@nerzhulart/intellij-webview-sdk-testkit",
+    name: "@nerzhulart/webview-testkit",
     version,
     description: "Browser mock and preview testkit for the IntelliJ WebView TypeScript SDK",
     type: "module",
@@ -235,7 +235,7 @@ function testkitPackageJson(): Record<string, unknown> {
     bin: { "webview-preview": "./dist/cli.js" },
     files: ["dist", "types", "README.md", "LICENSE"],
     peerDependencies: {
-      "@jetbrains/intellij-webview": version,
+      "@nerzhulart/webview-sdk": version,
       vite: "^8.0.0",
     },
     engines: {

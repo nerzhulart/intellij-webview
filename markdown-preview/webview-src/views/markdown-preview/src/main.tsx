@@ -1,7 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 import { createRoot } from "react-dom/client"
-import { apiId, getPerfLogger, webView, webViewTheme, type WebViewCallable, type WebViewImplementable } from "@jetbrains/intellij-webview"
+import { apiId, getPerfLogger, webView, webViewTheme, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/webview-sdk"
 import { MarkdownPreviewApp, scrollMarkdownPreviewToLine } from "./MarkdownPreviewApp"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { decorateSourceBlocks } from "./markdownSourcePositions"

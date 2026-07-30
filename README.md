@@ -8,7 +8,7 @@ WebView Runtime is an experimental, independently installed plugin for IntelliJ-
 
 - Bundled frontend assets served from plugin resources through a virtual WebView origin.
 - A typed JSON-RPC bridge built around `WebViewApi`, `WebViewApiId`, and `WebViewInterop`.
-- A small TypeScript API exposed as `@jetbrains/intellij-webview`.
+- A small TypeScript API exposed as `@nerzhulart/webview-sdk`.
 - Native WKWebView and WebView2 backends, plus JCEF fallback.
 - Browser previews, deterministic host mocks, and Playwright smoke tests.
 - Shared Web Components and optional React controls styled for IDE UI.
@@ -60,10 +60,10 @@ interface EditorHostApi : WebViewImplementable {
 panel.interop.implement(EditorHostApi.ID, editorHostApi)
 ```
 
-TypeScript calls it through `@jetbrains/intellij-webview`:
+TypeScript calls it through `@nerzhulart/webview-sdk`:
 
 ```ts
-import { apiId, webView, type WebViewCallable } from "@jetbrains/intellij-webview"
+import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
 
 interface EditorHostApi extends WebViewCallable {
   openFile(params: { path: string }): Promise<void>
@@ -81,24 +81,24 @@ Build or download the WebView Runtime ZIP, install it in the target IDE, and dec
 
 ```xml
 <dependencies>
-  <plugin id="com.intellij.platform.ui.webview"/>
+  <plugin id="io.github.nerzhulart.webview"/>
 </dependencies>
 ```
 
-`com.intellij.platform.ui.webview` is the existing technical plugin ID. The runtime is not bundled with the IDE and must be installed alongside the consumer plugin.
+`io.github.nerzhulart.webview` is the existing technical plugin ID. The runtime is not bundled with the IDE and must be installed alongside the consumer plugin.
 
 The source manifests remain private workspace packages, while releases publish public npm packages under `@nerzhulart`. Keep the canonical imports and install the exact package version that matches the runtime plugin:
 
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@0.1.0",
-    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-sdk-testkit@0.1.0"
+    "@nerzhulart/webview-sdk": "0.1.0",
+    "@nerzhulart/webview-testkit": "0.1.0"
   }
 }
 ```
 
-Do not use floating semver ranges for these aliases. See [Frontend Package Distribution](docs/frontend/WebView-Frontend-Package-Distribution.md) for the package contract.
+Do not use floating semver ranges for these packages. See [Frontend Package Distribution](docs/frontend/WebView-Frontend-Package-Distribution.md) for the package contract.
 
 ## Backend Support
 
@@ -116,7 +116,7 @@ The runtime and its public APIs are experimental. Compatibility may change betwe
 Current distribution limitations:
 
 - Releases are GitHub Release assets, not Marketplace publications.
-- The public npm packages use `@nerzhulart/*`; the internal `@jetbrains/*` workspace coordinates are consumed through aliases.
+- Source and published npm packages use the same `@nerzhulart/*` coordinates.
 - Kotlin IDE test sources remain in the repository but are not wired into the standalone Gradle build.
 - The target IDE build and minimum compatible build are configured in `gradle.properties` and `build.gradle.kts`.
 

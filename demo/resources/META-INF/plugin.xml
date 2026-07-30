@@ -1,7 +1,7 @@
 <idea-plugin>
-  <id>com.intellij.platform.ui.webview.demo</id>
+  <id>io.github.nerzhulart.webview.demo</id>
   <name>WebView Demo (Experimental)</name>
-  <vendor>JetBrains</vendor>
+  <vendor>nerzhulart</vendor>
   <description><![CDATA[
     Provides a WebView Demo tool window with sample IDE panels built as local web UI.
     <ul>
@@ -15,18 +15,18 @@
 
   <dependencies>
     <!-- region Generated dependencies - run `Generate Product Layouts` to regenerate -->
-    <plugin id="com.intellij.platform.ui.webview"/>
+    <plugin id="io.github.nerzhulart.webview"/>
     <module name="intellij.markdown"/>
     <!-- endregion -->
   </dependencies>
 
   <extensions defaultExtensionNs="com.intellij">
     <!--suppress SplitModeXmlApiUsage -->
-    <fileBasedIndex implementation="com.intellij.ui.webview.markdown.linkgraph.MarkdownLinkDestinationIndex"/>
+    <fileBasedIndex implementation="io.github.nerzhulart.webview.demo.markdown.linkgraph.MarkdownLinkDestinationIndex"/>
 
     <!--suppress SplitModeXmlApiUsage -->
     <toolWindow id="WebView Demo"
-                factoryClass="com.intellij.ui.webview.demo.WebViewDemoToolWindowFactory"
+                factoryClass="io.github.nerzhulart.webview.demo.WebViewDemoToolWindowFactory"
                 anchor="bottom"
                 secondary="true"
                 doNotActivateOnStart="true"
@@ -34,7 +34,7 @@
 
     <!--suppress SplitModeXmlApiUsage -->
     <toolWindow id="AI Chat (Webview)"
-                factoryClass="com.intellij.ui.webview.demo.acp.AcpChatToolWindowFactory"
+                factoryClass="io.github.nerzhulart.webview.demo.acp.AcpChatToolWindowFactory"
                 anchor="right"
                 doNotActivateOnStart="false"
                 icon="/icons/toolWindowWebViewDemo.svg"/>
@@ -42,7 +42,7 @@
 
   <actions>
     <action id="ActivateWebViewDemoToolWindow"
-            class="com.intellij.ui.webview.demo.ActivateWebViewDemoToolWindowAction"
+            class="io.github.nerzhulart.webview.demo.ActivateWebViewDemoToolWindowAction"
             icon="/icons/toolWindowWebViewDemo.svg"/>
   </actions>
 </idea-plugin>

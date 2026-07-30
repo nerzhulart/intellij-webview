@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { addWebViewFocusLeaveListener } from "@jetbrains/intellij-webview"
+import { addWebViewFocusLeaveListener } from "@nerzhulart/webview-sdk"
 import { createContext, useContext, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react"
 import { Popover } from "radix-ui"
 

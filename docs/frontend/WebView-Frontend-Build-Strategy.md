@@ -20,7 +20,7 @@ The view ID must match the ID passed to `WebViewAssetRoot.forView(viewId)`.
 
 ## Gradle Pipeline
 
-The repository-local `webview-frontend` Gradle plugin is the production build entry point. It registers:
+The repository-local `io.github.nerzhulart.webview.frontend` Gradle plugin is the production build entry point. It registers:
 
 - `verifyBun`, which checks the `bunVersion` declared in `gradle.properties`;
 - `bunInstall`, which runs `bun install --frozen-lockfile` in the module package;
@@ -39,7 +39,7 @@ Do not treat files generated directly under `resources/webview` as source. The a
 
 ## Vite Entry Points
 
-Use the helpers from `@jetbrains/intellij-webview/vite` in `build.ts`:
+Use the helpers from `@nerzhulart/webview-sdk/vite` in `build.ts`:
 
 ```ts
 import { build } from "vite"
@@ -49,7 +49,7 @@ import {
   defineWebViewViewConfigs,
   selectWebViewViewBuildEntries,
   withWebViewBuildWatch,
-} from "@jetbrains/intellij-webview/vite"
+} from "@nerzhulart/webview-sdk/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
 const selected = selectWebViewViewBuildEntries(["settings"])
@@ -84,7 +84,7 @@ bun run typecheck
 bun run build
 ```
 
-Use `@jetbrains/intellij-webview-testkit` for browser previews and smoke tests. The preview server is a development tool only; production code must continue loading bundled assets through `createWebViewPanel(...)`.
+Use `@nerzhulart/webview-testkit` for browser previews and smoke tests. The preview server is a development tool only; production code must continue loading bundled assets through `createWebViewPanel(...)`.
 
 ## Build Invariants
 

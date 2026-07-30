@@ -4,18 +4,13 @@ WebView Runtime releases produce two public TypeScript packages alongside the th
 
 ## Package Coordinates
 
-The npm artifacts are published under the project owner's npm scope. Consumer source code keeps the canonical package names by installing aliases:
-
-| Canonical dependency and import | Published npm package |
-| --- | --- |
-| `@jetbrains/intellij-webview` | `@nerzhulart/intellij-webview-sdk` |
-| `@jetbrains/intellij-webview-testkit` | `@nerzhulart/intellij-webview-sdk-testkit` |
+The npm artifacts and their source manifests use the project owner's npm scope directly:
 
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@0.1.0",
-    "@jetbrains/intellij-webview-testkit": "npm:@nerzhulart/intellij-webview-sdk-testkit@0.1.0"
+    "@nerzhulart/webview-sdk": "0.1.0",
+    "@nerzhulart/webview-testkit": "0.1.0"
   }
 }
 ```
@@ -35,7 +30,7 @@ Changing the target IDE without changing the frontend API does not require a sep
 
 ## Public Package Surface
 
-`@nerzhulart/intellij-webview-sdk` provides:
+`@nerzhulart/webview-sdk` provides:
 
 - `.` — typed browser APIs such as `apiId` and `webView`;
 - `./vite` — supported Vite configuration helpers;
@@ -44,7 +39,7 @@ Changing the target IDE without changing the frontend API does not require a sep
 
 The low-level `./runtime` entry is intentionally not published. The installed runtime plugin supplies and injects the bridge in IDE-hosted views.
 
-`@nerzhulart/intellij-webview-sdk-testkit` provides:
+`@nerzhulart/webview-testkit` provides:
 
 - `.` — mock definitions and preview server API;
 - `./node` — runnable preview helpers;
@@ -53,7 +48,7 @@ The low-level `./runtime` entry is intentionally not published. The installed ru
 
 ## Release Guarantees
 
-The build workflow creates plugin ZIPs and npm tarballs from one commit and version. Before upload, a clean fixture installs the tarballs under their canonical aliases, typechecks all public exports, builds a view, starts a testkit preview outside the checkout, and requests the packaged bridge asset.
+The build workflow creates plugin ZIPs and npm tarballs from one commit and version. Before upload, a clean fixture installs the tarballs, typechecks all public exports, builds a view, starts a testkit preview outside the checkout, and requests the packaged bridge asset.
 
 The release workflow validates the selected build SHA, version, package names, and SHA-512 integrity. A retry skips an existing npm version only when its registry integrity matches the selected tarball; npm versions are never overwritten.
 

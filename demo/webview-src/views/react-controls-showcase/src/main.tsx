@@ -1,11 +1,11 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import "@jetbrains/intellij-webview-react-controls/styles.css"
-import "@jetbrains/intellij-webview-controls/define/all"
-import "@jetbrains/intellij-webview-controls/jsx"
+import "@nerzhulart/webview-react-controls/styles.css"
+import "@nerzhulart/webview-controls/define/all"
+import "@nerzhulart/webview-controls/jsx"
 import React, { useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
-import type { JbControlOption } from "@jetbrains/intellij-webview-controls"
+import type { JbControlOption } from "@nerzhulart/webview-controls"
 import {
   JbControlChrome,
   JbMenuButton,
@@ -27,7 +27,7 @@ import {
   SelectGroup,
   SelectGroupLabel,
   TooltipProvider,
-} from "@jetbrains/intellij-webview-react-controls"
+} from "@nerzhulart/webview-react-controls"
 
 const root = document.getElementById("root")
 if (!root) {
@@ -177,7 +177,7 @@ function ReactControlsShowcase() {
                 <div className="reactShowcaseFieldGroupBody">
                   <jb-label required>Target:</jb-label>
                   <jb-help-text>Labels, help text, and regular text are framework-neutral custom elements.</jb-help-text>
-                  <jb-text weight="medium">intellij.platform.ui.webview.demo</jb-text>
+                  <jb-text weight="medium">io.github.nerzhulart.webview.demo</jb-text>
                   <jb-text tone="muted">Muted secondary text</jb-text>
                   <jb-help-text tone="warning">Warning help text</jb-help-text>
                   <jb-help-text tone="error">Error help text</jb-help-text>

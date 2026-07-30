@@ -49,7 +49,7 @@ Creation must run on EDT. Cancel or complete `featureScope` when the owning UI i
 | `JCEF` | Cross-OS fallback; default asset-backed backend on Linux |
 | `SYSTEM_LINUX` | Disabled WebKitGTK implementation scaffold; never selected |
 
-The `ide.webview.engine` registry value can force `SYSTEM` or `JCEF`. A forced choice is strict: an unavailable or incapable provider fails with diagnostics instead of silently changing backend.
+The `io.github.nerzhulart.webview.engine` registry value can force `SYSTEM` or `JCEF`. A forced choice is strict: an unavailable or incapable provider fails with diagnostics instead of silently changing backend.
 
 ## Asset Loading
 

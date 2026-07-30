@@ -1,14 +1,15 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   kotlin("jvm")
   kotlin("plugin.serialization")
   id("org.jetbrains.intellij.platform")
-  id("webview-frontend")
+  id("io.github.nerzhulart.webview.frontend")
 }
 
-group = "org.intellij.plugins.markdown.webview"
+group = "io.github.nerzhulart.webview.markdown.preview"
 version = providers.gradleProperty("pluginVersion").get()
 
 base {
@@ -23,12 +24,15 @@ repositories {
 }
 
 dependencies {
+  testImplementation("junit:junit:4.13.2")
+
   intellijPlatform {
     intellijIdea(providers.gradleProperty("platformVersion")) {
       useInstaller = false
     }
     localPlugin(project(":"))
     bundledPlugin("org.intellij.plugins.markdown")
+    testFramework(TestFrameworkType.Platform)
   }
 }
 
@@ -40,7 +44,11 @@ extensions.configure<KotlinJvmProjectExtension> {
   }
   sourceSets.named("main") {
     kotlin.srcDirs("src", "sdk-compat/src")
-    kotlin.exclude("org/intellij/plugins/markdown/webview/preview/MarkdownRunCommandSession.kt")
+    kotlin.exclude("io/github/nerzhulart/webview/markdown/preview/MarkdownRunCommandSession.kt")
+  }
+  sourceSets.named("test") {
+    kotlin.srcDir("tests/testSrc")
+    kotlin.exclude("io/github/nerzhulart/webview/markdown/preview/MarkdownRunCommandSessionTest.kt")
   }
 }
 

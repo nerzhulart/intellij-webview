@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { AllIcons } from "@jetbrains/intellij-webview"
+import { AllIcons } from "@nerzhulart/webview-sdk"
 import { classNames } from "./markdownReactUtils"
 
 export const MARKDOWN_ZOOM_SCALE_EXTENT: [number, number] = [0.25, 4]

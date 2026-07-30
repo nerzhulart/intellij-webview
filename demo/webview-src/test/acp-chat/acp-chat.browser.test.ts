@@ -2,7 +2,7 @@
 
 import {dirname, resolve} from "node:path"
 import {fileURLToPath} from "node:url"
-import {startWebViewMockPreview, type MockWebViewCall, type WebViewMockPreviewServer} from "@jetbrains/intellij-webview-testkit"
+import {startWebViewMockPreview, type MockWebViewCall, type WebViewMockPreviewServer} from "@nerzhulart/webview-testkit"
 
 type Locator = {
   boundingBox(): Promise<BoundingBox | null>

@@ -4,7 +4,7 @@ JCEF is the cross-OS fallback browser engine and the default asset-capable engin
 
 ## Availability and Selection
 
-The optional `intellij.platform.ui.webview.jcef` content module registers `JcefEngineProvider`. It is available only when JBCEF can create a browser and CEF is not shutting down.
+The optional `io.github.nerzhulart.webview.jcef` content module registers `JcefEngineProvider`. It is available only when JBCEF can create a browser and CEF is not shutting down.
 
 The provider reports these capabilities:
 
@@ -25,7 +25,7 @@ Asset-backed pages use the virtual origin `https://ij-webview-assets.local/`. CE
 
 The native transport uses the JCEF query handler for page-to-host frames and JavaScript evaluation for host-to-page frames. JSON-RPC state remains in the common message-bus implementation so every engine exposes the same typed API.
 
-The raw transport names are internal details. Consumer plugins should use `WebViewInterop`, `WebViewApiId`, and `@jetbrains/intellij-webview`.
+The raw transport names are internal details. Consumer plugins should use `WebViewInterop`, `WebViewApiId`, and `@nerzhulart/webview-sdk`.
 
 ## Constraints
 

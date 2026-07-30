@@ -2,7 +2,7 @@
 
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { defineWebViewViewConfig } from "@jetbrains/intellij-webview/vite"
+import { defineWebViewViewConfig } from "@nerzhulart/webview-sdk/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
 

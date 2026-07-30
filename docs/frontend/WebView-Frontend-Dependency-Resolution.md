@@ -9,10 +9,10 @@ Use local `file:` dependencies whose paths point to a checkout or packaged sourc
 ```json
 {
   "dependencies": {
-    "@jetbrains/intellij-webview": "file:../../webview-src",
-    "@jetbrains/intellij-webview-controls": "file:../../webview-src/packages/controls",
-    "@jetbrains/intellij-webview-react-controls": "file:../../webview-src/packages/react-controls",
-    "@jetbrains/intellij-webview-testkit": "file:../../webview-src/packages/testkit"
+    "@nerzhulart/webview-sdk": "file:../../webview-src",
+    "@nerzhulart/webview-controls": "file:../../webview-src/packages/controls",
+    "@nerzhulart/webview-react-controls": "file:../../webview-src/packages/react-controls",
+    "@nerzhulart/webview-testkit": "file:../../webview-src/packages/testkit"
   }
 }
 ```
@@ -35,8 +35,8 @@ Prefer package `exports` and `file:` dependencies for normal imports. Add `compi
 {
   "compilerOptions": {
     "paths": {
-      "@jetbrains/intellij-webview-testkit": ["../../webview-src/packages/testkit/src/index.ts"],
-      "@jetbrains/intellij-webview-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"]
+      "@nerzhulart/webview-testkit": ["../../webview-src/packages/testkit/src/index.ts"],
+      "@nerzhulart/webview-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"]
     }
   }
 }
@@ -46,9 +46,9 @@ Do not add production aliases to a deleted source-layout path or a globally inst
 
 ## Runtime and Test Imports
 
-- Production view code imports `@jetbrains/intellij-webview` and optional control packages.
-- Browser mocks import `defineWebViewMock` from `@jetbrains/intellij-webview-testkit`.
-- Runnable preview scripts and Node-side tests may import `@jetbrains/intellij-webview-testkit/node`.
+- Production view code imports `@nerzhulart/webview-sdk` and optional control packages.
+- Browser mocks import `defineWebViewMock` from `@nerzhulart/webview-testkit`.
+- Runnable preview scripts and Node-side tests may import `@nerzhulart/webview-testkit/node`.
 - Production view code must not import the `/node` entry point.
 
 ## Verification
