@@ -3,7 +3,7 @@
 import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { build } from "vite"
-import { defineWebViewViewConfigs, selectWebViewViewBuildEntries, withWebViewBuildWatch } from "@jetbrains/intellij-webview/vite"
+import { defineWebViewViewConfigs, selectWebViewViewBuildEntries, withWebViewBuildWatch } from "@nerzhulart/webview-sdk/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
 const outputRoot = process.env.WEBVIEW_OUTPUT_ROOT

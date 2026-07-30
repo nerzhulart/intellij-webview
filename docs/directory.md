@@ -49,6 +49,7 @@ WebView Runtime is an independently installed plugin for IntelliJ-based IDEs. Us
 
 These documents describe unfinished work only:
 
+- [JetBrains Marketplace Publishing](guides/JetBrains-Marketplace-Publishing-Plan.md)
 - [Architecture Cleanup](architecture/WebView-Architecture-Cleanup-Plan.md)
 - [Bridge Readiness](interop/WebView-Bridge-Ready-Panel-Plan.md)
 - [Windows WebView2 Off-EDT Work](backends/windows-webview2-off-edt-plan.md)
@@ -59,7 +60,7 @@ The ACP chat demo keeps its remaining feature backlog next to the view at `demo/
 ## Documentation Policy
 
 - Describe the runtime as an external plugin, never as an IDE-provided component.
-- Treat `com.intellij.platform.ui.webview` as a technical plugin ID only.
+- Treat `io.github.nerzhulart.webview` as a technical plugin ID only.
 - Keep implementation history in Git, not in live documentation.
 - Keep completed behavior in reference documents and unfinished work in plans.
 - Use commands that work from this standalone repository.

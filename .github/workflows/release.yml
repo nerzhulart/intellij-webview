@@ -161,8 +161,8 @@ jobs:
           jq -e '
             ([.packages[] | [.canonicalName, .publishedName]] | sort_by(.[0])) ==
             [
-              ["@jetbrains/intellij-webview", "@nerzhulart/intellij-webview-sdk"],
-              ["@jetbrains/intellij-webview-testkit", "@nerzhulart/intellij-webview-sdk-testkit"]
+              ["@nerzhulart/webview-sdk", "@nerzhulart/webview-sdk"],
+              ["@nerzhulart/webview-testkit", "@nerzhulart/webview-testkit"]
             ]
           ' "$manifest" >/dev/null
 
@@ -329,6 +329,6 @@ jobs:
             echo "- Release: [$VERSION]($RELEASE_URL)"
             echo "- Source build: [run ${{ inputs.run_id }}]($RUN_URL)"
             echo "- Commit: \`${{ steps.build.outputs.head_sha }}\`"
-            echo "- npm: \`@nerzhulart/intellij-webview-sdk@$VERSION\` ($DIST_TAG)"
-            echo "- npm: \`@nerzhulart/intellij-webview-sdk-testkit@$VERSION\` ($DIST_TAG)"
+            echo "- npm: \`@nerzhulart/webview-sdk@$VERSION\` ($DIST_TAG)"
+            echo "- npm: \`@nerzhulart/webview-testkit@$VERSION\` ($DIST_TAG)"
           } >>"$GITHUB_STEP_SUMMARY"

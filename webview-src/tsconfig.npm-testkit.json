@@ -9,8 +9,8 @@
     "rootDir": "./packages/testkit/src",
     "baseUrl": ".",
     "paths": {
-      "@jetbrains/intellij-webview": ["../build/npm/staging/intellij-webview/types/api/src/index.d.ts"],
-      "@jetbrains/intellij-webview/vite": ["../build/npm/staging/intellij-webview/types/build/src/index.d.ts"]
+      "@nerzhulart/webview-sdk": ["../build/npm/staging/webview-sdk/types/api/src/index.d.ts"],
+      "@nerzhulart/webview-sdk/vite": ["../build/npm/staging/webview-sdk/types/build/src/index.d.ts"]
     }
   },
   "include": ["packages/testkit/src/**/*.ts"],

@@ -10,7 +10,7 @@ Native browser hosts can appear above lightweight Swing painting. WebView Runtim
 - Mouse press, drag, release, click, motion, and wheel events are redispatched to the original enabled Swing target.
 - All registry and facade state is EDT-owned.
 
-The behavior is controlled by `ide.webview.heavyweight.hwfacade.enabled` and is enabled by default.
+The behavior is controlled by `io.github.nerzhulart.webview.heavyweight.hwfacade.enabled` and is enabled by default.
 
 ## Scope
 

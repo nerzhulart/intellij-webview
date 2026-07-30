@@ -36,7 +36,7 @@ const CURRENT_TIME: c_ulong = 0;
 const WEBKIT_SNAPSHOT_REGION_VISIBLE: gint = 0;
 const WEBKIT_SNAPSHOT_OPTIONS_NONE: guint = 0;
 const WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER: gint = 2;
-const NATIVE_ABI_VERSION: &str = "wvi-linux-webkitgtk-v1";
+const NATIVE_ABI_VERSION: &str = "wvi-linux-webkitgtk-v2";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backend {
@@ -422,7 +422,7 @@ struct NativeWebView {
 unsafe impl Send for NativeWebView {}
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_abiVersionNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_abiVersionNative(
     env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jstring {
@@ -432,7 +432,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_createNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_createNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     parent_xid: jlong,
@@ -449,7 +449,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_destroyNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_destroyNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -461,7 +461,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_attachToParentNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_attachToParentNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -479,7 +479,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_detachNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_detachNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -499,7 +499,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_setBoundsNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_setBoundsNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -526,7 +526,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_setVisibleNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_setVisibleNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -543,7 +543,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_focusNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_focusNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -576,7 +576,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_clearFocusNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_clearFocusNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -604,7 +604,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_loadUrlNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_loadUrlNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -636,7 +636,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_loadHtmlNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_loadHtmlNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -700,7 +700,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_evaluateJavaScriptNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_evaluateJavaScriptNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -716,7 +716,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_transferToJsNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_transferToJsNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -735,7 +735,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGt
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_internal_linux_LinuxWebKitGtkBridge_shutdownRuntimeNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_linux_LinuxWebKitGtkBridge_shutdownRuntimeNative(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) {

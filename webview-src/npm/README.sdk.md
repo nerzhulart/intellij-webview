@@ -4,19 +4,19 @@ This package provides the TypeScript SDK from
 [`nerzhulart/intellij-webview`](https://github.com/nerzhulart/intellij-webview).
 It is versioned together with the WebView runtime plugin.
 
-Keep the canonical `@jetbrains/intellij-webview` import in application code and install this distribution through an npm alias:
+Install the package under its published name:
 
 ```json
 {
   "devDependencies": {
-    "@jetbrains/intellij-webview": "npm:@nerzhulart/intellij-webview-sdk@{{VERSION}}"
+    "@nerzhulart/webview-sdk": "{{VERSION}}"
   }
 }
 ```
 
 ```ts
-import { apiId, webView, type WebViewCallable } from "@jetbrains/intellij-webview"
-import { defineWebViewViewConfigs } from "@jetbrains/intellij-webview/vite"
+import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
+import { defineWebViewViewConfigs } from "@nerzhulart/webview-sdk/vite"
 ```
 
 Pin the exact version matching the WebView runtime plugin. Do not use a floating semver range.

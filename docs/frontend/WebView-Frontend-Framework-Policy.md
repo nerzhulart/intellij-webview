@@ -4,16 +4,16 @@ WebView Runtime does not require a frontend framework. The typed bridge, theme i
 
 ## Shared UI
 
-Use Web Components for reusable framework-neutral controls. `@jetbrains/intellij-webview-controls` is implemented with Lit but exposes standard `jb-*` custom elements; consumers do not need to adopt Lit as their application framework.
+Use Web Components for reusable framework-neutral controls. `@nerzhulart/webview-controls` is implemented with Lit but exposes standard `jb-*` custom elements; consumers do not need to adopt Lit as their application framework.
 
-Use `@jetbrains/intellij-webview-react-controls` when a React view needs React-specific composite behavior such as menus, popovers, selects, portals, focus helpers, or tooltips. It complements the Web Components package instead of replacing it.
+Use `@nerzhulart/webview-react-controls` when a React view needs React-specific composite behavior such as menus, popovers, selects, portals, focus helpers, or tooltips. It complements the Web Components package instead of replacing it.
 
 ## Selection Guidance
 
 | Need | Recommended choice |
 | --- | --- |
 | Small page with limited state | TypeScript and Web Components |
-| Shared controls used by multiple frameworks | `@jetbrains/intellij-webview-controls` |
+| Shared controls used by multiple frameworks | `@nerzhulart/webview-controls` |
 | Existing React feature or complex React state | React plus the React controls package |
 | Browser preview and host mocks | Framework of choice plus the testkit |
 

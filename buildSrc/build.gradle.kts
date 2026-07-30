@@ -22,8 +22,8 @@ repositories {
 gradlePlugin {
   plugins {
     create("webViewFrontend") {
-      id = "webview-frontend"
-      implementationClass = "org.jetbrains.intellij.webview.gradle.WebViewFrontendPlugin"
+      id = "io.github.nerzhulart.webview.frontend"
+      implementationClass = "io.github.nerzhulart.webview.gradle.WebViewFrontendPlugin"
     }
   }
 }

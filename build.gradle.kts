@@ -1,6 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
 
@@ -9,10 +10,10 @@ plugins {
   kotlin("plugin.serialization") version "2.4.10"
   id("org.jetbrains.intellij.platform") version "2.18.1"
   id("org.jetbrains.intellij.platform.module") version "2.18.1" apply false
-  id("webview-frontend")
+  id("io.github.nerzhulart.webview.frontend")
 }
 
-group = "com.intellij.platform.ui.webview"
+group = "io.github.nerzhulart.webview"
 version = providers.gradleProperty("pluginVersion").get()
 
 base {
@@ -27,11 +28,18 @@ repositories {
 }
 
 dependencies {
+  testImplementation(platform("org.junit:junit-bom:5.13.4"))
+  testImplementation("org.junit.jupiter:junit-jupiter")
+  testRuntimeOnly("junit:junit:4.13.2")
+  testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
   intellijPlatform {
     intellijIdea(providers.gradleProperty("platformVersion")) {
       useInstaller = false
     }
     pluginModule(project(":jcef"))
+    testFramework(TestFrameworkType.Platform)
+    testFramework(TestFrameworkType.JUnit5)
   }
 }
 
@@ -44,11 +52,17 @@ extensions.configure<KotlinJvmProjectExtension> {
   sourceSets.named("main") {
     kotlin.srcDir("src")
   }
+  sourceSets.named("test") {
+    kotlin.srcDir("tests/testSrc")
+  }
 }
 
 sourceSets {
   named("main") {
     resources.srcDir("resources")
+  }
+  named("test") {
+    resources.srcDir("tests/testResources")
   }
 }
 
@@ -62,6 +76,19 @@ intellijPlatform {
 }
 
 tasks {
+  val testIdeaRoot = layout.buildDirectory.dir("test-idea-root")
+  val prepareTestNativeLibraries by registering(Sync::class) {
+    from("lib/webview-native")
+    into(testIdeaRoot.map { it.dir("community/plugins/ui.webview/lib/webview-native") })
+  }
+
+  test {
+    dependsOn(prepareTestNativeLibraries)
+    useJUnitPlatform()
+    systemProperty("idea.dev.project.root", testIdeaRoot.get().asFile.absolutePath)
+    systemProperty("java.awt.headless", "false")
+  }
+
   register("buildAllWebViewAssets") {
     group = "webview"
     description = "Builds WebView frontend assets for all plugin modules."

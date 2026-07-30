@@ -42,7 +42,7 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-custom-scheme-assets-v10";
+const NATIVE_ABI_VERSION: &str = "wvi-custom-scheme-assets-v11";
 const WM_USER_INVOKE: u32 = WM_USER + 1;
 const WM_USER_SHIFT_FALLBACK: u32 = WM_USER + 2;
 const WEBVIEW_ASSET_CUSTOM_SCHEME: &str = "ij-webview-asset";
@@ -264,7 +264,7 @@ impl JavaCallbacks {
             .call_method(
                 self.object.as_obj(),
                 "resolveAsset",
-                "(Ljava/lang/String;)Lcom/intellij/ui/webview/impl/windows/WinWebView2Bridge$AssetResponse;",
+                "(Ljava/lang/String;)Lio/github/nerzhulart/webview/impl/windows/WinWebView2Bridge$AssetResponse;",
                 &[JValue::Object(&url)],
             )
             .map_err(format_jni_error)?
@@ -579,7 +579,7 @@ impl NativeWebView {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_abiVersionNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_abiVersionNative(
     env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jstring {
@@ -589,7 +589,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_createNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_createNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     parent_hwnd: jlong,
@@ -613,7 +613,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_destroyNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_destroyNative(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -629,7 +629,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_attachToParentNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_attachToParentNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -653,7 +653,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_detachFromParentNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_detachFromParentNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -673,7 +673,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_setBoundsNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setBoundsNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -695,7 +695,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_setVisibleNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setVisibleNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -717,7 +717,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_focusNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_focusNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -737,7 +737,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_clearFocusNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_clearFocusNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -752,7 +752,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_loadUrlNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_loadUrlNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -786,7 +786,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_setVirtualHostNameToFolderMappingNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setVirtualHostNameToFolderMappingNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -818,7 +818,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_loadHtmlNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_loadHtmlNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -853,7 +853,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_evaluateJavaScriptNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_evaluateJavaScriptNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -899,7 +899,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_callDevToolsProtocolMethodNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_callDevToolsProtocolMethodNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -969,7 +969,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_transferToJsNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_transferToJsNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
@@ -1010,7 +1010,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_currentThreadIdNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_currentThreadIdNative(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) -> jlong {
@@ -1024,7 +1024,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_runMessageLoopNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_runMessageLoopNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
 ) {
@@ -1073,7 +1073,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_postTaskNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_postTaskNative(
     env: JNIEnv<'_>,
     _class: JClass<'_>,
     runnable: JObject<'_>,
@@ -1105,7 +1105,7 @@ pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Brid
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_intellij_ui_webview_impl_windows_WinWebView2Bridge_stopMessageLoopNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_stopMessageLoopNative(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     target_tid: jlong,
@@ -1132,7 +1132,7 @@ fn report_task_exception_if_pending(env: &mut JNIEnv<'_>) {
     };
     let _ = env.exception_clear();
     let _ = env.call_static_method(
-        "com/intellij/ui/webview/impl/windows/WinWebView2Bridge",
+        "io/github/nerzhulart/webview/impl/windows/WinWebView2Bridge",
         "reportTaskException",
         "(Ljava/lang/Throwable;)V",
         &[(&throwable).into()],
@@ -1150,7 +1150,7 @@ fn report_dispatcher_error(env: &mut JNIEnv<'_>, message: &str) {
         Err(_) => return,
     };
     let _ = env.call_static_method(
-        "com/intellij/ui/webview/impl/windows/WinWebView2Bridge",
+        "io/github/nerzhulart/webview/impl/windows/WinWebView2Bridge",
         "reportDispatcherError",
         "(Ljava/lang/String;)V",
         &[(&java_message).into()],

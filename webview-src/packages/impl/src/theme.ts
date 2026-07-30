@@ -13,7 +13,7 @@ import type {
   WebViewThemeFonts,
   WebViewThemeHostEvents,
   WebViewThemePageEvents,
-} from "@jetbrains/intellij-webview"
+} from "@nerzhulart/webview-sdk"
 import stylesheet from "../../styles/src/theming/ij-themes.css?raw"
 
 const IJ_THEME_STYLES_ID = "__wvi-ij-themes"

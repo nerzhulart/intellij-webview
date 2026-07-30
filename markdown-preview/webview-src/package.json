@@ -9,8 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@jetbrains/intellij-webview": "file:../../webview-src",
-    "@jetbrains/intellij-webview-controls": "file:../../webview-src/packages/controls",
+    "@nerzhulart/webview-sdk": "file:../../webview-src",
+    "@nerzhulart/webview-controls": "file:../../webview-src/packages/controls",
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0",
     "katex": "^0.16.45",
@@ -26,7 +26,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@jetbrains/intellij-webview-testkit": "file:../../webview-src/packages/testkit",
+    "@nerzhulart/webview-testkit": "file:../../webview-src/packages/testkit",
     "@playwright/test": "^1.56.0",
     "@types/d3-selection": "^3.0.11",
     "@types/d3-zoom": "^3.0.8",

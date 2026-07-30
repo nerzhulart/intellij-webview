@@ -1,6 +1,6 @@
 # Browser Previews and Tests
 
-`@jetbrains/intellij-webview-testkit` runs a WebView page in a normal browser with typed host mocks. It is intended for UI development and browser smoke tests; it does not replace native-backend or IDE integration tests.
+`@nerzhulart/webview-testkit` runs a WebView page in a normal browser with typed host mocks. It is intended for UI development and browser smoke tests; it does not replace native-backend or IDE integration tests.
 
 ## Layout
 
@@ -20,8 +20,8 @@ Do not put mocks in `resources/webview`.
 ## Define a Host Mock
 
 ```ts
-import { apiId } from "@jetbrains/intellij-webview"
-import { defineWebViewMock } from "@jetbrains/intellij-webview-testkit"
+import { apiId } from "@nerzhulart/webview-sdk"
+import { defineWebViewMock } from "@nerzhulart/webview-testkit"
 import type { SettingsHostApi } from "../../views/settings/src/api"
 
 const settingsHostApiId = apiId<SettingsHostApi>()("settings.host")
@@ -42,7 +42,7 @@ Mock the typed contract, not raw method strings or `window.__WVI__`.
 Create `test/<view-id>/preview.ts`:
 
 ```ts
-import { runWebViewMockPreview } from "@jetbrains/intellij-webview-testkit/node"
+import { runWebViewMockPreview } from "@nerzhulart/webview-testkit/node"
 
 await runWebViewMockPreview({
   importMetaUrl: import.meta.url,

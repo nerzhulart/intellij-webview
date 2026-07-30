@@ -15,9 +15,9 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@jetbrains/intellij-webview": ["packages/api/src/index.ts"],
-      "@jetbrains/intellij-webview/runtime": ["packages/runtime/src/index.ts"],
-      "@jetbrains/intellij-webview/vite": ["packages/build/src/index.ts"]
+      "@nerzhulart/webview-sdk": ["packages/api/src/index.ts"],
+      "@nerzhulart/webview-sdk/runtime": ["packages/runtime/src/index.ts"],
+      "@nerzhulart/webview-sdk/vite": ["packages/build/src/index.ts"]
     }
   },
   "include": ["build.ts", "packages/**/*.ts", "packages/**/*.mts"]

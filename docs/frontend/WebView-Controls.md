@@ -4,10 +4,10 @@ WebView Runtime provides two private frontend packages for IDE-styled UI.
 
 ## Web Components
 
-`@jetbrains/intellij-webview-controls` exposes 27 `jb-*` custom elements. Register all controls with one side-effect import:
+`@nerzhulart/webview-controls` exposes 27 `jb-*` custom elements. Register all controls with one side-effect import:
 
 ```ts
-import "@jetbrains/intellij-webview-controls/define/all"
+import "@nerzhulart/webview-controls/define/all"
 ```
 
 Then use standard HTML:
@@ -20,13 +20,13 @@ Then use standard HTML:
 <jb-button>Apply</jb-button>
 ```
 
-For smaller bundles, import individual definitions such as `@jetbrains/intellij-webview-controls/elements/button`. The package also exports `tokens.css`, `tokens.json`, `custom-elements.json`, and JSX typings.
+For smaller bundles, import individual definitions such as `@nerzhulart/webview-controls/elements/button`. The package also exports `tokens.css`, `tokens.json`, `custom-elements.json`, and JSX typings.
 
 Available elements include buttons, checkboxes, text and number inputs, select/combobox controls, radio groups, segmented controls, sliders, tabs, field composition, labels/help text, menus, disclosure, separators, spinners, text, and icons. The package source and `custom-elements.json` are the authoritative API list.
 
 ## React Controls
 
-`@jetbrains/intellij-webview-react-controls` provides React-specific composites and helpers for:
+`@nerzhulart/webview-react-controls` provides React-specific composites and helpers for:
 
 - control chrome;
 - focus handling;
@@ -39,8 +39,8 @@ Available elements include buttons, checkboxes, text and number inputs, select/c
 Import its styles and the components you use:
 
 ```tsx
-import "@jetbrains/intellij-webview-react-controls/styles.css"
-import { JbSelect, JbSelectItem } from "@jetbrains/intellij-webview-react-controls"
+import "@nerzhulart/webview-react-controls/styles.css"
+import { JbSelect, JbSelectItem } from "@nerzhulart/webview-react-controls"
 ```
 
 React and React DOM are peer dependencies. The React package can be used together with the `jb-*` elements; register the Web Components separately when a view renders them.

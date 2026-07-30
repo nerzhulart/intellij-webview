@@ -1,7 +1,7 @@
 <idea-plugin allow-bundled-update="true">
-  <id>org.intellij.plugins.markdown.webview.preview</id>
+  <id>io.github.nerzhulart.webview.markdown.preview</id>
   <name>Markdown WebView Preview (Experimental)</name>
-  <vendor>JetBrains</vendor>
+  <vendor>nerzhulart</vendor>
   <category>Languages</category>
   <description><![CDATA[
     Provides a Markdown preview powered by an embedded WebView panel.
@@ -15,12 +15,12 @@
   <dependencies>
     <plugin id="org.intellij.plugins.markdown"/>
     <!-- region Generated dependencies - run `Generate Product Layouts` to regenerate -->
-    <plugin id="com.intellij.platform.ui.webview"/>
+    <plugin id="io.github.nerzhulart.webview"/>
     <module name="intellij.markdown"/>
     <!-- endregion -->
   </dependencies>
 
   <extensions defaultExtensionNs="org.intellij.markdown">
-    <html.panel.provider implementation="org.intellij.plugins.markdown.webview.preview.WebViewMarkdownPreviewPanelProvider"/>
+    <html.panel.provider implementation="io.github.nerzhulart.webview.markdown.preview.WebViewMarkdownPreviewPanelProvider"/>
   </extensions>
 </idea-plugin>

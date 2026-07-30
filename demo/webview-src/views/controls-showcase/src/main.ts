@@ -1,8 +1,8 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import "@jetbrains/intellij-webview-controls/define/all"
-import { AllIcons } from "@jetbrains/intellij-webview"
-import type { JbControlOption } from "@jetbrains/intellij-webview-controls"
+import "@nerzhulart/webview-controls/define/all"
+import { AllIcons } from "@nerzhulart/webview-sdk"
+import type { JbControlOption } from "@nerzhulart/webview-controls"
 
 interface ItemsControl extends HTMLElement {
   items: JbControlOption[]
@@ -288,7 +288,7 @@ function renderGroupsAndDisclosure(): string {
     <div class="showcase-grid">
       <section class="panel">
         <jb-field-group label="Build options">
-          <jb-field label="Target:"><jb-combobox id="build-target" value="intellij.platform.ui.webview"></jb-combobox></jb-field>
+          <jb-field label="Target:"><jb-combobox id="build-target" value="io.github.nerzhulart.webview"></jb-combobox></jb-field>
           <jb-checkbox checked>Use remote cache</jb-checkbox>
           <jb-separator></jb-separator>
           <jb-radio-group id="build-kind" label="Build kind" value="incremental"></jb-radio-group>
@@ -384,7 +384,7 @@ function hydrateControls(container: HTMLElement): void {
   setItems(container, "#component-search", ["Button", "Checkbox", "Input Field", "Segmented Control"].map(toOption), "Button")
   setItems(container, "#density-group", ["default", "compact"].map(toOption), "default")
   setItems(container, "#validation-mode", ["strict", "lenient"].map(toOption), "strict")
-  setItems(container, "#build-target", ["intellij.platform.ui.webview", "intellij.platform.ui.webview.demo"].map(toOption), "intellij.platform.ui.webview")
+  setItems(container, "#build-target", ["io.github.nerzhulart.webview", "io.github.nerzhulart.webview.demo"].map(toOption), "io.github.nerzhulart.webview")
   setItems(container, "#build-kind", ["incremental", "full"].map(toOption), "incremental")
   setItems(container, "#view-mode", ["preview", "source", "diff"].map(toOption), "preview")
   setItems(container, "#scope-select", ["project", "module", "file"].map(toOption), "project")

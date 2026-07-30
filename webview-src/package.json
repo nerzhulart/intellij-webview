@@ -1,5 +1,5 @@
 {
-  "name": "@jetbrains/intellij-webview",
+  "name": "@nerzhulart/webview-sdk",
   "private": true,
   "type": "module",
   "exports": {

@@ -10,8 +10,8 @@ Use this maintainer guide to publish the WebView Runtime plugin ZIPs and their m
 
 The release publishes:
 
-- `@nerzhulart/intellij-webview-sdk`;
-- `@nerzhulart/intellij-webview-sdk-testkit`.
+- `@nerzhulart/webview-sdk`;
+- `@nerzhulart/webview-testkit`.
 
 ## Build a Release Candidate
 

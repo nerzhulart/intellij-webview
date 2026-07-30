@@ -6,14 +6,14 @@ plugins {
   kotlin("jvm")
   kotlin("plugin.serialization")
   id("org.jetbrains.intellij.platform")
-  id("webview-frontend")
+  id("io.github.nerzhulart.webview.frontend")
 }
 
-group = "com.intellij.platform.ui.webview"
+group = "io.github.nerzhulart.webview.demo"
 version = providers.gradleProperty("pluginVersion").get()
 
 base {
-  archivesName.set("platform-ui-webview-demo")
+  archivesName.set("webview-demo")
 }
 
 repositories {
@@ -62,6 +62,6 @@ intellijPlatform {
 
 tasks {
   buildPlugin {
-    archiveFileName.set("platform-ui-webview-demo-${providers.gradleProperty("pluginVersion").get()}.zip")
+    archiveFileName.set("webview-demo-${providers.gradleProperty("pluginVersion").get()}.zip")
   }
 }

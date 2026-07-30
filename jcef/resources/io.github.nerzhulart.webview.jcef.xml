@@ -1,0 +1,13 @@
+<idea-plugin>
+  <!-- region Generated dependencies - run `Generate Product Layouts` to regenerate -->
+  <dependencies>
+    <plugin id="io.github.nerzhulart.webview"/>
+    <module name="intellij.libraries.jcef"/>
+    <module name="intellij.platform.ui.jcef"/>
+  </dependencies>
+  <!-- endregion -->
+
+  <extensions defaultExtensionNs="io.github.nerzhulart.webview">
+    <webViewEngineProvider implementation="io.github.nerzhulart.webview.impl.jcef.JcefEngineProvider"/>
+  </extensions>
+</idea-plugin>

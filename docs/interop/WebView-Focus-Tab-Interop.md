@@ -17,7 +17,7 @@ The internal typed protocol uses the `webview.focus` namespace. Consumer views n
 Close transient page UI when WebView focus leaves:
 
 ```ts
-import { addWebViewFocusLeaveListener } from "@jetbrains/intellij-webview"
+import { addWebViewFocusLeaveListener } from "@nerzhulart/webview-sdk"
 
 const dispose = addWebViewFocusLeaveListener(() => closeOpenPopup())
 ```

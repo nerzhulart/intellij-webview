@@ -1,5 +1,5 @@
 {
-  "name": "@jetbrains/intellij-webview-testkit",
+  "name": "@nerzhulart/webview-testkit",
   "private": true,
   "type": "module",
   "exports": {
@@ -20,11 +20,11 @@
     "webview-preview": "./src/cli.ts"
   },
   "peerDependencies": {
-    "@jetbrains/intellij-webview": "*",
+    "@nerzhulart/webview-sdk": "*",
     "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
-    "@jetbrains/intellij-webview": {
+    "@nerzhulart/webview-sdk": {
       "optional": true
     }
   }
