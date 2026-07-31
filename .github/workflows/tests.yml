@@ -1,0 +1,174 @@
+name: Gradle tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  JBR_VERSION: "25.0.3"
+  JBR_BUILD: "508.16"
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            java_arch: x64
+            jbr_platform: linux-x64
+            jbr_sha512: ed864cb2fa29b742d0ca03c1f07ed85466a1c13796efb1a5ae81bd65c9b2d51b71117a0ab6c432d414cdba233abc0352c73e8071e78ff5c0abc51bf10a00e5ed
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            java_arch: aarch64
+            jbr_platform: linux-aarch64
+            jbr_sha512: 4727ff3131d1cf5353d16cb6e530d42d693db979f37864fd1a1f8d41912efd6ca79d46eaebadcc14cc54523f4c2c4ee376c06238af847f477a794a32ad12cec4
+          - name: Windows x64
+            runner: windows-2025
+            java_arch: x64
+            jbr_platform: windows-x64
+            jbr_sha512: eca3bedf04a8c5fe781f4a96e8d31df0ad4570cff508febc297353abbd1ac1c9e4b477e58fa06076e6e182b718958ba25ead35dbb622200fdc8ff21077c45111
+          - name: Windows ARM64
+            runner: windows-11-arm
+            java_arch: aarch64
+            jbr_platform: windows-aarch64
+            jbr_sha512: 4af6681517d8fe4f63a7c815aba373510769884968b6d9d1777af4d14cbd2444ae8dc691e9f55a56abf6457753bff42441369cd2100fe0806145e83232a77242
+          - name: macOS Intel
+            runner: macos-15-intel
+            java_arch: x64
+            jbr_platform: osx-x64
+            jbr_sha512: 6008b16c5b3d52f2c5726ae45c584b7c0a7501277636d608e6615227618dddf7fb54c2f61f0de40bf896c6f34f4f6241a64ab8a3196d646f6010ff3dfd0bd188
+          - name: macOS ARM64
+            runner: macos-15
+            java_arch: aarch64
+            jbr_platform: osx-aarch64
+            jbr_sha512: 44ef766f2f60f0d89ca211aaf8d85b44ac459d23c73cd2680c58c2d9afcede3f416fa84bb1af13e07b32b38a1c9d36ef0ee91d43a6f783aff31c0b64b38b5cb6
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Restore JBR archive
+        id: jbr-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
+          key: jbrsdk-jcef-${{ env.JBR_VERSION }}-b${{ env.JBR_BUILD }}-${{ matrix.jbr_platform }}-${{ matrix.jbr_sha512 }}
+
+      - name: Download JBR archive
+        if: steps.jbr-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $archiveDirectory = Join-Path $env:RUNNER_TEMP "jbr"
+          $archivePath = Join-Path $archiveDirectory "jbrsdk_jcef.tar.gz"
+          $archiveName = "jbrsdk_jcef-$env:JBR_VERSION-${{ matrix.jbr_platform }}-b$env:JBR_BUILD.tar.gz"
+          $downloadUrl = "https://cache-redirector.jetbrains.com/intellij-jbr/$archiveName"
+
+          New-Item -ItemType Directory -Force -Path $archiveDirectory | Out-Null
+          & curl --fail --location --retry 3 --retry-all-errors --output $archivePath $downloadUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download JBR archive from $downloadUrl"
+          }
+
+      - name: Verify JBR archive
+        shell: pwsh
+        run: |
+          $archivePath = Join-Path $env:RUNNER_TEMP "jbr/jbrsdk_jcef.tar.gz"
+          $expectedChecksum = "${{ matrix.jbr_sha512 }}"
+          $actualChecksum = (Get-FileHash -Algorithm SHA512 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+
+          if ($actualChecksum -ne $expectedChecksum) {
+            throw "JBR archive checksum mismatch: expected $expectedChecksum, got $actualChecksum"
+          }
+
+      - name: Save JBR archive
+        if: steps.jbr-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
+          key: ${{ steps.jbr-cache.outputs.cache-primary-key }}
+
+      - name: Set up custom JBR
+        uses: actions/setup-java@v5
+        with:
+          distribution: jdkfile
+          jdk-file: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
+          java-version: ${{ env.JBR_VERSION }}
+          architecture: ${{ matrix.java_arch }}
+
+      - name: Verify custom JBR
+        shell: pwsh
+        run: |
+          $settings = (& java -XshowSettings:properties -version 2>&1 | Out-String)
+          $settings
+
+          if ($settings -notmatch "java\.vendor\s*=\s*JetBrains") {
+            throw "Expected JetBrains Runtime, but java.vendor is different"
+          }
+          if ($settings -notmatch "java\.version\s*=\s*$env:JBR_VERSION") {
+            throw "Expected JBR $env:JBR_VERSION, but java.version is different"
+          }
+
+          $expectedArchitecture = "${{ matrix.java_arch }}"
+          if ($expectedArchitecture -eq "aarch64") {
+            if ($settings -notmatch "os\.arch\s*=\s*aarch64") {
+              throw "Expected aarch64 JBR, but os.arch is different"
+            }
+          }
+          elseif ($settings -notmatch "os\.arch\s*=\s*(amd64|x86_64)") {
+            throw "Expected x64 JBR, but os.arch is different"
+          }
+
+      - name: Restrict Gradle toolchains to custom JBR
+        shell: pwsh
+        run: |
+          $gradleOptions = @(
+            "-Dorg.gradle.java.installations.auto-detect=false"
+            "-Dorg.gradle.java.installations.auto-download=false"
+            "-Dorg.gradle.java.installations.paths=$env:JAVA_HOME"
+          ) -join " "
+          "GRADLE_OPTS=$gradleOptions" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up Bun 1.3.14
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Set up Gradle 9.1.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.1.0"
+
+      - name: Bootstrap Gradle wrapper
+        shell: pwsh
+        run: gradle wrapper --gradle-version 9.1.0 --distribution-type bin
+
+      - name: Make Gradle wrapper executable
+        if: runner.os != 'Windows'
+        shell: bash
+        run: chmod +x gradlew
+
+      - name: Run Gradle tests on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: xvfb-run -a ./gradlew test --stacktrace
+
+      - name: Run Gradle tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\gradlew.bat test --stacktrace
+
+      - name: Run Gradle tests on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./gradlew test --stacktrace
