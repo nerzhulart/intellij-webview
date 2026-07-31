@@ -59,8 +59,6 @@ internal class WebViewInIdeSmokeTest {
       }
       frame = showHost(host)
 
-      smokePanel.reload()
-
       waitForJavaScriptResult(
         webView = smokePanel.webView,
         script = "window.__WEBVIEW_SMOKE_EXECUTED__ === true ? 'ok' : 'pending'",
