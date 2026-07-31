@@ -20,6 +20,7 @@ import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntimeInfo
 import io.github.nerzhulart.webview.impl.engine.WebViewScriptResult
+import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
 import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
@@ -193,6 +194,24 @@ internal class WebViewRuntimeTest {
   }
 
   @Test
+  fun createWebView_installsApplicationModeDocumentStartScript(): Unit = runBlocking {
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+
+    val webView = runtime.createWebView(scope = this)
+
+    val script = provider.creationOptions.single().documentStartScripts.first().script
+    assertEquals(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT.script, script)
+    assertTrue(script.contains("contextmenu"), script)
+    assertTrue(script.contains("MutationObserver"), script)
+    webView.close()
+  }
+
+  @Test
   fun createWebView_installsConsoleCaptureDocumentStartScript(): Unit = runBlocking {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
@@ -203,7 +222,7 @@ internal class WebViewRuntimeTest {
 
     val webView = runtime.createWebView(scope = this)
 
-    val script = provider.creationOptions.single().documentStartScripts.single().script
+    val script = provider.creationOptions.single().documentStartScripts.last().script
     assertEquals(WebViewConsoleCapture.DOCUMENT_START_SCRIPT.script, script)
     assertTrue(script.contains("$/webview/console"), script)
     assertTrue(script.contains("Date.now"), script)
@@ -211,6 +230,27 @@ internal class WebViewRuntimeTest {
     assertTrue(script.contains("window.webkit.messageHandlers"), script)
     assertTrue(script.contains("__wviJcefQuery"), script)
     webView.close()
+  }
+
+  @Test
+  fun createEngine_installsApplicationModeDocumentStartScript(): Unit = runBlocking {
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+
+    val engine = runtime.createEngine(scope = this, engineKind = WebViewEngineKind.Jcef)
+    try {
+      assertEquals(
+        listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT),
+        provider.creationOptions.single().documentStartScripts,
+      )
+    }
+    finally {
+      engine.close()
+    }
   }
 
   @Test

@@ -13,6 +13,7 @@ import io.github.nerzhulart.webview.api.WebViewMessageRegistration
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.impl.CONSOLE_LOG_CATEGORY
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
+import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
 import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
@@ -207,7 +208,7 @@ data class WebViewEngineCreationOptions(
   val jcefNativeBundlePath: Path?,
   val debugName: String?,
   val consoleLogCategory: String = CONSOLE_LOG_CATEGORY,
-  val documentStartScripts: List<WebViewScript> = emptyList(),
+  val documentStartScripts: List<WebViewScript> = listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT),
 ) {
   fun withDocumentStartScript(script: WebViewScript): WebViewEngineCreationOptions {
     return copy(documentStartScripts = documentStartScripts + script)

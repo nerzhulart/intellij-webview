@@ -1,7 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package io.github.nerzhulart.webview.impl
 
-import org.intellij.lang.annotations.Language
+import io.github.nerzhulart.webview.impl.engine.WebViewScript
 
 internal object WebViewApplicationModeScripts {
   /**
@@ -14,8 +14,7 @@ internal object WebViewApplicationModeScripts {
    * It intentionally avoids stopping normal application events, so component-owned input handling
    * and custom autocomplete UI can keep working.
    */
-  @Language("JavaScript")
-  val DOM_HARDENING_SCRIPT: String = """
+  val DOCUMENT_START_SCRIPT: WebViewScript = WebViewScript("""
     (function() {
       const formControlSelector = 'input, textarea, select';
       const inputAssistAttributes = [
@@ -184,5 +183,5 @@ internal object WebViewApplicationModeScripts {
         configureTree(document);
       }, { once: true });
     })();
-  """.trimIndent()
+  """.trimIndent())
 }

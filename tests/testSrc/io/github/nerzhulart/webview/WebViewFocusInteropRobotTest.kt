@@ -8,14 +8,15 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
 import io.github.nerzhulart.webview.impl.NativeBridgeLibraryAvailability
 import io.github.nerzhulart.webview.impl.WebViewEngineBridge
+import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacNativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacWebViewEngine
 import io.github.nerzhulart.webview.impl.mac.MacWebViewFirstResponderState
-import io.github.nerzhulart.webview.impl.mac.createMacWebViewEngine
+import io.github.nerzhulart.webview.impl.mac.MacWkWebViewEngineProvider
 import io.github.nerzhulart.webview.impl.windows.WinNativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.windows.WinWebViewEngine
-import io.github.nerzhulart.webview.impl.windows.createWinWebViewEngine
+import io.github.nerzhulart.webview.impl.windows.WindowsWebView2EngineProvider
 import io.github.nerzhulart.webview.impl.windows.winWebView2BridgeLibrary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -196,7 +197,7 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.MAC)
   fun returningToSwingMovesMacFirstResponderOutsideWebView(@TempDir tempDir: Path): Unit = runBlocking {
     ensureJna()
-    val facade = createMacWebViewEngine(scope!!)
+    val facade = createMacEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runMacFirstResponderFocusTransferScenario(
         frame = frame!!,
@@ -252,15 +253,27 @@ class WebViewFocusInteropRobotTest {
     val osName = System.getProperty("os.name", "")
     return when {
       osName.startsWith("Mac", ignoreCase = true) -> {
-        ensureJna()
-        createMacWebViewEngine(scope)
+        createMacEngine(scope)
       }
       osName.startsWith("Windows", ignoreCase = true) -> {
         assumeTrue(nativeBridgeAvailable(), "WinWebView2Bridge DLL is not built; run community/plugins/ui.webview/native/WinWebView2Bridge/build.ps1")
-        createWinWebViewEngine(scope)
+        WindowsWebView2EngineProvider().createEngine(scope, webViewEngineCreationOptions())
       }
       else -> error("Unsupported OS for WebView focus interop Robot test: $osName")
     }
+  }
+
+  private fun createMacEngine(scope: CoroutineScope): MacWebViewEngine {
+    ensureJna()
+    return MacWkWebViewEngineProvider().createEngine(scope, webViewEngineCreationOptions()) as MacWebViewEngine
+  }
+
+  private fun webViewEngineCreationOptions(): WebViewEngineCreationOptions {
+    return WebViewEngineCreationOptions(
+      strictPreference = true,
+      jcefNativeBundlePath = null,
+      debugName = null,
+    )
   }
 
   private fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
