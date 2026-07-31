@@ -531,16 +531,24 @@ internal object WebViewFocusRobotTestSupport {
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
+      clearText(field)
       clearWebInput(engine)
+      typeKey(robot, KeyEvent.VK_1)
+      val swingFieldPreflightDiagnostics = buildCurrentFocusDiagnostics(frame, field)
+      assumeTrue(
+        waitForFieldText(field, "1", inputEvents, assertOnFailure = false),
+        "AWT Robot key input is not delivered to the focused Swing field; $swingFieldPreflightDiagnostics; inputEvents=$inputEvents",
+      )
+      assertWebInputValue(engine, "", "WebView input received typed input while Swing field was focused")
 
       clickWebElementCenter(robot, host, engine, "web-input")
-      waitForFocusOwnerNot(field, "WebView activation did not clear the previous Swing focus owner")
       waitForJavaScriptResult(
         webView = engine,
         script = "document.activeElement && document.activeElement.id === 'web-input'",
         expected = "true",
         description = "WebView input did not become the active document element after Robot click",
       )
+      waitForFocusOwnerNot(field, "WebView activation did not clear the previous Swing focus owner")
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not regain focus after WebView activation", skipIfUnavailable = false)
       assertNativeFocusReadyForSwingTyping()
