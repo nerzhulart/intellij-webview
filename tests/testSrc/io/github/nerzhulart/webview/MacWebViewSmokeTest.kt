@@ -13,6 +13,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.intellij.lang.annotations.Language
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -28,6 +30,7 @@ import javax.swing.JFrame
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Headless smoke tests for the macOS WKWebView integration.
@@ -329,11 +332,9 @@ class MacWebViewSmokeTest {
       frame!!.contentPane.add(host)
       frame!!.revalidate()
     }
-    delay(1000.milliseconds)
 
     facade.loadHtml(/*language=HTML*/ "<html><body>phase1</body></html>")
-    delay(500.milliseconds)
-    assertEquals("phase1", facade.evaluateJavaScript(/*language=JavaScript*/ "document.body.textContent.trim()"))
+    waitForJavaScript(facade, "document.body.textContent.trim()", "phase1")
 
     // Simulate tool window hide — host panel leaves the Swing hierarchy.
     SwingUtilities.invokeAndWait {
@@ -348,10 +349,9 @@ class MacWebViewSmokeTest {
       frame!!.contentPane.add(host)
       frame!!.revalidate()
     }
-    delay(1000.milliseconds)
 
     // Page state is retained and JS evaluation still works on the same WKWebView.
-    assertEquals("phase1", facade.evaluateJavaScript(/*language=JavaScript*/ "document.body.textContent.trim()"))
+    waitForJavaScript(facade, "document.body.textContent.trim()", "phase1")
     assertEquals("4", facade.evaluateJavaScript(/*language=JavaScript*/ "2 + 2"))
 
     facade.close()
@@ -432,6 +432,18 @@ class MacWebViewSmokeTest {
 
   private fun createHost(scope: CoroutineScope, engine: MacWebViewEngine): SwingWebViewHostPanel {
     return SwingWebViewHostPanel(scope, engine, nativeHostPeer = MacNativeWebViewHostPeer(scope, engine))
+  }
+
+  private suspend fun waitForJavaScript(
+    facade: MacWebViewEngine,
+    @Language("JavaScript") script: String,
+    expected: String,
+  ) {
+    withTimeout(5.seconds) {
+      while (facade.evaluateJavaScript(script) != expected) {
+        delay(100.milliseconds)
+      }
+    }
   }
 
 }
