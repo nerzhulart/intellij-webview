@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -219,3 +220,25 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: ./gradlew test --stacktrace
+
+      - name: Publish Gradle test report
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          check_name: Gradle tests (${{ matrix.name }})
+          report_paths: '**/build/test-results/test/TEST-*.xml'
+          detailed_summary: true
+          group_suite: true
+          include_time_in_summary: true
+          simplified_summary: true
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+
+      - name: Upload Gradle test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gradle-test-reports-${{ matrix.name }}
+          path: |
+            **/build/test-results/**
+            **/build/reports/tests/**
+          if-no-files-found: warn
