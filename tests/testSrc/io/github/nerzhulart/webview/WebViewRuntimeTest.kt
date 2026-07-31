@@ -6,7 +6,6 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.TestLoggerFactory
 import com.intellij.testFramework.junit5.RegistryKey
-import com.intellij.testFramework.junit5.SystemProperty
 import com.intellij.testFramework.junit5.TestApplication
 import io.github.nerzhulart.webview.impl.engine.WebView
 import io.github.nerzhulart.webview.api.WebViewAssetPath
@@ -173,7 +172,7 @@ internal class WebViewRuntimeTest {
   }
 
   @Test
-  @SystemProperty("io.github.nerzhulart.webview.debug.engine.overlay", "true")
+  @RegistryKey(key = "io.github.nerzhulart.webview.debug.engine.overlay", value = "true")
   fun createWebView_exposesRuntimeInfoToCommonBridge(): Unit = runBlocking {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
