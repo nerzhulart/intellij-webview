@@ -5,13 +5,11 @@ import com.intellij.openapi.util.SystemInfo
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
+import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
+import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
-import io.github.nerzhulart.webview.impl.mac.MacNativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.mac.MacWebViewEngine
-import io.github.nerzhulart.webview.impl.mac.createMacWebViewEngine
-import io.github.nerzhulart.webview.impl.windows.WinNativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.windows.WinWebViewEngine
-import io.github.nerzhulart.webview.impl.windows.createWinWebViewEngine
+import io.github.nerzhulart.webview.impl.mac.MacWkWebViewEngineProvider
+import io.github.nerzhulart.webview.impl.windows.WindowsWebView2EngineProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,16 +39,20 @@ object LightweightStandaloneSampleApp {
     SwingUtilities.invokeLater {
       @Suppress("RAW_SCOPE_CREATION") // Standalone sample: no parent scope available.
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-      val facade = when {
-        SystemInfo.isMac -> createMacWebViewEngine(scope)
-        SystemInfo.isWindows -> createWinWebViewEngine(scope)
+      val provider: WebViewEngineProvider = when {
+        SystemInfo.isMac -> MacWkWebViewEngineProvider()
+        SystemInfo.isWindows -> WindowsWebView2EngineProvider()
         else -> error("System WebView sample is supported only on macOS and Windows")
       }
-      val nativeHostPeer = when {
-        SystemInfo.isMac -> MacNativeWebViewHostPeer(scope, facade as MacWebViewEngine)
-        SystemInfo.isWindows -> WinNativeWebViewHostPeer(facade as WinWebViewEngine)
-        else -> error("System WebView sample is supported only on macOS and Windows")
-      }
+      val facade = provider.createEngine(
+        scope,
+        WebViewEngineCreationOptions(
+          strictPreference = true,
+          jcefNativeBundlePath = null,
+          debugName = null,
+        ),
+      )
+      val nativeHostPeer = checkNotNull(provider.createNativeHostPeer(scope, facade))
       val hostPanel = SwingWebViewHostPanel(scope, facade, nativeHostPeer = nativeHostPeer)
       val statusLabel = JLabel("Ready")
 

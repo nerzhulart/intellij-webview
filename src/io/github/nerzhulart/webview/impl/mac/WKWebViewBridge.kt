@@ -16,7 +16,6 @@ import com.intellij.ui.mac.foundation.Foundation.registerObjcClassPair
 import com.intellij.ui.mac.foundation.Foundation.toStringViaUTF8
 import com.intellij.ui.mac.foundation.ID
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
-import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
 import io.github.nerzhulart.webview.impl.WebViewLogger
@@ -232,7 +231,6 @@ internal object WKWebViewBridge {
     documentStartScripts.forEach { script ->
       installDocumentStartUserScript(userContentController, script.script)
     }
-    installApplicationModeUserScript(userContentController)
     val handlerInstance = createAndRegisterMessageHandler(onMessage)
     invoke(userContentController, SEL_ADD_SCRIPT_MESSAGE_HANDLER, handlerInstance, nsString(IPC_HANDLER_NAME))
 
@@ -530,10 +528,6 @@ internal object WKWebViewBridge {
   // endregion
 
   // region Message handler class registration
-
-  private fun installApplicationModeUserScript(userContentController: ID) {
-    installDocumentStartUserScript(userContentController, WebViewApplicationModeScripts.DOM_HARDENING_SCRIPT)
-  }
 
   private fun installDocumentStartUserScript(userContentController: ID, @Language("JavaScript") source: String) {
     val userScript = invoke(
