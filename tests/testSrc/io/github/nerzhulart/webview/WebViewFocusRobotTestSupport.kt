@@ -722,6 +722,13 @@ internal object WebViewFocusRobotTestSupport {
         "Swing field did not receive focus before combo popup click",
         skipIfUnavailable = true,
       )
+      clearText(field)
+      typeKey(robot, KeyEvent.VK_1)
+      val swingFieldPreflightDiagnostics = buildCurrentFocusDiagnostics(frame, field)
+      assumeTrue(
+        waitForFieldText(field, "1", inputEvents, assertOnFailure = false),
+        "AWT Robot key input is not delivered to the focused Swing field; $swingFieldPreflightDiagnostics; inputEvents=$inputEvents",
+      )
       waitForJavaScriptResult(
         webView = engine,
         script = "Boolean(window.__wviResetComboPopupState?.())",

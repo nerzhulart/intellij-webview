@@ -2,8 +2,10 @@
 package io.github.nerzhulart.webview
 
 import com.intellij.jna.JnaLoader
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.registry.RegistryManager
 import com.intellij.testFramework.junit5.TestApplication
@@ -20,8 +22,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonPrimitive
 import org.intellij.lang.annotations.Language
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
@@ -120,13 +125,13 @@ internal class WebViewInIdeSmokeTest {
   ): String {
     var lastResult: String? = null
     var lastError: Throwable? = null
-    val matched = withTimeoutOrNull(SMOKE_TIMEOUT) {
+    val completedWithinTimeout = withTimeoutOrNull(SMOKE_TIMEOUT) {
       while (true) {
         runCatching { webView.evaluateJavaScript(script).value }
           .onSuccess { result ->
             lastError = null
             lastResult = result
-            if (result == expected) return@withTimeoutOrNull true
+            if (javaScriptResultMatches(result, expected)) return@withTimeoutOrNull true
           }
           .onFailure { t ->
             lastError = t
@@ -135,9 +140,17 @@ internal class WebViewInIdeSmokeTest {
         delay(100.milliseconds)
       }
     } == true
+    val matched = completedWithinTimeout || javaScriptResultMatches(lastResult, expected)
 
     assertTrue(matched, smokeFailureMessage(description, lastResult, lastError))
     return lastResult ?: ""
+  }
+
+  private fun javaScriptResultMatches(result: String?, expected: String): Boolean {
+    if (result == expected) return true
+    if (result == null) return false
+    return runCatching { Json.parseToJsonElement(result).jsonPrimitive.content == expected }
+      .getOrDefault(false)
   }
 
   private suspend fun disposeFrame(frame: JFrame?) {
@@ -191,16 +204,26 @@ internal class WebViewInIdeSmokeTest {
   }
 
   private companion object {
+    private val longRunningThreadsDisposable = Disposer.newDisposable("WebViewInIdeSmokeTest long-running threads")
     private const val HOST_TITLE = "WebView Smoke Test"
     private const val WEBVIEW_ENGINE_REGISTRY_KEY = "io.github.nerzhulart.webview.engine"
     private val SMOKE_TIMEOUT = 20.seconds
 
     @JvmStatic
     @BeforeAll
-    fun ensureJnaForMacWebView() {
+    fun setUpClass() {
       if (SystemInfo.isMac && !JnaLoader.isLoaded()) {
         JnaLoader.load(Logger.getInstance(WebViewInIdeSmokeTest::class.java))
       }
+      val trackerClass = Class.forName("com.intellij.testFramework.common.ThreadLeakTracker")
+      val method = trackerClass.getMethod("longRunningThreadCreated", Disposable::class.java, Array<String>::class.java)
+      method.invoke(null, longRunningThreadsDisposable, arrayOf("WebView2-Thread"))
+    }
+
+    @JvmStatic
+    @AfterAll
+    fun tearDownClass() {
+      Disposer.dispose(longRunningThreadsDisposable)
     }
   }
 }

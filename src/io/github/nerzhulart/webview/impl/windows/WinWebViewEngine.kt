@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -84,6 +85,7 @@ internal class WinWebViewEngine(
   )
 
   private val state = AtomicReference(State.New)
+  private val closeCompleted = CompletableDeferred<Unit>()
 
   @Suppress("RAW_SCOPE_CREATION") // Intentional: engine manages its own child scope lifecycle with close()
   private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
@@ -149,8 +151,13 @@ internal class WinWebViewEngine(
 
   private val callbacks = object : WinWebView2Bridge.Callbacks {
     override fun onCreated(handle: Long) {
-      if (state.get() != State.Creating || (nativeHandle != 0L && nativeHandle != handle)) {
-        bridge.destroy(handle)
+      val currentState = state.get()
+      if (currentState != State.Creating || (nativeHandle != 0L && nativeHandle != handle)) {
+        // close() owns the handle while it is in Closing state. Destroying it here as well
+        // would race the queued close task and can double-release the native WebView2 state.
+        if (currentState != State.Closing || nativeHandle != handle) {
+          bridge.destroy(handle)
+        }
         return
       }
 
@@ -167,7 +174,10 @@ internal class WinWebViewEngine(
     }
 
     override fun onCreateFailed(message: String) {
-      state.set(State.Closed)
+      if (state.get() != State.Closing) {
+        state.set(State.Closed)
+        closeCompleted.complete(Unit)
+      }
       handleReady.get().completeExceptionally(IllegalStateException(message))
       cancelPendingEvaluations()
       clearActiveAssetResolver()
@@ -381,7 +391,6 @@ internal class WinWebViewEngine(
 
   override suspend fun close() {
     logConsoleStartupSummary("close", force = false)
-    stopDevToolsCpuProfile("close")
     loop@ while (true) {
       when (val current = state.get()) {
         State.New -> {
@@ -390,6 +399,7 @@ internal class WinWebViewEngine(
             cancelPendingEvaluations()
             clearActiveAssetResolver()
             handleReady.get().cancel(CancellationException("Engine closed before initialization"))
+            closeCompleted.complete(Unit)
             LOG.webViewLifecycle("win-webview2-close", "closed from New state")
             return
           }
@@ -399,29 +409,64 @@ internal class WinWebViewEngine(
         }
         State.Closing, State.Closed -> {
           LOG.webViewLifecycle("win-webview2-close", "already closing/closed, idempotent no-op")
+          closeCompleted.await()
           return
         }
       }
     }
 
-    cancelPendingEvaluations()
-    clearActiveAssetResolver()
+    withContext(NonCancellable) {
+      closeOwnedHandle()
+    }
+  }
 
-    val handle = nativeHandle
-    nativeHandle = 0
-    if (handle != 0L) {
-      invokeOnWebView {
-        bridge.destroy(handle)
+  private suspend fun closeOwnedHandle() {
+    try {
+      stopDevToolsCpuProfile("close")
+      cancelPendingEvaluations()
+      clearActiveAssetResolver()
+
+      val handle = nativeHandle
+      if (handle != 0L) {
+        try {
+          invokeOnWebView {
+            var destroyFailure: Throwable? = null
+            try {
+              nativeHandle = 0
+              bridge.destroy(handle)
+            }
+            catch (t: Throwable) {
+              destroyFailure = t
+              throw t
+            }
+            finally {
+              handleReady.get().cancel(CancellationException("Engine closed"))
+              state.set(State.Closed)
+              destroyFailure?.let(closeCompleted::completeExceptionally) ?: closeCompleted.complete(Unit)
+              LOG.webViewLifecycle("win-webview2-close", "native cleanup complete")
+            }
+          }
+        }
+        catch (t: Throwable) {
+          if (!closeCompleted.isCompleted) {
+            nativeHandle = 0
+            handleReady.get().cancel(CancellationException("Engine close dispatch failed"))
+            state.set(State.Closed)
+            closeCompleted.completeExceptionally(t)
+          }
+          throw t
+        }
+      }
+      else {
         handleReady.get().cancel(CancellationException("Engine closed"))
         state.set(State.Closed)
-        LOG.webViewLifecycle("win-webview2-close", "native cleanup complete")
+        closeCompleted.complete(Unit)
       }
+      closeCompleted.await()
     }
-    else {
-      handleReady.get().cancel(CancellationException("Engine closed"))
-      state.set(State.Closed)
+    finally {
+      scope.cancel()
     }
-    scope.cancel()
   }
 
   private fun applyPendingState(handle: Long) {
@@ -454,6 +499,7 @@ internal class WinWebViewEngine(
     }
     catch (t: Throwable) {
       state.set(State.Closed)
+      closeCompleted.complete(Unit)
       handleReady.get().completeExceptionally(t)
       cancelPendingEvaluations()
       clearActiveAssetResolver()
@@ -629,6 +675,7 @@ internal class WinWebViewEngine(
     val oldHandle = nativeHandle
     nativeHandle = 0
     state.set(State.Closed)
+    closeCompleted.complete(Unit)
     cancelPendingEvaluations()
     clearActiveAssetResolver()
     scope.cancel()
