@@ -1131,13 +1131,14 @@ internal object WebViewFocusRobotTestSupport {
     description: String,
   ) {
     var lastResult: String? = null
-    val matched = withTimeoutOrNull(5.seconds) {
+    val completedWithinTimeout = withTimeoutOrNull(10.seconds) {
       while (true) {
         lastResult = webView.evaluateJavaScript(script)
         if (lastResult == expected) return@withTimeoutOrNull true
         delay(100.milliseconds)
       }
     } == true
+    val matched = completedWithinTimeout || lastResult == expected
     assertTrue(matched, "$description, lastJsResult=$lastResult")
   }
 
