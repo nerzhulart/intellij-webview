@@ -123,6 +123,12 @@ internal class JcefWebViewEngine(
 
     LOG.trace { "Created JCEF WebView engine; offScreenRendering=${jbCefBrowser.isOffScreenRendering}" }
     component = jbCefBrowser.component
+    runOnEdt {
+      if (!closed.get()) {
+        // Headless hosts do not necessarily attach the component early enough to trigger JCEF's lazy creation.
+        jbCefBrowser.createImmediately()
+      }
+    }
   }
 
   override suspend fun loadFile(file: Path) {
