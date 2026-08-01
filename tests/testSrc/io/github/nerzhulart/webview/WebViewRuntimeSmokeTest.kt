@@ -25,6 +25,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonPrimitive
 import org.intellij.lang.annotations.Language
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
@@ -207,7 +209,10 @@ internal class WebViewRuntimeSmokeTest {
       attach(panel)
       panel.webView.loadHtml(/*language=HTML*/ "<html><body>phase1</body></html>")
       waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Initial page did not load")
-      assertEquals("true", panel.webView.evaluateJavaScript(/*language=JavaScript*/ "window.__wviReattachMarker = 'alive'; true").value)
+      assertEquals(
+        "true",
+        javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "window.__wviReattachMarker = 'alive'; true").value),
+      )
 
       withContext(Dispatchers.EDT) {
         frame!!.contentPane.removeAll()
@@ -219,7 +224,7 @@ internal class WebViewRuntimeSmokeTest {
 
       waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Page state was not retained after reattach")
       waitForJavaScript(panel.webView, "window.__wviReattachMarker === 'alive'", "true", "JavaScript state was not retained after reattach")
-      assertEquals("4", panel.webView.evaluateJavaScript(/*language=JavaScript*/ "2 + 2").value)
+      assertEquals("4", javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "2 + 2").value))
     }
     finally {
       panel.close()
@@ -309,9 +314,10 @@ internal class WebViewRuntimeSmokeTest {
 
       assertEquals(
         "created",
-        panel.webView.evaluateJavaScript(
-          /*language=JavaScript*/
-          """
+        javaScriptResultContent(
+          panel.webView.evaluateJavaScript(
+            /*language=JavaScript*/
+            """
             (function() {
               const dynamic = document.createElement('input');
               dynamic.id = 'dynamic';
@@ -338,8 +344,9 @@ internal class WebViewRuntimeSmokeTest {
                 element.spellcheck = true;
               }
             })()
-          """.trimIndent(),
-        ).value,
+            """.trimIndent(),
+          ).value,
+        ),
       )
 
       waitForJavaScript(
@@ -362,9 +369,10 @@ internal class WebViewRuntimeSmokeTest {
         "Dynamic and shadow-root form control input assist attributes were not disabled",
       )
 
-      val eventResult = panel.webView.evaluateJavaScript(
-        /*language=JavaScript*/
-        """
+      val eventResult = javaScriptResultContent(
+        panel.webView.evaluateJavaScript(
+          /*language=JavaScript*/
+          """
           (function() {
             const existing = document.getElementById('existing');
             const dynamic = document.getElementById('dynamic');
@@ -396,8 +404,9 @@ internal class WebViewRuntimeSmokeTest {
               element.spellcheck = true;
             }
           })()
-        """.trimIndent(),
-      ).value
+          """.trimIndent(),
+        ).value,
+      )
       assertEquals("focusin,beforeinput,input|false|false", eventResult)
 
       waitForJavaScript(
@@ -525,13 +534,13 @@ internal class WebViewRuntimeSmokeTest {
   ) {
     var lastResult: String? = null
     var lastError: Throwable? = null
-    val matched = withTimeoutOrNull(10.seconds) {
+    val completedWithinTimeout = withTimeoutOrNull(10.seconds) {
       while (true) {
         runCatching { webView.evaluateJavaScript(script).value }
           .onSuccess { result ->
             lastError = null
             lastResult = result
-            if (result == expected) return@withTimeoutOrNull true
+            if (javaScriptResultMatches(result, expected)) return@withTimeoutOrNull true
           }
           .onFailure { error ->
             lastError = error
@@ -540,10 +549,21 @@ internal class WebViewRuntimeSmokeTest {
         delay(100.milliseconds)
       }
     } == true
+    val matched = completedWithinTimeout || javaScriptResultMatches(lastResult, expected)
     assertTrue(
       matched,
       "$description; expected=$expected, lastResult=$lastResult, lastError=${lastError?.message}, runtime=${webView.runtimeInfo.engineId}",
     )
+  }
+
+  private fun javaScriptResultMatches(result: String?, expected: String): Boolean {
+    return javaScriptResultContent(result) == expected
+  }
+
+  private fun javaScriptResultContent(result: String?): String? {
+    if (result == null) return null
+    return runCatching { Json.parseToJsonElement(result).jsonPrimitive.content }
+      .getOrDefault(result)
   }
 
   @Language("HTML")

@@ -25,6 +25,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -195,9 +196,100 @@ internal class WinWebViewEngineTest {
     dispatcher.drain()
     runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
 
-    runBlocking { engine.close() }
+    val closeJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+    assertTrue(!closeJob.isCompleted, "close must wait for the queued native destroy")
+    dispatcher.drain()
+    runBlocking { closeJob.join() }
+
+    assertEquals(listOf(1L), bridge.destroyedHandles)
+    scope.cancel()
+  }
+
+  @Test
+  fun concurrentCloseCallsWaitForOneNativeDestroy() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val dispatcher = QueuingDispatcher()
+    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
+    runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+    dispatcher.drain()
+    runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.single()) }
+
+    val firstClose = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+    val secondClose = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+    assertTrue(!firstClose.isCompleted && !secondClose.isCompleted)
+    assertEquals(1, dispatcher.pendingCount())
+
+    dispatcher.drain()
+    runBlocking {
+      firstClose.join()
+      secondClose.join()
+    }
+
+    assertEquals(listOf(1L), bridge.destroyedHandles)
+    scope.cancel()
+  }
+
+  @Test
+  fun closeDuringNativeCreationDestroysHandleOnce() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val dispatcher = QueuingDispatcher()
+    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
+    runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+    dispatcher.drain()
+    val handle = bridge.createdHandles.single()
+
+    val closeJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+    runInEdtAndWait { bridge.callbacks.onCreated(handle) }
+    assertTrue(bridge.destroyedHandles.isEmpty(), bridge.destroyedHandles.toString())
+
+    dispatcher.drain()
+    runBlocking { closeJob.join() }
+
+    assertEquals(listOf(handle), bridge.destroyedHandles)
+    scope.cancel()
+  }
+
+  @Test
+  fun createFailureDuringCloseDoesNotCompleteBeforeNativeDestroy() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val dispatcher = QueuingDispatcher()
+    val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
+    runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
     dispatcher.drain()
 
+    val closeJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+    val logged = collectWarningsAndErrors {
+      runInEdtAndWait { bridge.callbacks.onCreateFailed("creation failed") }
+    }
+    assertTrue(!closeJob.isCompleted, "native create failure must not bypass the queued destroy")
+    assertTrue(logged.errors.any { it.contains("creation failed") }, logged.errors.toString())
+
+    dispatcher.drain()
+    runBlocking { closeJob.join() }
+
+    assertEquals(bridge.createdHandles, bridge.destroyedHandles)
+    scope.cancel()
+  }
+
+  @Test
+  fun closeFailureLeavesEngineClosedAndIsReportedToEveryCaller() {
+    val failure = IllegalStateException("destroy failed")
+    val bridge = FakeWinWebView2Bridge().apply { destroyFailure = failure }
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+
+    val firstFailure = assertThrows(IllegalStateException::class.java) {
+      runBlocking { engine.close() }
+    }
+    val repeatedFailure = assertThrows(IllegalStateException::class.java) {
+      runBlocking { engine.close() }
+    }
+
+    assertEquals(failure.message, firstFailure.message)
+    assertEquals(failure.message, repeatedFailure.message)
     assertEquals(listOf(1L), bridge.destroyedHandles)
     scope.cancel()
   }
@@ -225,8 +317,7 @@ internal class WinWebViewEngineTest {
       assertEquals(Bounds(45, 45, 109, 109, 1.0), bridge.bounds[0].bounds)
     }
     finally {
-      runBlocking { engine.close() }
-      dispatcher.drain()
+      closeEngine(engine, dispatcher)
       scope.cancel()
     }
   }
@@ -252,8 +343,7 @@ internal class WinWebViewEngineTest {
                    "no follow-up bridge.attachToParent expected when create already used latest parent")
     }
     finally {
-      runBlocking { engine.close() }
-      dispatcher.drain()
+      closeEngine(engine, dispatcher)
       scope.cancel()
     }
   }
@@ -480,6 +570,14 @@ internal class WinWebViewEngineTest {
     scope.cancel()
   }
 
+  private fun closeEngine(engine: WinWebViewEngine, dispatcher: QueuingDispatcher) {
+    runBlocking {
+      val closeJob = launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+      dispatcher.drain()
+      closeJob.join()
+    }
+  }
+
   private fun assertAssetResponse(expectedContent: String, response: WinWebView2Bridge.AssetResponse?) {
     assertNotNull(response)
     assertEquals(200, response!!.statusCode)
@@ -596,6 +694,7 @@ internal class WinWebViewEngineTest {
     var focusFailure: IllegalStateException? = null
     var clearFocusFailure: IllegalStateException? = null
     var deferProfilerStop: Boolean = false
+    var destroyFailure: RuntimeException? = null
     var pendingProfilerStopCallId: Long? = null
     private var nextHandle = 1L
 
@@ -610,6 +709,7 @@ internal class WinWebViewEngineTest {
     override fun destroy(handle: Long) {
       destroyedHandles.add(handle)
       callOrder.add("destroy:$handle")
+      destroyFailure?.let { throw it }
     }
 
     override fun attachToParent(handle: Long, parentHwnd: Long) {
