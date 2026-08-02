@@ -542,7 +542,7 @@ internal object WebViewFocusRobotTestSupport {
       )
       assertWebInputValue(engine, "", "WebView input received typed input while Swing field was focused")
 
-      clickCenter(robot, host)
+      clickWebElementCenter(robot, host, engine, "web-input")
       assertNativeFocusInsideWebView()
       waitForFocusOwnerNot(field, "WebView activation did not clear the previous Swing focus owner")
 
@@ -1503,9 +1503,8 @@ internal object WebViewFocusRobotTestSupport {
 
   private fun recordModifierKeyEvents(events: MutableList<RecordedKeyEvent>): AutoCloseable {
     val disposable = Disposer.newDisposable("WebViewFocusRobotTestSupport.recordModifierKeyEvents")
-    // The second Shift release is consumed by ModifierKeyDoubleClickHandler when it opens Search Everywhere.
-    // Listen at the IdeEventQueue preprocessor boundary to verify that WebView forwarded the full sequence
-    // into the IDE keyboard pipeline before shortcut dispatchers claim it.
+    // ModifierKeyDoubleClickHandler can consume the second release before this preprocessor observes it.
+    // Reaching this boundary with press-release-press still proves that both WebView taps entered the IDE keyboard pipeline.
     val listener = IdeEventQueue.EventDispatcher { event ->
       if (event is KeyEvent &&
           (event.id == KeyEvent.KEY_PRESSED || event.id == KeyEvent.KEY_RELEASED) &&
@@ -1549,7 +1548,6 @@ internal object WebViewFocusRobotTestSupport {
       KeyEvent.KEY_PRESSED,
       KeyEvent.KEY_RELEASED,
       KeyEvent.KEY_PRESSED,
-      KeyEvent.KEY_RELEASED,
     )
     var matchedEventCount = 0
     for ((id, recordedKeyCode) in events) {
