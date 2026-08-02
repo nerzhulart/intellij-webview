@@ -486,6 +486,7 @@ internal object WebViewFocusRobotTestSupport {
     engine: WebViewEngineBridge,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
+    assertNativeFocusInsideWebView: suspend () -> Unit,
     assertNativeFocusReadyForSwingTyping: suspend () -> Unit,
   ) {
     val robot = createRobotOrSkip()
@@ -541,13 +542,8 @@ internal object WebViewFocusRobotTestSupport {
       )
       assertWebInputValue(engine, "", "WebView input received typed input while Swing field was focused")
 
-      clickWebElementCenter(robot, host, engine, "web-input")
-      waitForJavaScriptResult(
-        webView = engine,
-        script = "document.activeElement && document.activeElement.id === 'web-input'",
-        expected = "true",
-        description = "WebView input did not become the active document element after Robot click",
-      )
+      clickCenter(robot, host)
+      assertNativeFocusInsideWebView()
       waitForFocusOwnerNot(field, "WebView activation did not clear the previous Swing focus owner")
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not regain focus after WebView activation", skipIfUnavailable = false)
