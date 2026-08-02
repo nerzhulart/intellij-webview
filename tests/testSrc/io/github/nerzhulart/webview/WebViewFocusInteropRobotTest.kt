@@ -205,6 +205,7 @@ class WebViewFocusInteropRobotTest {
         engine = facade,
         nativeHostPeer = MacNativeWebViewHostPeer(scope!!, facade),
         tempDir = tempDir,
+        assertNativeFocusInsideWebView = { assertFirstResponderInsideWebView(facade) },
         assertNativeFocusReadyForSwingTyping = { assertFirstResponderOutsideWebView(facade) },
       )
     }
@@ -292,6 +293,19 @@ class WebViewFocusInteropRobotTest {
 
   private fun nativeBridgeAvailable(): Boolean {
     return winWebView2BridgeLibrary.availability() is NativeBridgeLibraryAvailability.Available
+  }
+
+  private suspend fun assertFirstResponderInsideWebView(engine: MacWebViewEngine) {
+    var lastState: MacWebViewFirstResponderState? = null
+    val matched = withTimeoutOrNull(2.seconds) {
+      while (true) {
+        lastState = engine.firstResponderState()
+        val state = lastState
+        if (state != null && state.hasResponder && state.isInsideWebView) return@withTimeoutOrNull true
+        delay(50.milliseconds)
+      }
+    } == true
+    assertTrue(matched, "macOS first responder did not move inside WKWebView; lastState=$lastState")
   }
 
   private suspend fun assertFirstResponderOutsideWebView(engine: MacWebViewEngine) {
