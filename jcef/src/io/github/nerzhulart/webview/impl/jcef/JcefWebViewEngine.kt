@@ -125,7 +125,7 @@ internal class JcefWebViewEngine(
     component = jbCefBrowser.component
     runOnEdt {
       if (!closed.get()) {
-        // Headless hosts do not necessarily attach the component early enough to trigger JCEF's lazy creation.
+        // CI virtual displays do not necessarily attach the component early enough to trigger JCEF's lazy creation.
         jbCefBrowser.createImmediately()
       }
     }
