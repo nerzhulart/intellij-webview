@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import java.awt.Component
 import java.awt.Dimension
@@ -29,6 +30,14 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
 class SwingWebViewHostPanelGeometryTest {
+  companion object {
+    @JvmStatic
+    @BeforeAll
+    fun initializeFocusToolkit() {
+      // Wayland starts its persistent keyboard-repeat thread on the first focus request.
+      SwingUtilities.invokeAndWait { JPanel().requestFocusInWindow() }
+    }
+  }
 
   @Test
   fun calculateNativeFrame_usesAnchorCoordinatesForNestedHost() {

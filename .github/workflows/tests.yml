@@ -208,7 +208,9 @@ jobs:
       - name: Run Gradle tests on Linux
         if: runner.os == 'Linux'
         shell: bash
-        run: xvfb-run -a ./gradlew test --stacktrace
+        env:
+          JAVA_TOOL_OPTIONS: -Djava.awt.headless=false
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" ./gradlew test --stacktrace
 
       - name: Run Gradle tests on Windows
         if: runner.os == 'Windows'
