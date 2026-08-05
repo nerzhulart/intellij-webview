@@ -54,6 +54,7 @@ internal object WKWebViewBridge {
   private const val CLS_NSMUTABLE_DICTIONARY = "NSMutableDictionary"
   private const val CLS_NSOBJECT = "NSObject"
   private const val CLS_NSAPPLICATION = "NSApplication"
+  private const val CLS_NSVIEW = "NSView"
   private const val CLS_WKUSER_SCRIPT = "WKUserScript"
   // endregion
 
@@ -105,8 +106,12 @@ internal object WKWebViewBridge {
   private val SEL_SEND_ACTION_TO_FROM = createSelector("sendAction:to:from:")
 
   // NSView
+  private val SEL_INIT_WITH_FRAME = createSelector("initWithFrame:")
   private val SEL_ADD_SUBVIEW = createSelector("addSubview:")
   private val SEL_IS_DESCENDANT_OF = createSelector("isDescendantOf:")
+  private val SEL_SET_WANTS_LAYER = createSelector("setWantsLayer:")
+  private val SEL_LAYER = createSelector("layer")
+  private val SEL_SET_MASKS_TO_BOUNDS = createSelector("setMasksToBounds:")
 
   // NSObject
   private val SEL_RESPONDS_TO_SELECTOR = createSelector("respondsToSelector:")
@@ -249,7 +254,7 @@ internal object WKWebViewBridge {
     invoke(initializedWebView, SEL_SET_UI_DELEGATE, uiDelegateInstance)
 
     // 5. Keep Swing host geometry as the only frame source. The WebView is attached
-    // to the window content view, so AppKit autoresizing would follow the whole window.
+    // to a host-owned clipping view, so AppKit autoresizing must not change its local frame.
     invoke(initializedWebView, SEL_SET_AUTORESIZING_MASK, 0)
 
     // 6. Release configuration (webview retains it)
@@ -265,6 +270,28 @@ internal object WKWebViewBridge {
 
   fun attachToParent(webView: ID, parentNSView: ID) {
     invoke(parentNSView, SEL_ADD_SUBVIEW, webView)
+  }
+
+  fun createClippingContainer(parentNSView: ID): ID {
+    val clipView = invoke(
+      invoke(getObjcClass(CLS_NSVIEW), SEL_ALLOC),
+      SEL_INIT_WITH_FRAME,
+      NSRect(0.0, 0.0, 0.0, 0.0),
+    )
+    invoke(clipView, SEL_SET_WANTS_LAYER, true)
+    val layer = invoke(clipView, SEL_LAYER)
+    if (!isNil(layer)) {
+      invoke(layer, SEL_SET_MASKS_TO_BOUNDS, true)
+    }
+    invoke(clipView, SEL_SET_AUTORESIZING_MASK, 0)
+    invoke(clipView, SEL_SET_HIDDEN, true)
+    invoke(parentNSView, SEL_ADD_SUBVIEW, clipView)
+    return clipView
+  }
+
+  fun releaseClippingContainer(clipView: ID) {
+    invoke(clipView, SEL_REMOVE_FROM_SUPERVIEW)
+    invoke(clipView, SEL_RELEASE)
   }
 
   fun detachFromParent(webView: ID) {
@@ -328,12 +355,12 @@ internal object WKWebViewBridge {
     executeJavaScript(webView, script)
   }
 
-  fun setFrame(webView: ID, x: Double, y: Double, w: Double, h: Double) {
-    invoke(webView, SEL_SET_FRAME, NSRect(x, y, w, h))
+  fun setFrame(view: ID, x: Double, y: Double, w: Double, h: Double) {
+    invoke(view, SEL_SET_FRAME, NSRect(x, y, w, h))
   }
 
-  fun setHidden(webView: ID, hidden: Boolean) {
-    invoke(webView, SEL_SET_HIDDEN, hidden)
+  fun setHidden(view: ID, hidden: Boolean) {
+    invoke(view, SEL_SET_HIDDEN, hidden)
   }
 
   fun requestFocus(webView: ID) {

@@ -4,6 +4,8 @@ package io.github.nerzhulart.webview.impl.mac
 import com.intellij.ui.mac.foundation.Foundation
 import com.intellij.ui.mac.foundation.ID
 import com.intellij.ui.mac.foundation.MacUtil
+import com.intellij.util.ui.update.DebouncedUpdates
+import com.intellij.util.ui.update.UpdateQueue
 import io.github.nerzhulart.webview.impl.MacMainThreadDispatcher
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
@@ -12,8 +14,6 @@ import io.github.nerzhulart.webview.impl.WebViewShortcutRouter
 import io.github.nerzhulart.webview.impl.WebViewShortcutRouting
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.host.WebViewEditShortcutPolicy
-import com.intellij.util.ui.update.DebouncedUpdates
-import com.intellij.util.ui.update.UpdateQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.jetbrains.annotations.ApiStatus
@@ -22,51 +22,70 @@ import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
 import java.awt.event.KeyEvent
 import javax.swing.SwingUtilities
-import javax.swing.Timer
 import kotlin.time.Duration.Companion.milliseconds
+
+internal data class MacNativeLayout(
+  val containerFrame: SwingWebViewHostPanel.NativeFrame,
+  val webViewFrame: SwingWebViewHostPanel.NativeFrame,
+) {
+  val hasVisibleBounds: Boolean
+    get() = containerFrame.width > 0.0 && containerFrame.height > 0.0
+}
+
+internal fun calculateMacNativeLayout(
+  fullBounds: SwingWebViewHostPanel.NativeBounds,
+  clippedBounds: SwingWebViewHostPanel.NativeBounds,
+  anchorHeight: Int,
+): MacNativeLayout {
+  val containerFrame = SwingWebViewHostPanel.NativeFrame(
+    x = clippedBounds.x.toDouble(),
+    y = (anchorHeight - clippedBounds.y - clippedBounds.height).toDouble(),
+    width = clippedBounds.width.toDouble(),
+    height = clippedBounds.height.toDouble(),
+  )
+  val webViewFrame = SwingWebViewHostPanel.NativeFrame(
+    x = (fullBounds.x - clippedBounds.x).toDouble(),
+    y = (clippedBounds.y + clippedBounds.height - fullBounds.y - fullBounds.height).toDouble(),
+    width = fullBounds.width.toDouble(),
+    height = fullBounds.height.toDouble(),
+  )
+  return MacNativeLayout(containerFrame, webViewFrame)
+}
 
 @ApiStatus.Internal
 internal class MacNativeWebViewHostPeer(
-    private val scope: CoroutineScope,
-    private val engine: MacWebViewEngine,
+  private val scope: CoroutineScope,
+  private val engine: MacWebViewEngine,
 ) : NativeWebViewHostPeer {
 
-  private companion object {
-    private const val FRAME_RETRY_LIMIT = 20
-    private const val FRAME_RETRY_DELAY_MS = 50
-    private const val FRAME_BOUNDS_EPSILON = 1.0
-    private const val PARENT_CHAIN_LIMIT = 8
-  }
-
-  private enum class FrameRejectionReason(val logName: String) {
-    NON_POSITIVE("non-positive"),
-    ANCHOR_UNAVAILABLE("anchor unavailable"),
-    OUTSIDE_ANCHOR_BOUNDS("outside anchor bounds"),
-  }
+  private data class Attachment(
+    val parentContentView: ID,
+    val clipView: ID,
+  )
 
   @Volatile
-  private var attached = false
+  private var attachmentRequested = false
+
+  @Volatile
+  private var attachmentGeneration = 0L
+
   @Volatile
   private var hostHidden = true
-  @Volatile
-  private var positiveFrameApplied = false
-  @Volatile
-  private var frameTemporarilyInvalid = true
 
-  private var lastAppliedFrame: SwingWebViewHostPanel.NativeFrame? = null
-  private var parentContentView: ID = ID.NIL
-  private var frameRetryCount = 0
-  private var frameRetryTimer: Timer? = null
-  private var parentChainDumped = false
+  /** Accessed only on the macOS main thread. */
+  private var attachment: Attachment? = null
+
+  /** Accessed only on the macOS main thread. */
+  private var lastAppliedLayout: MacNativeLayout? = null
 
   /**
    * Throttle queue for resize/move coalescing. The first event arms a 16 ms timer;
-   * subsequent events collapse into the latest frame without starving continuous drags.
+   * subsequent events collapse into the latest layout without starving continuous drags.
    */
-  private val resizeUpdates: UpdateQueue<SwingWebViewHostPanel.NativeFrame> = DebouncedUpdates
-    .forScope<SwingWebViewHostPanel.NativeFrame>(scope, "webview-native-frame", 16.milliseconds)
+  private val resizeUpdates: UpdateQueue<MacNativeLayout> = DebouncedUpdates
+    .forScope<MacNativeLayout>(scope, "webview-native-frame", 16.milliseconds)
     .withContext(MacMainThreadDispatcher)
-    .runLatest { frame -> applyFrame(frame) }
+    .runLatest { layout -> applyLayout(layout) }
 
   /**
    * WKWebView edit shortcuts are AppKit actions, not key events that can be safely replayed after
@@ -75,30 +94,40 @@ internal class MacNativeWebViewHostPeer(
   override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER
 
   override fun attach(host: Component): Boolean {
-    if (attached) return true
+    if (attachmentRequested) return true
 
     engine.initialize()
 
-    val nsWindow = resolveNSWindow(host) ?: return false
-    val contentView = Foundation.invoke(nsWindow, "contentView")
-    if (Foundation.isNil(contentView)) return false
-    parentContentView = contentView
+    val contentView = resolveParentContentView(host) ?: return false
+    val initialLayout = resolveLayout(host) ?: return false
+    WebViewLogger.LOG.info("Attaching WKWebView host: layout=$initialLayout, showing=${host.isShowing}")
 
-    val anchor = SwingWebViewHostPanel.resolveAnchor(host) ?: return false
-    val initialFrame = SwingWebViewHostPanel.calculateNativeFrame(host, anchor)
-    WebViewLogger.LOG.info("Attaching WKWebView host: frame=$initialFrame, showing=${host.isShowing}")
     // WKWebView reports bare modifier transitions through AppKit while it owns first responder.
     // The Swing host is the right boundary for mirroring them into AWT because it owns attach/detach lifecycle.
     engine.setModifierKeyHandler { event -> postModifierKeyEvent(host, event) }
+    attachmentRequested = true
+    val generation = ++attachmentGeneration
     hostHidden = true
-    positiveFrameApplied = false
-    frameTemporarilyInvalid = true
 
     scope.launch(MacMainThreadDispatcher) {
-      engine.setHidden(true)
-      engine.attachToParent(contentView)
-      attached = true
-      engine.setHidden(true)
+      if (!engine.awaitReadyForAttachment() || !isCurrentAttachment(generation)) return@launch
+
+      val clipView = WKWebViewBridge.createClippingContainer(contentView)
+      if (!isCurrentAttachment(generation)) {
+        WKWebViewBridge.releaseClippingContainer(clipView)
+        return@launch
+      }
+
+      val webViewAttached = engine.attachToParent(clipView)
+      if (!webViewAttached || !isCurrentAttachment(generation)) {
+        engine.detachFromParent()
+        WKWebViewBridge.releaseClippingContainer(clipView)
+        return@launch
+      }
+
+      attachment = Attachment(contentView, clipView)
+      lastAppliedLayout = null
+      applyLayout(initialLayout)
 
       SwingUtilities.invokeLater {
         (host as? SwingWebViewHostPanel)?.let { hostPanel ->
@@ -111,54 +140,32 @@ internal class MacNativeWebViewHostPeer(
   }
 
   override fun detach() {
-    if (!attached) return
+    if (!attachmentRequested) return
 
-    scope.launch(MacMainThreadDispatcher) {
-      engine.detachFromParent()
-    }
-    resetFrameRetries()
-    engine.setModifierKeyHandler(null)
-    attached = false
+    attachmentRequested = false
+    attachmentGeneration++
     hostHidden = true
-    positiveFrameApplied = false
-    frameTemporarilyInvalid = true
-    lastAppliedFrame = null
-    parentContentView = ID.NIL
+    engine.setModifierKeyHandler(null)
+    scope.launch(MacMainThreadDispatcher) {
+      releaseAttachment()
+    }
   }
 
   override fun scheduleFrameUpdate(host: Component) {
-    if (!attached) return
-    val anchor = SwingWebViewHostPanel.resolveAnchor(host)
-    if (anchor == null) {
-      rejectFrame(host, null, null, FrameRejectionReason.ANCHOR_UNAVAILABLE)
-      return
-    }
-
-    val frame = SwingWebViewHostPanel.calculateNativeFrame(host, anchor)
-    val rejectionReason = validateFrame(anchor, frame)
-    if (rejectionReason != null) {
-      rejectFrame(host, anchor, frame, rejectionReason)
-      return
-    }
-
-    resetFrameRetries()
-    resizeUpdates.queue(frame)
+    if (!attachmentRequested) return
+    val layout = resolveLayout(host) ?: return
+    resizeUpdates.queue(layout)
   }
 
   override fun hasNonEmptyNativeBounds(host: Component): Boolean {
-    val anchor = SwingWebViewHostPanel.resolveAnchor(host) ?: return false
-    val frame = SwingWebViewHostPanel.calculateNativeFrame(host, anchor)
-    return validateFrame(anchor, frame) == null
+    return resolveLayout(host)?.hasVisibleBounds == true
   }
 
   override fun updateVisibility(host: Component, hidden: Boolean) {
-    if (!attached) return
+    if (!attachmentRequested) return
     hostHidden = hidden
 
     if (!hidden) {
-      if (!positiveFrameApplied) {
-        frameTemporarilyInvalid = true
-      }
       scheduleFrameUpdate(host)
     }
 
@@ -168,27 +175,30 @@ internal class MacNativeWebViewHostPeer(
   }
 
   override fun requestFocus() {
-    if (!attached) return
+    if (!attachmentRequested) return
 
     scope.launch(MacMainThreadDispatcher) {
-      engine.requestFocus()
+      if (attachment != null) {
+        engine.requestFocus()
+      }
     }
   }
 
   override fun clearFocus() {
-    if (!attached) return
+    if (!attachmentRequested) return
 
     scope.launch(MacMainThreadDispatcher) {
-      engine.clearFocus()
+      if (attachment != null) {
+        engine.clearFocus()
+      }
     }
   }
 
   override fun clearFocusForSwingFocusTransfer() {
-    if (!attached) return
-    val focusTarget = parentContentView
-    if (Foundation.isNil(focusTarget)) return
+    if (!attachmentRequested) return
 
     scope.launch(MacMainThreadDispatcher) {
+      val focusTarget = attachment?.parentContentView ?: return@launch
       engine.makeFirstResponder(focusTarget)
     }
   }
@@ -198,7 +208,7 @@ internal class MacNativeWebViewHostPeer(
    * WKWebView or its current private editor responder.
    */
   override fun handleWebViewShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean {
-    return attached && event.id == KeyEvent.KEY_PRESSED && engine.performEditCommand(command)
+    return attachmentRequested && event.id == KeyEvent.KEY_PRESSED && engine.performEditCommand(command)
   }
 
   /**
@@ -207,7 +217,7 @@ internal class MacNativeWebViewHostPeer(
    * and normal WebKit handling stay untouched.
    */
   private fun postModifierKeyEvent(host: Component, event: WKWebViewBridge.ModifierKeyEvent) {
-    if (!attached || !host.isShowing) return
+    if (!attachmentRequested || !host.isShowing) return
 
     val eventSource = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow ?: host
     val keyEvent = KeyEvent(
@@ -224,145 +234,61 @@ internal class MacNativeWebViewHostPeer(
     Toolkit.getDefaultToolkit().systemEventQueue.postEvent(keyEvent)
   }
 
-  private fun applyFrame(frame: SwingWebViewHostPanel.NativeFrame) {
-    val firstPositiveFrame = !positiveFrameApplied
-    if (frame != lastAppliedFrame) {
-      lastAppliedFrame = frame
-      logFrame(frame, firstPositiveFrame)
-      engine.setFrame(frame.x, frame.y, frame.width, frame.height)
+  private fun applyLayout(layout: MacNativeLayout) {
+    val currentAttachment = attachment ?: return
+    if (layout != lastAppliedLayout) {
+      lastAppliedLayout = layout
+      val containerFrame = layout.containerFrame
+      WKWebViewBridge.setFrame(
+        currentAttachment.clipView,
+        containerFrame.x,
+        containerFrame.y,
+        containerFrame.width,
+        containerFrame.height,
+      )
+      val webViewFrame = layout.webViewFrame
+      engine.setFrame(
+        webViewFrame.x,
+        webViewFrame.y,
+        webViewFrame.width,
+        webViewFrame.height,
+      )
+      WebViewLogger.LOG.debug("Applying WKWebView host layout: $layout")
     }
 
-    positiveFrameApplied = true
-    frameTemporarilyInvalid = false
     updateNativeVisibility()
   }
 
   private fun updateNativeVisibility() {
-    engine.setHidden(hostHidden || !positiveFrameApplied || frameTemporarilyInvalid)
+    val currentAttachment = attachment ?: return
+    val hidden = hostHidden || lastAppliedLayout?.hasVisibleBounds != true
+    WKWebViewBridge.setHidden(currentAttachment.clipView, hidden)
   }
 
-  private fun validateFrame(
-    anchor: Component,
-    frame: SwingWebViewHostPanel.NativeFrame,
-  ): FrameRejectionReason? {
-    if (frame.width <= 0.0 || frame.height <= 0.0) return FrameRejectionReason.NON_POSITIVE
-
-    val outsideAnchor =
-      frame.x < -FRAME_BOUNDS_EPSILON ||
-      frame.y < -FRAME_BOUNDS_EPSILON ||
-      frame.x + frame.width > anchor.width + FRAME_BOUNDS_EPSILON ||
-      frame.y + frame.height > anchor.height + FRAME_BOUNDS_EPSILON
-    return if (outsideAnchor) FrameRejectionReason.OUTSIDE_ANCHOR_BOUNDS else null
+  private fun releaseAttachment() {
+    val currentAttachment = attachment ?: return
+    attachment = null
+    lastAppliedLayout = null
+    engine.detachFromParent()
+    WKWebViewBridge.releaseClippingContainer(currentAttachment.clipView)
   }
 
-  private fun rejectFrame(
-    host: Component,
-    anchor: Component?,
-    frame: SwingWebViewHostPanel.NativeFrame?,
-    reason: FrameRejectionReason,
-  ) {
-    val retryScheduled = scheduleFrameRetry(host)
-    val hideRejectedFrame = shouldHideRejectedFrame(reason, retryScheduled)
-    if (hideRejectedFrame) {
-      frameTemporarilyInvalid = true
-      scope.launch(MacMainThreadDispatcher) {
-        updateNativeVisibility()
-      }
-    }
-    logRejectedFrame(host, anchor, frame, reason, retryScheduled)
-    logParentChainIfNeeded(host, anchor, frame, reason, retryScheduled)
+  private fun isCurrentAttachment(generation: Long): Boolean {
+    return attachmentRequested && attachmentGeneration == generation
   }
 
-  private fun shouldHideRejectedFrame(reason: FrameRejectionReason, retryScheduled: Boolean): Boolean {
-    return !positiveFrameApplied || reason != FrameRejectionReason.OUTSIDE_ANCHOR_BOUNDS || !retryScheduled
+  private fun resolveLayout(host: Component): MacNativeLayout? {
+    val anchor = SwingWebViewHostPanel.resolveAnchor(host) ?: return null
+    val fullBounds = SwingWebViewHostPanel.calculateHostBounds(host, anchor)
+    val clippedBounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
+    return calculateMacNativeLayout(fullBounds, clippedBounds, anchor.height)
   }
 
-  private fun scheduleFrameRetry(host: Component): Boolean {
-    if (frameRetryTimer != null) return true
-    if (frameRetryCount >= FRAME_RETRY_LIMIT) return false
-
-    frameRetryCount++
-    frameRetryTimer = Timer(FRAME_RETRY_DELAY_MS) {
-      frameRetryTimer = null
-      if (attached) {
-        scheduleFrameUpdate(host)
-      }
-    }.apply {
-      isRepeats = false
-      start()
-    }
-    return true
-  }
-
-  private fun resetFrameRetries() {
-    frameRetryTimer?.stop()
-    frameRetryTimer = null
-    frameRetryCount = 0
-    parentChainDumped = false
-  }
-
-  private fun logFrame(frame: SwingWebViewHostPanel.NativeFrame, firstPositiveFrame: Boolean) {
-    if (firstPositiveFrame) {
-      WebViewLogger.LOG.info("Applying first positive WKWebView frame: $frame")
-    }
-    else {
-      WebViewLogger.LOG.debug("Applying WKWebView frame: $frame")
-    }
-  }
-
-  private fun logRejectedFrame(
-    host: Component,
-    anchor: Component?,
-    frame: SwingWebViewHostPanel.NativeFrame?,
-    reason: FrameRejectionReason,
-    retryScheduled: Boolean,
-  ) {
-    val retryStatus = when {
-      retryScheduled -> "$frameRetryCount/$FRAME_RETRY_LIMIT"
-      else -> "exhausted"
-    }
-    val anchorDescription = anchor?.let(::describeComponent) ?: "<unavailable>"
-    WebViewLogger.LOG.info(
-      "Rejected WKWebView frame: reason=${reason.logName}, frame=$frame, " +
-      "host=${describeComponent(host)}, anchor=$anchorDescription, retry=$retryStatus"
-    )
-  }
-
-  private fun logParentChainIfNeeded(
-    host: Component,
-    anchor: Component?,
-    frame: SwingWebViewHostPanel.NativeFrame?,
-    reason: FrameRejectionReason,
-    retryScheduled: Boolean,
-  ) {
-    val retryExhausted = !retryScheduled
-    if (reason != FrameRejectionReason.OUTSIDE_ANCHOR_BOUNDS && !retryExhausted) return
-    if (parentChainDumped && !retryExhausted) return
-
-    parentChainDumped = true
-    val anchorDescription = anchor?.let(::describeComponent) ?: "<unavailable>"
-    WebViewLogger.LOG.warn(
-      "WKWebView frame rejection details: reason=${reason.logName}, frame=$frame, " +
-      "anchor=$anchorDescription, chain=${describeParentChain(host)}"
-    )
-  }
-
-  private fun describeParentChain(host: Component): String {
-    val components = generateSequence(host as Component?) { it.parent }
-      .take(PARENT_CHAIN_LIMIT)
-      .toList()
-    val suffix = if (components.lastOrNull()?.parent != null) " <- ..." else ""
-    return components.joinToString(" <- ") { describeComponent(it) } + suffix
-  }
-
-  private fun describeComponent(component: Component): String {
-    return "${component.javaClass.name}[bounds=${component.bounds}, preferred=${component.preferredSize}, " +
-           "showing=${component.isShowing}, displayable=${component.isDisplayable}]"
-  }
-
-  private fun resolveNSWindow(host: Component): ID? {
+  private fun resolveParentContentView(host: Component): ID? {
     val window = SwingUtilities.getWindowAncestor(host) ?: return null
     val nsWindow = MacUtil.getWindowFromJavaWindow(window)
-    return if (Foundation.isNil(nsWindow)) null else nsWindow
+    if (Foundation.isNil(nsWindow)) return null
+    val contentView = Foundation.invoke(nsWindow, "contentView")
+    return if (Foundation.isNil(contentView)) null else contentView
   }
 }

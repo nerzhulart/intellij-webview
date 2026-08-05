@@ -267,13 +267,21 @@ internal class MacWebViewEngine(
   }
 
   /**
-   * Attaches the native WKWebView as a subview of [parentNSView].
+   * Waits until the native WKWebView can be attached.
+   */
+  internal suspend fun awaitReadyForAttachment(): Boolean {
+    return awaitWebViewId() != null && state.get() == State.Active
+  }
+
+  /**
+   * Attaches the initialized native WKWebView as a subview of [parentNSView].
    * Must be called on the macOS main thread.
    */
-  internal suspend fun attachToParent(parentNSView: ID) {
-    val wv = awaitWebViewId() ?: return
-    if (state.get() != State.Active) return
+  internal fun attachToParent(parentNSView: ID): Boolean {
+    val wv = handles?.webView ?: return false
+    if (state.get() != State.Active) return false
     WKWebViewBridge.attachToParent(wv, parentNSView)
+    return true
   }
 
   /**

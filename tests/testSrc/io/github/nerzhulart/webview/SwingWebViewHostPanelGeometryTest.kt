@@ -10,6 +10,8 @@ import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewFocusEntrySink
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
+import io.github.nerzhulart.webview.impl.mac.MacNativeLayout
+import io.github.nerzhulart.webview.impl.mac.calculateMacNativeLayout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -40,7 +42,7 @@ class SwingWebViewHostPanelGeometryTest {
   }
 
   @Test
-  fun calculateNativeFrame_usesAnchorCoordinatesForNestedHost() {
+  fun calculateHostBounds_usesAnchorCoordinatesForNestedHost() {
     val fakeWindow = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -72,17 +74,92 @@ class SwingWebViewHostPanelGeometryTest {
     }
     nestedPanel.add(host)
 
-    val frame = SwingWebViewHostPanel.calculateNativeFrame(host, contentPane)
-    assertEquals(SwingWebViewHostPanel.NativeFrame(47.0, 172.0, 123.0, 67.0), frame)
+    val bounds = SwingWebViewHostPanel.calculateHostBounds(host, contentPane)
+    assertEquals(SwingWebViewHostPanel.NativeBounds(47, 61, 123, 67), bounds)
 
     val hostOriginInWindow = SwingUtilities.convertPoint(host, 0, 0, fakeWindow)
-    val buggyY = contentPane.height.toDouble() - hostOriginInWindow.y.toDouble() - host.height.toDouble()
-    assertEquals(148.0, buggyY)
-    assertNotEquals(frame.y, buggyY)
+    assertEquals(85, hostOriginInWindow.y)
+    assertNotEquals(bounds.y, hostOriginInWindow.y)
   }
 
   @Test
-  fun calculateWindowsBounds_usesTopLeftWindowClientCoordinatesForNestedHost() {
+  fun calculateMacNativeLayout_usesFullFrameWhenUnclipped() {
+    val bounds = SwingWebViewHostPanel.NativeBounds(47, 61, 123, 67)
+
+    val layout = calculateMacNativeLayout(bounds, bounds, anchorHeight = 300)
+
+    assertEquals(
+      MacNativeLayout(
+        containerFrame = SwingWebViewHostPanel.NativeFrame(47.0, 172.0, 123.0, 67.0),
+        webViewFrame = SwingWebViewHostPanel.NativeFrame(0.0, 0.0, 123.0, 67.0),
+      ),
+      layout,
+    )
+    assertTrue(layout.hasVisibleBounds)
+  }
+
+  @Test
+  fun calculateMacNativeLayout_clipsLeftAndTop() {
+    val layout = calculateMacNativeLayout(
+      fullBounds = SwingWebViewHostPanel.NativeBounds(5, 10, 100, 80),
+      clippedBounds = SwingWebViewHostPanel.NativeBounds(20, 25, 85, 65),
+      anchorHeight = 200,
+    )
+
+    assertEquals(SwingWebViewHostPanel.NativeFrame(20.0, 110.0, 85.0, 65.0), layout.containerFrame)
+    assertEquals(SwingWebViewHostPanel.NativeFrame(-15.0, 0.0, 100.0, 80.0), layout.webViewFrame)
+  }
+
+  @Test
+  fun calculateMacNativeLayout_clipsRightAndBottomWithNegativeChildOffset() {
+    val layout = calculateMacNativeLayout(
+      fullBounds = SwingWebViewHostPanel.NativeBounds(30, 220, 500, 100),
+      clippedBounds = SwingWebViewHostPanel.NativeBounds(30, 260, 470, 40),
+      anchorHeight = 340,
+    )
+
+    assertEquals(SwingWebViewHostPanel.NativeFrame(30.0, 40.0, 470.0, 40.0), layout.containerFrame)
+    assertEquals(SwingWebViewHostPanel.NativeFrame(0.0, -20.0, 500.0, 100.0), layout.webViewFrame)
+  }
+
+  @Test
+  fun calculateMacNativeLayout_marksEmptyClipAsHidden() {
+    val layout = calculateMacNativeLayout(
+      fullBounds = SwingWebViewHostPanel.NativeBounds(20, 30, 100, 80),
+      clippedBounds = SwingWebViewHostPanel.NativeBounds(120, 30, 0, 80),
+      anchorHeight = 300,
+    )
+
+    assertFalse(layout.hasVisibleBounds)
+  }
+
+  @Test
+  fun calculateMacNativeLayout_acceptsHostPartiallyOutsideWindow() {
+    val layout = calculateMacNativeLayout(
+      fullBounds = SwingWebViewHostPanel.NativeBounds(-20, -10, 100, 80),
+      clippedBounds = SwingWebViewHostPanel.NativeBounds(0, 0, 80, 70),
+      anchorHeight = 300,
+    )
+
+    assertEquals(SwingWebViewHostPanel.NativeFrame(0.0, 230.0, 80.0, 70.0), layout.containerFrame)
+    assertEquals(SwingWebViewHostPanel.NativeFrame(-20.0, 0.0, 100.0, 80.0), layout.webViewFrame)
+    assertTrue(layout.hasVisibleBounds)
+  }
+
+  @Test
+  fun calculateMacNativeLayout_keepsLogicalCoordinatesWithoutHiDpiScaling() {
+    val layout = calculateMacNativeLayout(
+      fullBounds = SwingWebViewHostPanel.NativeBounds(11, 13, 101, 79),
+      clippedBounds = SwingWebViewHostPanel.NativeBounds(17, 19, 89, 67),
+      anchorHeight = 257,
+    )
+
+    assertEquals(SwingWebViewHostPanel.NativeFrame(17.0, 171.0, 89.0, 67.0), layout.containerFrame)
+    assertEquals(SwingWebViewHostPanel.NativeFrame(-6.0, -6.0, 101.0, 79.0), layout.webViewFrame)
+  }
+
+  @Test
+  fun calculateClippedBounds_usesTopLeftWindowClientCoordinatesForNestedHost() {
     val rootPane = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -110,12 +187,12 @@ class SwingWebViewHostPanelGeometryTest {
     }
     nestedPanel.add(host)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(47, 101, 123, 67), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_doesNotClipToAnchorBounds() {
+  fun calculateClippedBounds_doesNotClipToAnchorBounds() {
     val rootPane = JPanel(null).apply {
       size = Dimension(220, 320)
     }
@@ -124,12 +201,12 @@ class SwingWebViewHostPanelGeometryTest {
     }
     rootPane.add(host)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 300, 200), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_doesNotClipToRootPaneContentBounds() {
+  fun calculateClippedBounds_doesNotClipToRootPaneContentBounds() {
     val contentPane = JPanel(null).apply {
       setBounds(0, 0, 220, 320)
     }
@@ -142,12 +219,12 @@ class SwingWebViewHostPanelGeometryTest {
     }
     contentPane.add(host)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 300, 200), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_clipsRightAndBottomToAncestorBounds() {
+  fun calculateClippedBounds_clipsRightAndBottomToAncestorBounds() {
     val rootPane = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -165,12 +242,12 @@ class SwingWebViewHostPanelGeometryTest {
     }
     contentPane.add(host)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(30, 260, 470, 40), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_clipsLeftAndTopToAncestorBounds() {
+  fun calculateClippedBounds_clipsLeftAndTopToAncestorBounds() {
     val rootPane = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -184,12 +261,12 @@ class SwingWebViewHostPanelGeometryTest {
     }
     contentPane.add(host)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 85, 55), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_doesNotClipRightAndBottomToTrailingSiblings() {
+  fun calculateClippedBounds_doesNotClipRightAndBottomToTrailingSiblings() {
     val rootPane = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -211,12 +288,12 @@ class SwingWebViewHostPanelGeometryTest {
     contentPane.add(rightToolbar)
     contentPane.add(bottomToolbar)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 430, 260), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_doesNotClipLeftAndTopToLeadingSiblings() {
+  fun calculateClippedBounds_doesNotClipLeftAndTopToLeadingSiblings() {
     val rootPane = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -238,12 +315,12 @@ class SwingWebViewHostPanelGeometryTest {
     contentPane.add(leftToolbar)
     contentPane.add(topToolbar)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 20, 260, 220), bounds)
   }
 
   @Test
-  fun calculateWindowsBounds_ignoresInvisibleSiblings() {
+  fun calculateClippedBounds_ignoresInvisibleSiblings() {
     val rootPane = JPanel(null).apply {
       size = Dimension(500, 340)
     }
@@ -262,7 +339,7 @@ class SwingWebViewHostPanelGeometryTest {
     contentPane.add(host)
     contentPane.add(overlay)
 
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, rootPane)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, rootPane)
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 430, 260), bounds)
   }
 

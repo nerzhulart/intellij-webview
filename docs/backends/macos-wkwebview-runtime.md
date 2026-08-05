@@ -6,8 +6,17 @@ On macOS, the system engine provider embeds WKWebView in the Swing host and repo
 
 - AppKit and WKWebView operations run on the macOS main thread.
 - The Swing host owns component geometry and lifecycle on the EDT.
+- Each attached host owns a clipping `NSView` under `NSWindow.contentView`; the `WKWebView` is a child of that container.
 - The engine serves bundled resources through a WKURL scheme handler and an isolated virtual origin.
 - Page-to-host messaging uses a WK script message handler; host-to-page delivery uses JavaScript evaluation.
+
+```text
+NSWindow.contentView
+└── clipping NSView
+    └── WKWebView
+```
+
+The clipping container follows the visible Swing rectangle and masks the full-size `WKWebView` to its bounds. It is window-owned because a JBR `Canvas` supplies a `CALayer`, not a Canvas-owned `NSView` suitable for parenting `WKWebView`.
 
 Consumer code uses `createWebViewPanel(...)`; the native bridge is internal.
 
