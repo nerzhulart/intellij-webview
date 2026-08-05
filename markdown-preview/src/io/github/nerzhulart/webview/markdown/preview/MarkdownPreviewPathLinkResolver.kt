@@ -31,7 +31,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.intellij.plugins.markdown.MarkdownBundle
 import java.awt.Point
 import java.nio.file.Path
 import javax.swing.JComponent
@@ -83,7 +82,7 @@ internal class MarkdownPreviewPathLinkResolver(
 
       val popup = JBPopupFactory.getInstance()
         .createPopupChooserBuilder(candidates)
-        .setTitle(MarkdownBundle.message("markdown.preview.path.link.popup.title"))
+        .setTitle(MarkdownWebViewPreviewBundle.message("markdown.preview.path.link.popup.title"))
         .setRenderer(textListCellRenderer { it.displayPath })
         .setItemChosenCallback { scope.launch { navigateTo(it, component) } }
         .createPopup()
