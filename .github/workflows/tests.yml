@@ -189,17 +189,17 @@ jobs:
         shell: bash
         env:
           JAVA_TOOL_OPTIONS: -Djava.awt.headless=false
-        run: xvfb-run -a -s "-screen 0 1920x1080x24" gradle test --stacktrace --build-cache --configuration-cache
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" gradle test --stacktrace --build-cache
 
       - name: Run Gradle tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: gradle test --stacktrace --build-cache --configuration-cache
+        run: gradle test --stacktrace --build-cache
 
       - name: Run Gradle tests on macOS
         if: runner.os == 'macOS'
         shell: bash
-        run: gradle test --stacktrace --build-cache --configuration-cache
+        run: gradle test --stacktrace --build-cache
 
       - name: Publish Gradle test summary
         if: always()
