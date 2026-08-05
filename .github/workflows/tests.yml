@@ -222,3 +222,12 @@ jobs:
             **/build/test-results/**
             **/build/reports/tests/**
           if-no-files-found: warn
+
+      - name: Upload IntelliJ test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: intellij-test-logs-${{ matrix.name }}
+          path: .intellijPlatform/sandbox/**/log-test/idea.log
+          include-hidden-files: true
+          if-no-files-found: warn

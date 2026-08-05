@@ -94,6 +94,7 @@ tasks {
     useJUnitPlatform()
     systemProperty("idea.dev.project.root", testIdeaRoot.get().asFile.absolutePath)
     systemProperty("java.awt.headless", "false")
+    systemProperty("idea.log.trace.categories", "#io.github.nerzhulart.webview")
   }
 
   register("buildAllWebViewAssets") {
