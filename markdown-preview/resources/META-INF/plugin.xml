@@ -11,6 +11,7 @@
       <li>Fits the WebView frontend workflow where UI and preview assets can be authored with HTML, CSS, TypeScript, frontend frameworks, Vite, and typed Kotlin/TypeScript interop.</li>
     </ul>
   ]]></description>
+  <resource-bundle>messages.MarkdownWebViewPreviewBundle</resource-bundle>
 
   <dependencies>
     <plugin id="org.intellij.plugins.markdown"/>
