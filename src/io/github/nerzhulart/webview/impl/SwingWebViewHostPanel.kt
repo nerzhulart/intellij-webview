@@ -83,21 +83,17 @@ internal class SwingWebViewHostPanel(
   internal companion object {
     private const val HOST_MOUSE_NATIVE_FOCUS_SUPPRESSION_NANOS = 500_000_000L
 
-    fun calculateNativeFrame(host: Component, anchor: Component): NativeFrame {
+    fun calculateHostBounds(host: Component, anchor: Component): NativeBounds {
       val hostOrigin = SwingUtilities.convertPoint(host, 0, 0, anchor)
-      val width = host.width.toDouble()
-      val height = host.height.toDouble()
-      val flippedY = anchor.height.toDouble() - hostOrigin.y.toDouble() - height
-
-      return NativeFrame(
-        x = hostOrigin.x.toDouble(),
-        y = flippedY,
-        width = width,
-        height = height,
+      return NativeBounds(
+        x = hostOrigin.x,
+        y = hostOrigin.y,
+        width = host.width,
+        height = host.height,
       )
     }
 
-    fun calculateWindowsBounds(host: Component, anchor: Component): NativeBounds {
+    fun calculateClippedBounds(host: Component, anchor: Component): NativeBounds {
       val hostOrigin = SwingUtilities.convertPoint(host, 0, 0, anchor)
       val visibleClip = calculateVisibleClip(host, anchor, hostOrigin)
       return NativeBounds(
@@ -157,7 +153,7 @@ internal class SwingWebViewHostPanel(
 
     internal fun hasNonEmptyClippedBounds(host: Component): Boolean {
       val anchor = resolveWindowsAnchor(host) ?: return false
-      val bounds = calculateWindowsBounds(host, anchor)
+      val bounds = calculateClippedBounds(host, anchor)
       return bounds.width > 0 && bounds.height > 0
     }
   }

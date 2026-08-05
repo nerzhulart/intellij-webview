@@ -166,7 +166,7 @@ internal class WinWebViewOverlayBoundsTest {
     var result: Bounds? = null
     runInEdtAndWait {
       val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host)!!
-      val nativeBounds = SwingWebViewHostPanel.calculateWindowsBounds(host, anchor)
+      val nativeBounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
       result = Bounds(nativeBounds.x, nativeBounds.y, nativeBounds.width, nativeBounds.height, WindowsHwndUtil.scale(host))
     }
     return result!!

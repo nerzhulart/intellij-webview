@@ -39,7 +39,7 @@ internal class LinuxX11NativeWebViewHostPeer(
   override fun scheduleFrameUpdate(host: Component) {
     if (!attached) return
     val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host) ?: return
-    val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, anchor)
+    val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
     val scale = LinuxX11WindowUtil.scale(host)
     val frame = AppliedFrame(bounds, scale)
     if (frame == lastAppliedFrame) return

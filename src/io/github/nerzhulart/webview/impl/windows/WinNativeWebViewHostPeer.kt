@@ -76,7 +76,7 @@ internal class WinNativeWebViewHostPeer(
       if (anchor == null) {
         return@measureTimedValue FrameUpdate(FrameUpdateResult.Failed, "reason=no-anchor")
       }
-      val bounds = SwingWebViewHostPanel.calculateWindowsBounds(host, anchor)
+      val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
       val scale = WindowsHwndUtil.scale(host)
       val frame = AppliedFrame(bounds, scale)
       if (!isReadyForNativeFrame(bounds)) {
