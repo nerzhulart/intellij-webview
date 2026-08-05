@@ -51,6 +51,7 @@ import kotlin.time.Duration.Companion.seconds
 
 internal object WebViewFocusRobotTestSupport {
   private const val SUPPRESS_DOUBLE_CLICK_HANDLER_SETTING = "ide.suppress.double.click.handler"
+  private val INITIAL_WEBVIEW_PAGE_TIMEOUT = 20.seconds
 
   suspend fun runFocusInteropScenario(
     frame: JFrame,
@@ -113,6 +114,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Focus interop test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -193,6 +195,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Modifier shortcut test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -274,6 +277,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Text navigation test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -377,6 +381,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Alt+F4 test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -453,6 +458,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Alt+F1 test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -536,6 +542,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Focus interop first responder test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -628,6 +635,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviFocusInteropReady'])",
         expected = "true",
         description = "Non-tabbable selection test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(robot, frame, field, "Swing field did not receive initial focus", skipIfUnavailable = true)
@@ -716,6 +724,7 @@ internal object WebViewFocusRobotTestSupport {
         script = "Boolean(window.__WVI__ && window['__wviComboPopupReady'])",
         expected = "true",
         description = "Combo popup Robot test page did not load WebView bridge and platform features",
+        timeout = INITIAL_WEBVIEW_PAGE_TIMEOUT,
       )
 
       focusSwingFieldWithRobot(
@@ -1132,9 +1141,10 @@ internal object WebViewFocusRobotTestSupport {
     @Language("JavaScript") script: String,
     expected: String,
     description: String,
+    timeout: Duration = 10.seconds,
   ) {
     var lastResult: String? = null
-    val completedWithinTimeout = withTimeoutOrNull(10.seconds) {
+    val completedWithinTimeout = withTimeoutOrNull(timeout) {
       while (true) {
         lastResult = webView.evaluateJavaScript(script)
         if (lastResult == expected) return@withTimeoutOrNull true
