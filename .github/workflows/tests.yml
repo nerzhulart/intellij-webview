@@ -177,13 +177,6 @@ jobs:
             throw "IntelliJ Platform SDK cache was not populated"
           }
 
-      - name: Save IntelliJ Platform SDK
-        if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: .intellijPlatform/ides
-          key: ${{ steps.intellij-sdk-cache.outputs.cache-primary-key }}
-
       - name: Run Gradle tests on Linux
         if: runner.os == 'Linux'
         shell: bash

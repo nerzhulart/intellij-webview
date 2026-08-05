@@ -1,0 +1,100 @@
+name: Warm IntelliJ Platform SDK cache
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - gradle.properties
+      - .github/workflows/warm-intellij-sdk-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm-cache:
+    if: github.ref == 'refs/heads/master'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+          - name: Windows
+            runner: windows-2025
+          - name: macOS
+            runner: macos-15
+
+    env:
+      GRADLE_OPTS: -Dorg.gradle.project.org.jetbrains.intellij.platform.intellijPlatformIdesCacheEnabled=true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Read IntelliJ Platform version
+        id: intellij-platform-version
+        shell: pwsh
+        run: |
+          $versionLine = Get-Content -LiteralPath "gradle.properties" |
+            Where-Object { $_ -match '^platformVersion=' } |
+            Select-Object -First 1
+          if (-not $versionLine) {
+            throw "platformVersion is missing from gradle.properties"
+          }
+
+          $version = $versionLine.Substring("platformVersion=".Length).Trim()
+          if (-not $version) {
+            throw "platformVersion is empty in gradle.properties"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Check IntelliJ Platform SDK cache
+        id: intellij-sdk-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .intellijPlatform/ides
+          key: intellij-platform-sdk-v2-${{ steps.intellij-platform-version.outputs.version }}-${{ runner.os }}
+          lookup-only: true
+
+      - name: Set up JDK 25
+        if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle 9.1.0
+        if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.1.0"
+          cache-disabled: true
+
+      - name: Resolve IntelliJ Platform SDK
+        if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          & gradle :compileKotlin --stacktrace
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $sdkDirectories = @(Get-ChildItem -LiteralPath ".intellijPlatform/ides" -Directory -ErrorAction SilentlyContinue)
+          if ($sdkDirectories.Count -eq 0) {
+            throw "IntelliJ Platform SDK cache was not populated"
+          }
+
+      - name: Save IntelliJ Platform SDK
+        if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .intellijPlatform/ides
+          key: ${{ steps.intellij-sdk-cache.outputs.cache-primary-key }}

@@ -85,13 +85,6 @@ jobs:
             exit 1
           fi
 
-      - name: Save IntelliJ Platform SDK
-        if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: .intellijPlatform/ides
-          key: ${{ steps.intellij-sdk-cache.outputs.cache-primary-key }}
-
       - name: Build plugin archives
         shell: bash
         env:
