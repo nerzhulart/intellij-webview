@@ -111,7 +111,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: jdkfile
-          jdkFile: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
+          jdk-file: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
           java-version: ${{ env.JBR_VERSION }}
           architecture: ${{ matrix.java_arch }}
 
