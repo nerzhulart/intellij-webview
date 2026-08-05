@@ -80,17 +80,9 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .intellijPlatform/ides
-          key: intellij-platform-sdk-${{ steps.intellij-platform-version.outputs.version }}-${{ runner.os }}-${{ hashFiles('build.gradle.kts', 'settings.gradle.kts') }}
-
-      - name: Restore JBR archive
-        id: jbr-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
-          key: jbrsdk-jcef-${{ env.JBR_VERSION }}-b${{ env.JBR_BUILD }}-${{ matrix.jbr_platform }}-${{ matrix.jbr_sha512 }}
+          key: intellij-platform-sdk-v2-${{ steps.intellij-platform-version.outputs.version }}-${{ runner.os }}
 
       - name: Download JBR archive
-        if: steps.jbr-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $archiveDirectory = Join-Path $env:RUNNER_TEMP "jbr"
@@ -115,18 +107,11 @@ jobs:
             throw "JBR archive checksum mismatch: expected $expectedChecksum, got $actualChecksum"
           }
 
-      - name: Save JBR archive
-        if: steps.jbr-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
-          key: ${{ steps.jbr-cache.outputs.cache-primary-key }}
-
       - name: Set up custom JBR
         uses: actions/setup-java@v5
         with:
           distribution: jdkfile
-          jdk-file: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
+          jdkFile: ${{ runner.temp }}/jbr/jbrsdk_jcef.tar.gz
           java-version: ${{ env.JBR_VERSION }}
           architecture: ${{ matrix.java_arch }}
 
@@ -173,22 +158,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.1.0"
-
-      - name: Bootstrap Gradle wrapper
-        shell: pwsh
-        run: gradle wrapper --gradle-version 9.1.0 --distribution-type bin
-
-      - name: Make Gradle wrapper executable
-        if: runner.os != 'Windows'
-        shell: bash
-        run: chmod +x gradlew
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Resolve IntelliJ Platform SDK
         if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $gradleWrapper = if ($IsWindows) { ".\gradlew.bat" } else { "./gradlew" }
-          & $gradleWrapper :compileKotlin --stacktrace
+          & gradle :compileKotlin --stacktrace --build-cache --configuration-cache
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -210,17 +187,17 @@ jobs:
         shell: bash
         env:
           JAVA_TOOL_OPTIONS: -Djava.awt.headless=false
-        run: xvfb-run -a -s "-screen 0 1920x1080x24" ./gradlew test --stacktrace
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" gradle test --stacktrace --build-cache --configuration-cache
 
       - name: Run Gradle tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\gradlew.bat test --stacktrace
+        run: gradle test --stacktrace --build-cache --configuration-cache
 
       - name: Run Gradle tests on macOS
         if: runner.os == 'macOS'
         shell: bash
-        run: ./gradlew test --stacktrace
+        run: gradle test --stacktrace --build-cache --configuration-cache
 
       - name: Publish Gradle test summary
         if: always()

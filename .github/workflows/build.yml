@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .intellijPlatform/ides
-          key: intellij-platform-sdk-${{ steps.intellij-platform-version.outputs.version }}-${{ runner.os }}-${{ hashFiles('build.gradle.kts', 'settings.gradle.kts') }}
+          key: intellij-platform-sdk-v2-${{ steps.intellij-platform-version.outputs.version }}-${{ runner.os }}
 
       - name: Set up JDK 25
         uses: actions/setup-java@v5
@@ -66,24 +66,18 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      - name: Set up Gradle
+      - name: Set up Gradle 9.1.0
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "9.1.0"
-
-      - name: Bootstrap Gradle wrapper
-        shell: bash
-        run: gradle wrapper --gradle-version 9.1.0 --distribution-type bin
-
-      - name: Make Gradle wrapper executable
-        shell: bash
-        run: chmod +x gradlew
+          cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Resolve IntelliJ Platform SDK
         if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          ./gradlew :compileKotlin --stacktrace
+          gradle :compileKotlin --stacktrace --build-cache --configuration-cache
           if ! find .intellijPlatform/ides -mindepth 1 -maxdepth 1 -type d -print -quit | grep -q .; then
             echo "::error::IntelliJ Platform SDK cache was not populated"
             exit 1
@@ -117,10 +111,12 @@ jobs:
               fi
             done
           fi
-          ./gradlew \
+          gradle \
             -PpluginVersion="$VERSION" \
             buildPlugin :demo:buildPlugin :markdown-preview:buildPlugin \
-            --stacktrace
+            --stacktrace \
+            --build-cache \
+            --configuration-cache
 
       - name: Build and verify npm packages
         working-directory: webview-src

@@ -1,4 +1,5 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+import org.gradle.api.tasks.testing.Test
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
@@ -15,6 +16,12 @@ plugins {
 
 group = "io.github.nerzhulart.webview"
 version = providers.gradleProperty("pluginVersion").get()
+
+allprojects {
+  tasks.withType<Test>().configureEach {
+    outputs.doNotCacheIf("Test results must not be restored from the build cache") { true }
+  }
+}
 
 base {
   archivesName.set("webview")
