@@ -505,7 +505,7 @@ class SwingWebViewHostPanelGeometryTest {
   }
 
   @Test
-  fun mouseFocusEntry_doesNotForceNativeWebViewFocusOrPageBoundary() {
+  fun swingMouseFocusEntry_requestsNativeWebViewFocusWithoutPageBoundary() {
     val engine = FakeComponentBackedEngine()
     val focusEntrySink = RecordingFocusEntrySink()
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
@@ -517,7 +517,7 @@ class SwingWebViewHostPanelGeometryTest {
         listener.focusGained(FocusEvent(host, FocusEvent.FOCUS_GAINED, false, null, FocusEvent.Cause.MOUSE_EVENT))
       }
 
-      assertEquals(0, engine.requestFocusCount)
+      assertEquals(1, engine.requestFocusCount)
       assertEquals(emptyList<WebViewFocusDirection>(), focusEntrySink.entries)
     }
     finally {
@@ -526,7 +526,7 @@ class SwingWebViewHostPanelGeometryTest {
   }
 
   @Test
-  fun swingFocusTransfer_notifiesPageLeave() {
+  fun swingFocusTransfer_notifiesPageLeaveAndClearsNativeFocusOnce() {
     val engine = FakeComponentBackedEngine()
     val focusEntrySink = RecordingFocusEntrySink()
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
@@ -541,9 +541,36 @@ class SwingWebViewHostPanelGeometryTest {
       host.focusListeners.forEach { listener ->
         listener.focusLost(FocusEvent(host, FocusEvent.FOCUS_LOST, false, outsideComponent, FocusEvent.Cause.MOUSE_EVENT))
       }
+      host.focusListeners.forEach { listener ->
+        listener.focusLost(FocusEvent(host, FocusEvent.FOCUS_LOST, false, outsideComponent, FocusEvent.Cause.MOUSE_EVENT))
+      }
 
       assertEquals(1, focusEntrySink.leaveCount)
       assertEquals(1, engine.clearFocusCount)
+    }
+    finally {
+      scope.cancel()
+    }
+  }
+
+  @Test
+  fun swingFocusGain_duringNativeSynchronizationDoesNotRequestNativeFocus() {
+    val engine = FakeComponentBackedEngine()
+    @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
+    val scope = CoroutineScope(SupervisorJob())
+    try {
+      val host = SwingWebViewHostPanel(scope, engine)
+      val focusSyncField = SwingWebViewHostPanel::class.java.getDeclaredField("focusSyncInProgress").apply {
+        isAccessible = true
+      }
+      focusSyncField.setBoolean(host, true)
+
+      host.focusListeners.forEach { listener ->
+        listener.focusGained(FocusEvent(host, FocusEvent.FOCUS_GAINED, false, null, FocusEvent.Cause.UNKNOWN))
+      }
+
+      assertEquals(0, engine.requestFocusCount)
+      assertFalse(focusSyncField.getBoolean(host))
     }
     finally {
       scope.cancel()
