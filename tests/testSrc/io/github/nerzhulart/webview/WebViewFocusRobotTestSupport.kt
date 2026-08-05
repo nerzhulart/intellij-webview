@@ -2,6 +2,7 @@
 package io.github.nerzhulart.webview
 
 import com.intellij.ide.IdeEventQueue
+import com.intellij.openapi.options.advanced.AdvancedSettings
 import com.intellij.openapi.util.Disposer
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
@@ -19,6 +20,7 @@ import org.intellij.lang.annotations.Language
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.beans.PropertyChangeListener
 import java.awt.AWTEvent
 import java.awt.BorderLayout
 import java.awt.Component
@@ -37,6 +39,7 @@ import java.awt.event.KeyEvent
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JFrame
 import javax.swing.JTextField
 import javax.swing.SwingUtilities
@@ -47,6 +50,8 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 internal object WebViewFocusRobotTestSupport {
+  private const val SUPPRESS_DOUBLE_CLICK_HANDLER_SETTING = "ide.suppress.double.click.handler"
+
   suspend fun runFocusInteropScenario(
     frame: JFrame,
     scope: CoroutineScope,
@@ -202,21 +207,23 @@ internal object WebViewFocusRobotTestSupport {
       clickWebElementCenter(robot, host, engine, "web-input")
       waitForFocusOwnerNot(field, "WebView activation did not clear the previous Swing focus owner")
 
-      clearRecordedKeyEvents(modifierEvents)
-      doubleTapModifier(robot, KeyEvent.VK_SHIFT)
-      waitForModifierDoubleTap(
-        events = modifierEvents,
-        keyCode = KeyEvent.VK_SHIFT,
-        description = "Double Shift inside WebView did not enter the IDE key event pipeline",
-      )
+      suppressSearchEverywhereDoubleClick().use {
+        clearRecordedKeyEvents(modifierEvents)
+        doubleTapModifier(robot, KeyEvent.VK_SHIFT)
+        waitForModifierDoubleTap(
+          events = modifierEvents,
+          keyCode = KeyEvent.VK_SHIFT,
+          description = "Double Shift inside WebView did not enter the IDE key event pipeline",
+        )
 
-      clearRecordedKeyEvents(modifierEvents)
-      doubleTapModifier(robot, KeyEvent.VK_CONTROL)
-      waitForModifierDoubleTap(
-        events = modifierEvents,
-        keyCode = KeyEvent.VK_CONTROL,
-        description = "Double Ctrl inside WebView did not enter the IDE key event pipeline",
-      )
+        clearRecordedKeyEvents(modifierEvents)
+        doubleTapModifier(robot, KeyEvent.VK_CONTROL)
+        waitForModifierDoubleTap(
+          events = modifierEvents,
+          keyCode = KeyEvent.VK_CONTROL,
+          description = "Double Ctrl inside WebView did not enter the IDE key event pipeline",
+        )
+      }
     }
     finally {
       modifierEventRegistration.close()
@@ -542,7 +549,7 @@ internal object WebViewFocusRobotTestSupport {
       )
       assertWebInputValue(engine, "", "WebView input received typed input while Swing field was focused")
 
-      clickWebElementCenter(robot, host, engine, "web-input")
+      clickWebElementCenterAndWaitForFocus(robot, frame, host, engine, "web-input")
       assertNativeFocusInsideWebView()
       waitForFocusOwnerNot(field, "WebView activation did not clear the previous Swing focus owner")
 
@@ -1349,14 +1356,21 @@ internal object WebViewFocusRobotTestSupport {
   }
 
   private suspend fun clickWebElementCenter(robot: Robot, host: Component, webView: WebViewEngineBridge, elementId: String) {
-    val center = webView.evaluateJavaScript("""
+    clickScreenPoint(robot, webElementCenterOnScreen(host, webView, elementId))
+    robot.waitForIdle()
+  }
+
+  private suspend fun webElementCenterOnScreen(host: Component, webView: WebViewEngineBridge, elementId: String): Point {
+    @Language("JavaScript")
+    val elementCenterScript = """
       (() => {
         const element = document.getElementById('$elementId');
         if (!element) return '';
         const rect = element.getBoundingClientRect();
         return (rect.left + rect.width / 2) + ',' + (rect.top + rect.height / 2);
       })()
-    """.trimIndent())
+    """.trimIndent()
+    val center = webView.evaluateJavaScript(elementCenterScript)
     val centerValue = center?.trim()?.removeSurrounding("\"").orEmpty()
     val parts = centerValue.split(',')
     assertEquals(2, parts.size, "Cannot resolve WebView element center for #$elementId, jsResult=$center")
@@ -1366,11 +1380,72 @@ internal object WebViewFocusRobotTestSupport {
       val location = host.locationOnScreen
       point[0] = Point(location.x + parts[0].toDouble().roundToInt(), location.y + parts[1].toDouble().roundToInt())
     }
-    val target = point[0]!!
+    return point[0]!!
+  }
+
+  private fun clickScreenPoint(robot: Robot, target: Point) {
     robot.mouseMove(target.x, target.y)
     robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
-    robot.waitForIdle()
+  }
+
+  private suspend fun clickWebElementCenterAndWaitForFocus(
+    robot: Robot,
+    frame: JFrame,
+    host: Component,
+    webView: WebViewEngineBridge,
+    elementId: String,
+  ) {
+    @Language("JavaScript")
+    val activeElementScript = "document.activeElement && document.activeElement.id === '$elementId'"
+    val target = webElementCenterOnScreen(host, webView, elementId)
+    val sawFrameDeactivation = AtomicBoolean()
+    val retryAfterFrameActivation = AtomicBoolean()
+    val retried = AtomicBoolean()
+    val focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+    val focusListener = PropertyChangeListener { event ->
+      if (event.propertyName == "focusedWindow") {
+        if (event.oldValue === frame && event.newValue == null) {
+          sawFrameDeactivation.set(true)
+        }
+        else if (event.newValue === frame && sawFrameDeactivation.get()) {
+          retryAfterFrameActivation.set(true)
+        }
+      }
+    }
+    var lastJsResult: String? = null
+
+    SwingUtilities.invokeAndWait {
+      focusManager.addPropertyChangeListener("focusedWindow", focusListener)
+    }
+    val matched = try {
+      clickScreenPoint(robot, target)
+      robot.waitForIdle()
+
+      withTimeoutOrNull(5.seconds) {
+        while (true) {
+          if (retryAfterFrameActivation.compareAndSet(true, false)) {
+            retried.set(true)
+            clickScreenPoint(robot, target)
+            robot.waitForIdle()
+          }
+          lastJsResult = webView.evaluateJavaScript(activeElementScript)
+          if (lastJsResult == "true") return@withTimeoutOrNull true
+          delay(50.milliseconds)
+        }
+      } == true
+    }
+    finally {
+      SwingUtilities.invokeAndWait {
+        focusManager.removePropertyChangeListener("focusedWindow", focusListener)
+      }
+    }
+    assertTrue(
+      matched,
+      "WebView input did not become the active document element after Robot click, " +
+      "lastJsResult=$lastJsResult; sawFrameDeactivation=${sawFrameDeactivation.get()}; " +
+      "clickCount=${if (retried.get()) 2 else 1}",
+    )
   }
 
   private fun dragSelection(robot: Robot, component: Component) {
@@ -1516,6 +1591,14 @@ internal object WebViewFocusRobotTestSupport {
     IdeEventQueue.getInstance().addPreprocessor(listener, disposable)
     return AutoCloseable {
       Disposer.dispose(disposable)
+    }
+  }
+
+  private fun suppressSearchEverywhereDoubleClick(): AutoCloseable {
+    val previousValue = AdvancedSettings.getBoolean(SUPPRESS_DOUBLE_CLICK_HANDLER_SETTING)
+    AdvancedSettings.setBoolean(SUPPRESS_DOUBLE_CLICK_HANDLER_SETTING, true)
+    return AutoCloseable {
+      AdvancedSettings.setBoolean(SUPPRESS_DOUBLE_CLICK_HANDLER_SETTING, previousValue)
     }
   }
 
