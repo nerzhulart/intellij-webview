@@ -24,7 +24,7 @@ The wrapper scripts and properties are committed, but `gradle-wrapper.jar` is no
 gradle wrapper --gradle-version 9.1.0 --distribution-type bin
 ```
 
-This is the same bootstrap performed by the build workflow. After it succeeds, use `./gradlew` or `gradlew.bat` for all repository tasks. When the Gradle distribution changes, update the command here and the CI bootstrap together.
+CI workflows use the Gradle version installed by `gradle/actions/setup-gradle` directly and do not perform this local bootstrap. After the local bootstrap succeeds, use `./gradlew` or `gradlew.bat` for all repository tasks. When the Gradle distribution changes, update the command here and the CI `gradle-version` inputs together.
 
 ## Build Plugin Archives
 
