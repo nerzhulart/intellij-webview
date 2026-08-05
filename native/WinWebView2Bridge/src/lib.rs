@@ -1396,19 +1396,52 @@ fn begin_create_controller(
         return Ok(());
     }
     let hwnd = native.borrow().hwnd;
+    emit_diagnostic(
+        &native,
+        DIAGNOSTIC_TRACE,
+        "controller.create.requested",
+        "WebView2 controller creation requested".to_string(),
+        diagnostic_data(vec![
+            ("generation", generation.to_string()),
+            (
+                "parentHwnd",
+                (native.borrow().parent.0 as usize as u64).to_string(),
+            ),
+            ("containerHwnd", (hwnd.0 as usize as u64).to_string()),
+            ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+        ]),
+    );
     let environment_for_callback = environment.clone();
     let native_for_callback = native.clone();
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
         move |error_code, controller| {
-            let controller_started_at = if let Ok(mut view) = native_for_callback.try_borrow_mut() {
-                view.controller_completed_handler = None;
-                view.controller_create_started_at.take()
-            } else {
-                None
+            let (controller_started_at, native_destroyed) =
+                if let Ok(mut view) = native_for_callback.try_borrow_mut() {
+                    view.controller_completed_handler = None;
+                    (view.controller_create_started_at.take(), view.destroyed)
+                } else {
+                    (None, false)
+                };
+            let generation_current = is_shared_environment_current(generation);
+            let result = match &error_code {
+                Ok(()) => "S_OK".to_string(),
+                Err(error) => format_windows_error(error),
             };
-            if is_native_destroyed(&native_for_callback)
-                || !is_shared_environment_current(generation)
-            {
+            emit_diagnostic(
+                &native_for_callback,
+                DIAGNOSTIC_TRACE,
+                "controller.create.callback",
+                "WebView2 controller creation callback invoked".to_string(),
+                diagnostic_data(vec![
+                    ("generation", generation.to_string()),
+                    ("generationCurrent", generation_current.to_string()),
+                    ("nativeDestroyed", native_destroyed.to_string()),
+                    ("controllerPresent", controller.is_some().to_string()),
+                    ("result", result),
+                    ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+                ]),
+            );
+            if native_destroyed || !generation_current {
                 return Ok(());
             }
             if let Err(error) = error_code {
@@ -1458,6 +1491,17 @@ fn begin_create_controller(
             return Err(format_windows_error(error));
         }
     }
+    emit_diagnostic(
+        &native,
+        DIAGNOSTIC_TRACE,
+        "controller.create.accepted",
+        "WebView2 controller creation request accepted".to_string(),
+        diagnostic_data(vec![
+            ("generation", generation.to_string()),
+            ("containerHwnd", (hwnd.0 as usize as u64).to_string()),
+            ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+        ]),
+    );
     Ok(())
 }
 
