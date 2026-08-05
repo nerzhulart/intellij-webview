@@ -160,6 +160,8 @@ jobs:
           gradle-version: "9.1.0"
           cache-read-only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          gradle-home-cache-excludes: |
+            caches/modules-2/files-2.1/com.jetbrains.intellij.idea/**
 
       - name: Resolve IntelliJ Platform SDK
         if: steps.intellij-sdk-cache.outputs.cache-hit != 'true'
