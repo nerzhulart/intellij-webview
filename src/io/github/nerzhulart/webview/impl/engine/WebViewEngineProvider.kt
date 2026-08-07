@@ -42,9 +42,7 @@ interface WebViewEngineProvider {
 
   fun selectionPriority(preference: WebViewEngineKind): Int?
 
-  suspend fun availability(): WebViewEngineAvailability = availabilityBlocking()
-
-  fun availabilityBlocking(): WebViewEngineAvailability
+  suspend fun availability(): WebViewEngineAvailability
 
   suspend fun createWebView(
     webViewScope: CoroutineScope,

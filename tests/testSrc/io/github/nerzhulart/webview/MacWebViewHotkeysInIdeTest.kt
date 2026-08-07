@@ -450,7 +450,7 @@ internal class MacWebViewHotkeysInIdeTest {
 
     override fun selectionPriority(preference: WebViewEngineKind): Int? = delegate.selectionPriority(preference)
 
-    override fun availabilityBlocking(): WebViewEngineAvailability = delegate.availabilityBlocking()
+    override suspend fun availability(): WebViewEngineAvailability = delegate.availability()
 
     override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       return (delegate.createEngine(scope, options) as MacWebViewEngine).also { engine = it }

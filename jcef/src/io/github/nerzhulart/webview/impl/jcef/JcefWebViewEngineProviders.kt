@@ -23,7 +23,7 @@ internal class JcefEngineProvider : WebViewEngineProvider {
     }
   }
 
-  override fun availabilityBlocking(): WebViewEngineAvailability = JcefWebViewRuntime.availabilityBlocking()
+  override suspend fun availability(): WebViewEngineAvailability = JcefWebViewRuntime.availabilityBlocking()
 
   override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
     return createJcefWebViewEngine(parentScope = scope, documentStartScripts = options.documentStartScripts)
