@@ -15,7 +15,6 @@ import io.github.nerzhulart.webview.impl.CONSOLE_LOG_CATEGORY
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
@@ -167,18 +166,18 @@ interface WebViewEngineProvider {
     }
   }
 
-  fun runtimeInfo(engine: WebViewEngineBridge): WebViewRuntimeInfo {
+  fun runtimeInfo(engine: WebViewEngine): WebViewRuntimeInfo {
     return WebViewRuntimeInfo(id, capabilities, displayName)
   }
 
   fun createEngine(
     scope: CoroutineScope,
     options: WebViewEngineCreationOptions,
-  ): WebViewEngineBridge
+  ): WebViewEngine
 
   fun createNativeHostPeer(
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
   ): NativeWebViewHostPeer? = null
 
   interface CreatedWebView {

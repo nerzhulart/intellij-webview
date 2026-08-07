@@ -7,7 +7,6 @@ import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.registry.Registry
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WEBVIEW_CONSOLE_NOTIFICATION_METHOD
@@ -15,6 +14,7 @@ import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
 import io.github.nerzhulart.webview.impl.webViewAssetCustomSchemeUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
 import io.github.nerzhulart.webview.impl.traceWebViewPerfSince
@@ -59,7 +59,7 @@ internal class WinWebViewEngine(
   private val webViewDispatcher: CoroutineDispatcher = WebView2Dispatcher.coroutineDispatcher,
   private val devToolsCpuProfilingEnabled: () -> Boolean = { Registry.get(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY).asBoolean() },
   private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
-) : WebViewEngineBridge {
+) : WebViewEngine {
   override val isHeavyweight: Boolean = true
 
   private enum class State { New, Creating, Active, Closing, Closed }

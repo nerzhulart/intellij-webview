@@ -7,7 +7,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
 import io.github.nerzhulart.webview.impl.NativeBridgeLibraryAvailability
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacNativeWebViewHostPeer
@@ -250,7 +250,7 @@ class WebViewFocusInteropRobotTest {
     }
   }
 
-  private fun createPlatformEngine(scope: CoroutineScope): WebViewEngineBridge {
+  private fun createPlatformEngine(scope: CoroutineScope): WebViewEngine {
     val osName = System.getProperty("os.name", "")
     return when {
       osName.startsWith("Mac", ignoreCase = true) -> {
@@ -277,7 +277,7 @@ class WebViewFocusInteropRobotTest {
     )
   }
 
-  private fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
+  private fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngine): NativeWebViewHostPeer {
     return when (engine) {
       is MacWebViewEngine -> MacNativeWebViewHostPeer(scope, engine)
       is WinWebViewEngine -> WinNativeWebViewHostPeer(engine)

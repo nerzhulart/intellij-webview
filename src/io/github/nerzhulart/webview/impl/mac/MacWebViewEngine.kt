@@ -10,8 +10,8 @@ import io.github.nerzhulart.webview.impl.MacMainThreadDispatcher
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.openWebViewPopupUrlExternally
 import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
@@ -47,7 +47,7 @@ private val LOG = logger<MacWebViewEngine>()
 internal class MacWebViewEngine(
   parentScope: CoroutineScope,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
-) : WebViewEngineBridge {
+) : WebViewEngine {
   override val isHeavyweight: Boolean = true
 
   private companion object {

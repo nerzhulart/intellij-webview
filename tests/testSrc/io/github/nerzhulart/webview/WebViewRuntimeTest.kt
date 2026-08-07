@@ -22,8 +22,8 @@ import io.github.nerzhulart.webview.impl.engine.WebViewRuntimeInfo
 import io.github.nerzhulart.webview.impl.engine.WebViewScriptResult
 import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
@@ -512,7 +512,7 @@ internal class WebViewRuntimeTest {
       }
     }
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       error("Fake provider does not create engines")
     }
 
@@ -548,7 +548,7 @@ internal class WebViewRuntimeTest {
 
     override fun availabilityBlocking(): WebViewEngineAvailability = WebViewEngineAvailability.Available
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       creationOptions.add(options)
       return engine
     }
@@ -583,7 +583,8 @@ internal class WebViewRuntimeTest {
     }
   }
 
-  private class FakeEngine : WebViewEngineBridge {
+  // TODO: merge with NoOP
+  private class FakeEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
 
     override suspend fun loadFile(file: Path) {
@@ -611,7 +612,7 @@ internal class WebViewRuntimeTest {
 
   private class CapturingEngine(
     override val isHeavyweight: Boolean = false,
-  ) : WebViewEngineBridge {
+  ) : WebViewEngine {
     val delivered = Channel<String>(Channel.UNLIMITED)
     private var messageReceiver: WebViewJsMessageReceiver? = null
     var lastAssetQuery: String? = null
@@ -651,6 +652,7 @@ internal class WebViewRuntimeTest {
 
   private suspend fun awaitLog(loggerFactory: TestLoggerFactory, marker: String): String {
     return withTimeout(5.seconds) {
+      // TODO: what is this? what is toBuffer and what is awaitLog?
       var log = loggerFactory.toBuffer()
       while (!log.contains(marker)) {
         delay(10)

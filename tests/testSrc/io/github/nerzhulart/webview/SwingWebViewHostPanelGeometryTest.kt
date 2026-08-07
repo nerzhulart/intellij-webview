@@ -6,9 +6,9 @@ import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
 import io.github.nerzhulart.webview.impl.ComponentBackedWebViewEngine
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewFocusEntrySink
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacNativeLayout
 import io.github.nerzhulart.webview.impl.mac.calculateMacNativeLayout
@@ -630,7 +630,7 @@ class SwingWebViewHostPanelGeometryTest {
     }
   }
 
-  private class FakeNativeEngine : WebViewEngineBridge {
+  private class FakeNativeEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
 
     override suspend fun loadFile(file: Path) {

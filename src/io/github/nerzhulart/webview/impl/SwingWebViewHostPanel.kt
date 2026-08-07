@@ -11,6 +11,7 @@ import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.host.WebViewEditShortcutPolicy
 import com.intellij.util.concurrency.annotations.RequiresEdt
 import com.intellij.util.ui.EDT
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 import java.awt.AWTEvent
@@ -61,7 +62,7 @@ private val LOG = logger<SwingWebViewHostPanel>()
 @ApiStatus.Internal
 internal class SwingWebViewHostPanel(
   val scope: CoroutineScope,
-  val engine: WebViewEngineBridge,
+  val engine: WebViewEngine,
   private val focusEntrySink: WebViewFocusEntrySink? = null,
   nativeHostPeer: NativeWebViewHostPeer? = null,
 ) : JPanel(BorderLayout()), SwingWebViewHost, KeyboardAwareFocusOwner {

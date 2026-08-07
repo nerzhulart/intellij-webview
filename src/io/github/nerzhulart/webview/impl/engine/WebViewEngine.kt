@@ -3,6 +3,7 @@ package io.github.nerzhulart.webview.impl.engine
 
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
+import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.nio.file.Path
@@ -16,6 +17,7 @@ import java.nio.file.Path
  */
 @ApiStatus.Internal
 interface WebViewEngine {
+  val isHeavyweight: Boolean
   suspend fun loadFile(file: Path)
 
   /**
@@ -32,4 +34,6 @@ interface WebViewEngine {
   suspend fun evaluateJavaScript(@Language("JavaScript") script: String): String?
 
   suspend fun close()
+  suspend fun transferToJs(rawJson: String)
+  fun connectMessageBus(receiver: WebViewJsMessageReceiver)
 }

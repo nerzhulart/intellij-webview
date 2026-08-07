@@ -2,11 +2,11 @@
 package io.github.nerzhulart.webview.impl.mac
 
 import com.intellij.openapi.util.SystemInfo
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineAvailability
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCapabilities
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
@@ -30,14 +30,14 @@ internal class MacWkWebViewEngineProvider : WebViewEngineProvider {
     return if (SystemInfo.isMac) WebViewEngineAvailability.Available else WebViewEngineAvailability.Unavailable("macOS is required")
   }
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
     check(SystemInfo.isMac) { "System WebView is supported only on macOS" }
     val engine = createMacWebViewEngine(scope, options.documentStartScripts)
     engine.initialize()
     return engine
   }
 
-  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
+  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngine): NativeWebViewHostPeer {
     return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
   }
 }
