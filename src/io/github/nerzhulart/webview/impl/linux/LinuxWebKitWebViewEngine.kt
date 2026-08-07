@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.jetbrains.annotations.ApiStatus
+import java.awt.Component
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -127,12 +128,8 @@ internal class LinuxWebKitWebViewEngine(
     inboundMessageHandler = receiver::transferFromJs
   }
 
-  override fun requestWebViewFocus() {
-    error("Linux is not supported")
-  }
-
-  override fun clearWebViewFocus() {
-    error("Linux is not supported")
+  override fun attach(host: Component): Boolean {
+    TODO("Not yet implemented")
   }
 
   internal fun setSnapshotHandler(handler: ((Int, Int, IntArray) -> Unit)?) {
@@ -214,10 +211,18 @@ internal class LinuxWebKitWebViewEngine(
     }
   }
 
-  internal fun detach() {
+  override fun detach() {
     val handle = nativeHandle
     if (handle == 0L || state.get() == State.Closed) return
     runOnEdt { LinuxWebKitGtkBridge.detach(handle) }
+  }
+
+  override fun scheduleFrameUpdate(host: Component) {
+    TODO("Not yet implemented")
+  }
+
+  override fun updateVisibility(host: Component, hidden: Boolean) {
+    TODO("Not yet implemented")
   }
 
   internal fun setBounds(x: Int, y: Int, width: Int, height: Int, scale: Double) {
@@ -235,13 +240,13 @@ internal class LinuxWebKitWebViewEngine(
     runOnEdt { LinuxWebKitGtkBridge.setVisible(handle, !hidden) }
   }
 
-  internal fun requestFocus() {
+  override fun requestFocus() {
     val handle = nativeHandle
     if (handle == 0L || state.get() != State.Active) return
     runOnEdt { LinuxWebKitGtkBridge.focus(handle) }
   }
 
-  internal fun clearFocus() {
+  override fun clearFocus() {
     val handle = nativeHandle
     if (handle == 0L || state.get() != State.Active) return
     runOnEdt { LinuxWebKitGtkBridge.clearFocus(handle) }

@@ -11,7 +11,6 @@ import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.createWebViewFocusEntrySink
 import io.github.nerzhulart.webview.impl.engine.registerWebViewFocusExitHandler
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -57,7 +56,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -90,7 +88,7 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -159,7 +157,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -169,7 +166,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     val modifierEventRegistration = recordModifierKeyEvents(modifierEvents)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
@@ -242,7 +239,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -251,7 +247,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -345,7 +341,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -354,7 +349,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -419,7 +414,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -429,7 +423,7 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(1, 32)
       caret = DefaultCaret().apply { blinkRate = 0 }
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     val keyEventRegistration = recordKeyEvents(keyEvents, KeyEvent.VK_F1)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
@@ -492,7 +486,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
     assertNativeFocusInsideWebView: suspend () -> Unit,
     assertNativeFocusReadyForSwingTyping: suspend () -> Unit,
@@ -513,7 +506,7 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
@@ -573,7 +566,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -605,7 +597,7 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeNonTabbableSelectionPage(tempDir)
@@ -669,7 +661,6 @@ internal object WebViewFocusRobotTestSupport {
     frame: JFrame,
     scope: CoroutineScope,
     engine: WebViewEngine,
-    nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
     val robot = createRobotOrSkip()
@@ -688,9 +679,9 @@ internal object WebViewFocusRobotTestSupport {
         }
       })
     }
-    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink(), nativeHostPeer)
-    val inactiveNativePeer = RecordingNativeWebViewHostPeer()
-    val inactiveHost = SwingWebViewHostPanel(scope, NoopWebViewEngine(), nativeHostPeer = inactiveNativePeer).apply {
+    val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
+    val noopWebViewEngine = RecordingNoopWebViewEngine()
+    val inactiveHost = SwingWebViewHostPanel(scope, noopWebViewEngine).apply {
       preferredSize = Dimension(8, 1)
     }
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
@@ -739,7 +730,7 @@ internal object WebViewFocusRobotTestSupport {
         expected = "true",
         description = "Combo popup Robot test page did not expose state reset hook",
       )
-      inactiveNativePeer.reset()
+      noopWebViewEngine.reset()
       inputEvents.clear()
 
       // Step 1: focus starts in Swing, then one real Robot click opens the bad combo inside WebView.
@@ -752,7 +743,7 @@ internal object WebViewFocusRobotTestSupport {
       )
       assertEquals(
         0,
-        inactiveNativePeer.clearFocusForSwingTransferCount,
+        noopWebViewEngine.clearFocusForSwingTransferCount,
         "Inactive WebView host cleared native focus while another WebView host was activated",
       )
       waitForJavaScriptResult(
@@ -1713,7 +1704,35 @@ internal object WebViewFocusRobotTestSupport {
 
   private data class RecordedKeyEvent(val id: Int, val keyCode: Int, val modifiersEx: Int = 0)
 
-  private class RecordingNativeWebViewHostPeer : NativeWebViewHostPeer {
+  // Merge with Fake/Recording?
+  private class RecordingNoopWebViewEngine : WebViewEngine {
+    override val isHeavyweight: Boolean = false
+    override val component: JComponent? = null
+
+    override suspend fun loadFile(file: Path) {
+    }
+
+    override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
+    }
+
+    override suspend fun loadHtml(html: String, baseFile: Path?) {
+    }
+
+    override suspend fun evaluateJavaScript(script: String): String? = null
+
+    override suspend fun transferToJs(rawJson: String) {
+    }
+
+    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    }
+
+    override suspend fun close() {
+    }
+
+    /**
+     * Peer's section
+     */
+
     var clearFocusForSwingTransferCount = 0
       private set
 
@@ -1741,39 +1760,6 @@ internal object WebViewFocusRobotTestSupport {
     fun reset() {
       clearFocusForSwingTransferCount = 0
     }
-  }
 
-  // Merge with Fake?
-  private class NoopWebViewEngine : WebViewEngine {
-    override val isHeavyweight: Boolean = false
-    override val component: JComponent? = null
-
-    override suspend fun loadFile(file: Path) {
-    }
-
-    override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
-    }
-
-    override suspend fun loadHtml(html: String, baseFile: Path?) {
-    }
-
-    override suspend fun evaluateJavaScript(script: String): String? = null
-
-    override suspend fun transferToJs(rawJson: String) {
-    }
-
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
-    }
-
-    override fun requestWebViewFocus() {
-      TODO("Not yet implemented")
-    }
-
-    override fun clearWebViewFocus() {
-      TODO("Not yet implemented")
-    }
-
-    override suspend fun close() {
-    }
   }
 }

@@ -7,8 +7,6 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFocusManager
 import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.host.WebViewEditShortcutPolicy
 import com.intellij.util.concurrency.annotations.RequiresEdt
 import com.intellij.util.ui.EDT
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
@@ -64,7 +62,6 @@ internal class SwingWebViewHostPanel(
   val scope: CoroutineScope,
   val engine: WebViewEngine,
   private val focusEntrySink: WebViewFocusEntrySink? = null,
-  nativeHostPeer: NativeWebViewHostPeer? = null,
 ) : JPanel(BorderLayout()), KeyboardAwareFocusOwner {
 
   internal data class NativeFrame(
@@ -161,14 +158,13 @@ internal class SwingWebViewHostPanel(
     get() = this
 
   override fun skipKeyEventDispatcher(event: KeyEvent): Boolean {
-    val peer = nativePeer ?: return false
-    val policy = peer.editShortcutPolicy
+    val policy = engine.editShortcutPolicy
     if (policy == WebViewEditShortcutPolicy.NONE || !focusInsideHost) return false
 
     val command = WebViewEditCommand.matchingCommand(event.keyCode, event.modifiersEx, WebViewEditCommand.DEFAULTS) ?: return false
     // Returning true only keeps the IDE dispatcher out of this shortcut. The backend policy decides
     // whether the original native event path handles it or an explicit native command is required.
-    if (policy == WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER && peer.handleWebViewShortcut(event, command)) {
+    if (policy == WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER && engine.handleWebViewShortcut(event, command)) {
       event.consume()
     }
     return true
@@ -182,12 +178,10 @@ internal class SwingWebViewHostPanel(
   private var swingFocusOwnerListener: PropertyChangeListener? = null
   private var listenersInstalled = false
   private var snapshotImage: BufferedImage? = null
-  // TODO: do we really want to have such component presence logic? I'd like to either always use peer or better put all its logic into engine itself
-  private val nativePeer = if (engine.component == null) nativeHostPeer else null
   private var focusInsideHost = false
   private var pendingExitDirection: WebViewFocusDirection? = null
   private var focusSyncInProgress = false
-  private var nativePeerAttached = false
+  private var engineAttached = false
   private var heavyweightRegistration: Disposable? = null
   private val focusLogId = Integer.toHexString(System.identityHashCode(this))
 
@@ -262,10 +256,10 @@ internal class SwingWebViewHostPanel(
   @RequiresEdt
   override fun removeNotify() {
     unregisterHeavyweight()
-    if (nativePeerAttached) {
-      nativePeer?.detach()
+    if (engineAttached) {
+        engine.detach()
     }
-    nativePeerAttached = false
+    engineAttached = false
     uninstallListeners()
     super.removeNotify()
   }
@@ -287,14 +281,14 @@ internal class SwingWebViewHostPanel(
   @RequiresEdt
   private fun scheduleFrameUpdate() {
     if (ensureNativePeerAttached()) {
-      nativePeer?.scheduleFrameUpdate(this)
+      engine.scheduleFrameUpdate(this)
     }
   }
 
   @RequiresEdt
   private fun updateVisibility(hidden: Boolean) {
     if (hidden) {
-      nativePeer?.updateVisibility(this, true)
+      engine.updateVisibility(this, true)
       notifyHeavyweightChanged()
     }
     else {
@@ -309,34 +303,32 @@ internal class SwingWebViewHostPanel(
 
   @RequiresEdt
   private fun ensureNativePeerAttached(): Boolean {
-    val peer = nativePeer ?: return false
-    if (nativePeerAttached) return true
+    if (engineAttached) return true
     if (!isDisplayable) return false
-    nativePeerAttached = peer.attach(this)
-    if (nativePeerAttached) {
+    engineAttached = engine.attach(this)
+    if (engineAttached) {
       ensureHeavyweightRegistered()
     }
-    return nativePeerAttached
+    return engineAttached
   }
 
   @RequiresEdt
   private fun syncNativePeerFromSwingEvent(allowReveal: Boolean) {
-    val peer = nativePeer ?: return
     if (!ensureNativePeerAttached()) return
 
     scheduleFrameUpdate()
     notifyHeavyweightChanged()
-    if (!allowReveal || !isReadyForNativeDisplay(peer)) {
-      peer.updateVisibility(this, true)
+    if (!allowReveal || !isReadyForNativeDisplay(engine)) {
+      engine.updateVisibility(this, true)
       return
     }
 
-    peer.updateVisibility(this, false)
+    engine.updateVisibility(this, false)
   }
 
   @RequiresEdt
   private fun ensureHeavyweightRegistered() {
-    if (!engine.isHeavyweight || heavyweightRegistration != null || !nativePeerAttached) return
+    if (!engine.isHeavyweight || heavyweightRegistration != null || !engineAttached) return
     heavyweightRegistration = WebViewHeavyweightHostRegistry.register(this)
   }
 
@@ -353,38 +345,24 @@ internal class SwingWebViewHostPanel(
     }
   }
 
-  private fun isReadyForNativeDisplay(peer: NativeWebViewHostPeer): Boolean {
-    return isDisplayable && isShowing && width > 0 && height > 0 && peer.hasNonEmptyNativeBounds(this)
+  private fun isReadyForNativeDisplay(engine: WebViewEngine): Boolean {
+    return isDisplayable && isShowing && width > 0 && height > 0 && engine.hasNonEmptyNativeBounds(this)
   }
 
   fun requestWebViewFocus() {
     logFocus("request.webViewFocus", focusDiagnostics())
     requestSwingFocusForNativeWebViewFocusIfNeeded()
-    requestNativeWebViewFocus()
-  }
-
-  private fun requestNativeWebViewFocus() {
-    logFocus("request.nativeFocus", focusDiagnostics())
-    // TODO: do we need peer there? it used to be:
-    // engine.requestWebViewFocus() ?: nativePeer?.requestFocus()
-    // it repeats the old logic with componentBackedEngine != null, but it looks absolutely shitty
-    if (engine.component != null) engine.requestWebViewFocus() else nativePeer?.requestFocus()
+    engine.requestFocus()
   }
 
   fun clearWebViewFocus() {
-    // TODO: see comment above
-    if (engine.component != null) engine.clearWebViewFocus() else nativePeer?.clearFocus()
+    logFocus("clear.webViewFocus", focusDiagnostics())
+    engine.clearFocus()
   }
 
   internal fun clearWebViewFocusForSwingFocusTransfer() {
     logFocus("clear.nativeFocusForSwingTransfer", focusDiagnostics())
-    // TODO: see comment above
-    if (engine.component != null) {
-      engine.clearWebViewFocus()
-    }
-    else {
-      nativePeer?.clearFocusForSwingFocusTransfer()
-    }
+    engine.clearFocusForSwingFocusTransfer()
   }
 
   internal fun exitWebViewFocus(direction: WebViewFocusDirection) {

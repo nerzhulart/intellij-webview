@@ -52,8 +52,7 @@ object LightweightStandaloneSampleApp {
           debugName = null,
         ),
       )
-      val nativeHostPeer = checkNotNull(provider.createNativeHostPeer(scope, webViewEngine))
-      val hostPanel = SwingWebViewHostPanel(scope, webViewEngine, nativeHostPeer = nativeHostPeer)
+      val hostPanel = SwingWebViewHostPanel(scope, webViewEngine)
       val statusLabel = JLabel("Ready")
 
       val frame = JFrame("WebView Lightweight Standalone Sample").apply {

@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.registry.Registry
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
+import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WEBVIEW_CONSOLE_NOTIFICATION_METHOD
@@ -48,6 +49,7 @@ import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
+import kotlin.time.measureTimedValue
 
 private val LOG = logger<WinWebViewEngine>()
 
@@ -253,14 +255,6 @@ internal class WinWebViewEngine(
     inboundMessageHandler = receiver::transferFromJs
   }
 
-  override fun requestWebViewFocus() {
-    error("Must not be called unless peers are not merged witn engine")
-  }
-
-  override fun clearWebViewFocus() {
-    error("Must not be called unless peers are not merged witn engine")
-  }
-
   internal fun attachToParent(parentHwnd: Long) {
     currentParentHwnd = parentHwnd
     pendingAttachParent.set(parentHwnd)
@@ -297,13 +291,15 @@ internal class WinWebViewEngine(
     scheduleVisibilityApply()
   }
 
-  internal fun requestFocus() {
+  override fun requestFocus() {
+    if (!attached) return // TODO: moved from Peer's requestFocus, do we need it? maybe merge with state
     if (state.get() != State.Active) return
     pendingFocusOp.set(FocusOp.Focus)
     scheduleFocusApply()
   }
 
-  internal fun clearFocus() {
+  override fun clearFocus() {
+    if (!attached) return // TODO: moved from Peer's requestFocus, do we need it? maybe merge with state
     if (state.get() != State.Active) return
     pendingFocusOp.set(FocusOp.Clear)
     scheduleFocusApply()
@@ -980,6 +976,149 @@ internal class WinWebViewEngine(
   private fun invokeOnWebView(action: () -> Unit) {
     webViewDispatcher.dispatch(EmptyCoroutineContext, Runnable { action() })
   }
+
+  /**
+   * Peer section
+   */
+
+  private var attached = false
+  private var hostHidden = true
+  private var lastAppliedFrame: AppliedFrame? = null
+
+  override fun attach(host: Component): Boolean {
+    val hostPanel = host as SwingWebViewHostPanel
+    return LOG.traceWebViewPerf(
+      "win-webview2.host.attach",
+      "displayable=${host.isDisplayable}, showing=${host.isShowing}, size=${host.width}x${host.height}",
+    ) {
+      setShortcutTarget(host)
+      setBeforeMouseFocusHandler { hostPanel.activateWebViewFocusFromNativeMouse() }
+      setFocusGainedHandler { hostPanel.nativeWebViewFocusGained() }
+      attached = true
+      hostHidden = true
+      lastAppliedFrame = null
+      setHidden(true)
+      when (updateFrame(host)) {
+        FrameUpdateResult.Applied -> Unit
+        FrameUpdateResult.Deferred -> setHidden(true)
+        FrameUpdateResult.Failed -> {
+          attached = false
+          setShortcutTarget(null)
+          setBeforeMouseFocusHandler(null)
+          setFocusGainedHandler(null)
+          return@traceWebViewPerf false
+        }
+      }
+      true
+    }
+  }
+
+  override fun detach() {
+    if (!attached) return
+    detachFromParent()
+    setShortcutTarget(null)
+    setBeforeMouseFocusHandler(null)
+    setFocusGainedHandler(null)
+    attached = false
+    hostHidden = true
+    currentParentHwnd = 0
+    lastAppliedFrame = null
+  }
+
+  override fun scheduleFrameUpdate(host: Component) {
+    if (!attached) return
+    updateFrame(host)
+  }
+
+  private fun updateFrame(host: Component): FrameUpdateResult {
+    val timedUpdate = measureTimedValue {
+      val parentHwnd = WindowsHwndUtil.resolveWindowHwnd(host)
+      if (parentHwnd == null) {
+        return@measureTimedValue FrameUpdate(FrameUpdateResult.Failed, "reason=no-parent-hwnd")
+      }
+      val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host)
+      if (anchor == null) {
+        return@measureTimedValue FrameUpdate(FrameUpdateResult.Failed, "reason=no-anchor")
+      }
+      val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
+      val scale = WindowsHwndUtil.scale(host)
+      val frame = AppliedFrame(bounds, scale)
+      if (!isReadyForNativeFrame(bounds)) {
+        lastAppliedFrame = null
+        setHidden(true)
+        return@measureTimedValue FrameUpdate(FrameUpdateResult.Deferred, frameDiagnosticDetails(bounds, scale))
+      }
+
+      if (parentHwnd != currentParentHwnd) {
+        currentParentHwnd = parentHwnd
+        lastAppliedFrame = frame
+        LOG.traceWebViewPerf(
+          "win-webview2.host.updateFrame.attachToParent",
+          frameDiagnosticDetails(bounds, scale),
+        ) {
+          attachToParent(parentHwnd, bounds.x, bounds.y, bounds.width, bounds.height, scale)
+        }
+        updateNativeVisibility()
+        return@measureTimedValue FrameUpdate(FrameUpdateResult.Applied, frameDiagnosticDetails(bounds, scale))
+      }
+      val frameChanged = frame != lastAppliedFrame
+      lastAppliedFrame = frame
+      if (frameChanged) {
+        setBounds(bounds.x, bounds.y, bounds.width, bounds.height, scale)
+      }
+      updateNativeVisibility()
+      FrameUpdate(FrameUpdateResult.Applied, "frameChanged=$frameChanged, ${frameDiagnosticDetails(bounds, scale)}")
+    }
+    val update = timedUpdate.value
+    LOG.traceWebViewPerf("win-webview2.host.updateFrame", timedUpdate.duration, "result=${update.result}, ${update.details}")
+    return update.result
+  }
+
+  private fun frameDiagnosticDetails(bounds: SwingWebViewHostPanel.NativeBounds, scale: Double): String {
+    return "bounds=${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}, scale=$scale"
+  }
+
+  private fun updateNativeVisibility() {
+    setHidden(hostHidden)
+  }
+
+  private fun isReadyForNativeFrame(bounds: SwingWebViewHostPanel.NativeBounds): Boolean {
+    return bounds.width > 0 && bounds.height > 0
+  }
+
+  override fun updateVisibility(host: Component, hidden: Boolean) {
+    if (!attached) return
+    hostHidden = hidden
+    if (hidden) {
+      setHidden(true)
+      return
+    }
+
+    if (updateFrame(host) != FrameUpdateResult.Applied) {
+      setHidden(true)
+    }
+  }
+
+  override fun clearFocusForSwingFocusTransfer() {
+    clearFocus()
+  }
+
+  private data class AppliedFrame(
+    val bounds: SwingWebViewHostPanel.NativeBounds,
+    val scale: Double,
+  )
+
+  private data class FrameUpdate(
+    val result: FrameUpdateResult,
+    val details: String,
+  )
+
+  private enum class FrameUpdateResult {
+    Applied,
+    Deferred,
+    Failed,
+  }
+
 
   private companion object {
     private const val NATIVE_DIAGNOSTIC_WARN = 3
