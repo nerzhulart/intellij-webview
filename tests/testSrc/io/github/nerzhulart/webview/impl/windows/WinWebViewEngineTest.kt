@@ -530,6 +530,7 @@ internal class WinWebViewEngineTest {
     return engine
   }
 
+  // TODO: use scope of runBlocking in all tests
   private fun testScope(): CoroutineScope {
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent fixture scope.
     return CoroutineScope(SupervisorJob())
