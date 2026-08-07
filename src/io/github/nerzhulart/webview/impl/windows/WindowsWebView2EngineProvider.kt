@@ -26,7 +26,7 @@ internal class WindowsWebView2EngineProvider : WebViewEngineProvider {
     }
   }
 
-  override fun availabilityBlocking(): WebViewEngineAvailability {
+  override suspend fun availability(): WebViewEngineAvailability {
     if (!SystemInfo.isWindows) return WebViewEngineAvailability.Unavailable("Windows is required")
     return when (val availability = winWebView2BridgeLibrary.availability()) {
       is NativeBridgeLibraryAvailability.Available -> WebViewEngineAvailability.Available

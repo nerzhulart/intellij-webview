@@ -242,7 +242,7 @@ internal class WebViewRuntimeTest {
     )
     val runtime = WebViewRuntime().apply { providers = listOf(provider) }
 
-    val engine = runtime.createEngine(scope = this, engineKind = WebViewEngineKind.Jcef)
+    val engine = runtime.selectProvider(preference = WebViewEngineKind.Jcef).createEngine(scope = this, webViewEngineCreationOptions())
     try {
       assertEquals(
         listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT),
@@ -501,7 +501,7 @@ internal class WebViewRuntimeTest {
 
     override fun selectionPriority(preference: WebViewEngineKind): Int? = priorities[preference] ?: priority
 
-    override fun availabilityBlocking(): WebViewEngineAvailability {
+    override suspend fun availability(): WebViewEngineAvailability {
       availabilityFailure?.let { throw it }
       return availability
     }
@@ -547,7 +547,7 @@ internal class WebViewRuntimeTest {
       }
     }
 
-    override fun availabilityBlocking(): WebViewEngineAvailability = WebViewEngineAvailability.Available
+    override suspend fun availability(): WebViewEngineAvailability = WebViewEngineAvailability.Available
 
     override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       creationOptions.add(options)

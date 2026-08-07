@@ -25,7 +25,7 @@ internal class MacWkWebViewEngineProvider : WebViewEngineProvider {
     }
   }
 
-  override fun availabilityBlocking(): WebViewEngineAvailability {
+  override suspend fun availability(): WebViewEngineAvailability {
     return if (SystemInfo.isMac) WebViewEngineAvailability.Available else WebViewEngineAvailability.Unavailable("macOS is required")
   }
 

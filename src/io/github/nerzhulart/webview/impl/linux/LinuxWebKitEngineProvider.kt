@@ -25,7 +25,7 @@ internal class LinuxWebKitEngineProvider : WebViewEngineProvider {
     }
   }
 
-  override fun availabilityBlocking(): WebViewEngineAvailability {
+  override suspend fun availability(): WebViewEngineAvailability {
     if (!SystemInfo.isLinux) return WebViewEngineAvailability.Unavailable("Linux is required")
     return WebViewEngineAvailability.Unavailable("Linux WebKitGTK WebView is disabled")
   }
