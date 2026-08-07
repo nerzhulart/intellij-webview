@@ -44,7 +44,7 @@ object LightweightStandaloneSampleApp {
         SystemInfo.isWindows -> WindowsWebView2EngineProvider()
         else -> error("System WebView sample is supported only on macOS and Windows")
       }
-      val facade = provider.createEngine(
+      val webViewEngine = provider.createEngine(
         scope,
         WebViewEngineCreationOptions(
           strictPreference = true,
@@ -52,8 +52,8 @@ object LightweightStandaloneSampleApp {
           debugName = null,
         ),
       )
-      val nativeHostPeer = checkNotNull(provider.createNativeHostPeer(scope, facade))
-      val hostPanel = SwingWebViewHostPanel(scope, facade, nativeHostPeer = nativeHostPeer)
+      val nativeHostPeer = checkNotNull(provider.createNativeHostPeer(scope, webViewEngine))
+      val hostPanel = SwingWebViewHostPanel(scope, webViewEngine, nativeHostPeer = nativeHostPeer)
       val statusLabel = JLabel("Ready")
 
       val frame = JFrame("WebView Lightweight Standalone Sample").apply {
@@ -63,7 +63,7 @@ object LightweightStandaloneSampleApp {
         addWindowListener(object : WindowAdapter() {
           override fun windowClosing(event: WindowEvent) {
             scope.launch {
-              facade.close()
+              webViewEngine.close()
               scope.cancel()
             }
           }
@@ -72,7 +72,7 @@ object LightweightStandaloneSampleApp {
 
       val controls = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
         add(JButton("Reload sample HTML").apply {
-          addActionListener { loadSampleFromResources(scope, facade, statusLabel) }
+          addActionListener { loadSampleFromResources(scope, webViewEngine, statusLabel) }
         })
         add(statusLabel)
       }
@@ -81,7 +81,7 @@ object LightweightStandaloneSampleApp {
       frame.add(hostPanel, BorderLayout.CENTER)
       frame.isVisible = true
 
-      loadSampleFromResources(scope, facade, statusLabel)
+      loadSampleFromResources(scope, webViewEngine, statusLabel)
     }
   }
 
