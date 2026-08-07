@@ -65,7 +65,7 @@ internal class SwingWebViewHostPanel(
   val engine: WebViewEngine,
   private val focusEntrySink: WebViewFocusEntrySink? = null,
   nativeHostPeer: NativeWebViewHostPeer? = null,
-) : JPanel(BorderLayout()), SwingWebViewHost, KeyboardAwareFocusOwner {
+) : JPanel(BorderLayout()), KeyboardAwareFocusOwner {
 
   internal data class NativeFrame(
     val x: Double,
@@ -157,7 +157,7 @@ internal class SwingWebViewHostPanel(
     }
   }
 
-  override val component: JComponent
+  val component: JComponent
     get() = this
 
   override fun skipKeyEventDispatcher(event: KeyEvent): Boolean {
@@ -357,7 +357,7 @@ internal class SwingWebViewHostPanel(
     return isDisplayable && isShowing && width > 0 && height > 0 && peer.hasNonEmptyNativeBounds(this)
   }
 
-  override fun requestWebViewFocus() {
+  fun requestWebViewFocus() {
     logFocus("request.webViewFocus", focusDiagnostics())
     requestSwingFocusForNativeWebViewFocusIfNeeded()
     requestNativeWebViewFocus()
@@ -371,7 +371,7 @@ internal class SwingWebViewHostPanel(
     if (engine.component != null) engine.requestWebViewFocus() else nativePeer?.requestFocus()
   }
 
-  override fun clearWebViewFocus() {
+  fun clearWebViewFocus() {
     // TODO: see comment above
     if (engine.component != null) engine.clearWebViewFocus() else nativePeer?.clearFocus()
   }
