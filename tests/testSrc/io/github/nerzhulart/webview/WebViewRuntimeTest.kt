@@ -44,6 +44,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
 import java.nio.file.Path
 import java.time.Instant
 import javax.swing.JComponent
@@ -607,12 +608,23 @@ internal class WebViewRuntimeTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
 
-    override fun requestWebViewFocus() {
-      TODO("Not yet implemented")
+    override fun attach(host: Component): Boolean {
+      return true
     }
 
-    override fun clearWebViewFocus() {
-      TODO("Not yet implemented")
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
+    override fun requestFocus() {
+    }
+
+    override fun clearFocus() {
     }
 
     override suspend fun close() {
@@ -652,12 +664,24 @@ internal class WebViewRuntimeTest {
       messageReceiver = receiver
     }
 
-    override fun requestWebViewFocus() {
-      TODO("Not yet implemented")
+    override fun attach(host: Component): Boolean {
+      return true
     }
 
-    override fun clearWebViewFocus() {
-      TODO("Not yet implemented")
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
+    override fun requestFocus() {
+    }
+
+    override fun clearFocus() {
     }
 
     override suspend fun close() {

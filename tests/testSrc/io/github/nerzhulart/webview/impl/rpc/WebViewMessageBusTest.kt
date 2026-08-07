@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
 import java.nio.file.Path
 import javax.swing.JComponent
 import kotlin.time.Duration.Companion.milliseconds
@@ -497,12 +498,23 @@ internal class WebViewMessageBusTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
 
-    override fun requestWebViewFocus() {
-      TODO("Not yet implemented")
+    override fun attach(host: Component): Boolean {
+      return true
     }
 
-    override fun clearWebViewFocus() {
-      TODO("Not yet implemented")
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
+    override fun requestFocus() {
+    }
+
+    override fun clearFocus() {
     }
 
     override suspend fun close() {

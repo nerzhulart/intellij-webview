@@ -19,8 +19,6 @@ import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.mac.MacNativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacWebViewEngine
 import io.github.nerzhulart.webview.impl.mac.MacWebViewFirstResponderState
 import io.github.nerzhulart.webview.impl.mac.MacWkWebViewEngineProvider
@@ -456,10 +454,6 @@ internal class MacWebViewHotkeysInIdeTest {
 
     override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       return (delegate.createEngine(scope, options) as MacWebViewEngine).also { engine = it }
-    }
-
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngine): NativeWebViewHostPeer {
-      return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
     }
   }
 

@@ -9,7 +9,6 @@ import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 
@@ -34,9 +33,4 @@ internal class LinuxWebKitEngineProvider : WebViewEngineProvider {
   override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
     error("Linux WebKitGTK WebView is disabled")
   }
-
-  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngine): NativeWebViewHostPeer {
-    return LinuxNativeWebViewHostPeer(engine as LinuxWebKitWebViewEngine)
-  }
-
 }
