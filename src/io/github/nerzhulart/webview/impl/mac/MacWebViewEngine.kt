@@ -32,11 +32,12 @@ import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JComponent
 
 private val LOG = logger<MacWebViewEngine>()
 
 /**
- * macOS implementation of [WebViewEngineBridge] backed by a native `WKWebView`.
+ * macOS implementation of [WebViewEngine] backed by a native `WKWebView`.
  *
  * Lifecycle state machine: `New → Active → Closing → Closed`.
  *
@@ -49,6 +50,9 @@ internal class MacWebViewEngine(
   private val documentStartScripts: List<WebViewScript> = emptyList(),
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
+  // TODO: should we return some wrapper component for it?
+  override val component: JComponent?
+    get() = null
 
   private companion object {
     const val EVAL_PREFIX = "__eval__:"
@@ -132,6 +136,14 @@ internal class MacWebViewEngine(
 
   override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     inboundMessageHandler = receiver::transferFromJs
+  }
+
+  override fun requestWebViewFocus() {
+    error("Must not be called unless peers are not merged witn engine")
+  }
+
+  override fun clearWebViewFocus() {
+    error("Must not be called unless peers are not merged witn engine")
   }
 
   internal fun setModifierKeyHandler(handler: ((WKWebViewBridge.ModifierKeyEvent) -> Unit)?) {

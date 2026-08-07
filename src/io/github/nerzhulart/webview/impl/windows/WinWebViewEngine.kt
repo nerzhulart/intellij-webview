@@ -43,6 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JComponent
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.time.TimeMark
@@ -61,6 +62,10 @@ internal class WinWebViewEngine(
   private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
+
+  // TODO: return real canvas when attaching to real Canvas is implemented
+  override val component: JComponent?
+    get() = null
 
   private enum class State { New, Creating, Active, Closing, Closed }
 
@@ -246,6 +251,14 @@ internal class WinWebViewEngine(
 
   override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     inboundMessageHandler = receiver::transferFromJs
+  }
+
+  override fun requestWebViewFocus() {
+    error("Must not be called unless peers are not merged witn engine")
+  }
+
+  override fun clearWebViewFocus() {
+    error("Must not be called unless peers are not merged witn engine")
   }
 
   internal fun attachToParent(parentHwnd: Long) {

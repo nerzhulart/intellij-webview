@@ -48,7 +48,7 @@ import javax.swing.SwingUtilities
 private val LOG = logger<SwingWebViewHostPanel>()
 
 /**
- * Swing host panel that manages the lifecycle of a native [WebViewEngineBridge].
+ * Swing host panel that manages the lifecycle of a native [WebViewEngine].
  *
  * The native WebView is attached in [addNotify] when the panel joins a displayable Swing
  * hierarchy, and detached in [removeNotify] when the panel is removed. The first native show
@@ -182,8 +182,8 @@ internal class SwingWebViewHostPanel(
   private var swingFocusOwnerListener: PropertyChangeListener? = null
   private var listenersInstalled = false
   private var snapshotImage: BufferedImage? = null
-  private val componentBackedEngine = engine as? ComponentBackedWebViewEngine
-  private val nativePeer = if (componentBackedEngine == null) nativeHostPeer else null
+  // TODO: do we really want to have such component presence logic? I'd like to either always use peer or better put all its logic into engine itself
+  private val nativePeer = if (engine.component == null) nativeHostPeer else null
   private var focusInsideHost = false
   private var pendingExitDirection: WebViewFocusDirection? = null
   private var focusSyncInProgress = false
@@ -234,10 +234,12 @@ internal class SwingWebViewHostPanel(
     isFocusable = true
     isRequestFocusEnabled = true
     addFocusListener(webViewFocusListener)
-    componentBackedEngine?.let {
-      installComponentBackedFocusTraversal(it.component)
-      it.component.addFocusListener(webViewFocusListener)
-      add(it.component, BorderLayout.CENTER)
+    // TODO the logic of focus traversal should be polymprphic and inside WebViewEngine?
+    // it should not depend on presence of JComponent
+    engine.component?.let {
+      installComponentBackedFocusTraversal(component)
+      it.addFocusListener(webViewFocusListener)
+      add(it, BorderLayout.CENTER)
     }
   }
 
@@ -363,18 +365,22 @@ internal class SwingWebViewHostPanel(
 
   private fun requestNativeWebViewFocus() {
     logFocus("request.nativeFocus", focusDiagnostics())
-    componentBackedEngine?.requestWebViewFocus() ?: nativePeer?.requestFocus()
+    // TODO: do we need peer there? it used to be:
+    // engine.requestWebViewFocus() ?: nativePeer?.requestFocus()
+    // it repeats the old logic with componentBackedEngine != null, but it looks absolutely shitty
+    if (engine.component != null) engine.requestWebViewFocus() else nativePeer?.requestFocus()
   }
 
   override fun clearWebViewFocus() {
-    componentBackedEngine?.clearWebViewFocus() ?: nativePeer?.clearFocus()
+    // TODO: see comment above
+    if (engine.component != null) engine.clearWebViewFocus() else nativePeer?.clearFocus()
   }
 
   internal fun clearWebViewFocusForSwingFocusTransfer() {
     logFocus("clear.nativeFocusForSwingTransfer", focusDiagnostics())
-    val componentEngine = componentBackedEngine
-    if (componentEngine != null) {
-      componentEngine.clearWebViewFocus()
+    // TODO: see comment above
+    if (engine.component != null) {
+      engine.clearWebViewFocus()
     }
     else {
       nativePeer?.clearFocusForSwingFocusTransfer()
