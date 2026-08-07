@@ -40,6 +40,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.swing.JComponent
 import javax.swing.JFrame
 import javax.swing.JTextField
 import javax.swing.SwingUtilities
@@ -1742,8 +1743,10 @@ internal object WebViewFocusRobotTestSupport {
     }
   }
 
+  // Merge with Fake?
   private class NoopWebViewEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
+    override val component: JComponent? = null
 
     override suspend fun loadFile(file: Path) {
     }
@@ -1760,6 +1763,14 @@ internal object WebViewFocusRobotTestSupport {
     }
 
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    }
+
+    override fun requestWebViewFocus() {
+      TODO("Not yet implemented")
+    }
+
+    override fun clearWebViewFocus() {
+      TODO("Not yet implemented")
     }
 
     override suspend fun close() {

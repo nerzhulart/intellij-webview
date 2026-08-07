@@ -20,6 +20,7 @@ import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JComponent
 import javax.swing.SwingUtilities
 import kotlin.coroutines.resume
 
@@ -29,6 +30,8 @@ internal class LinuxWebKitWebViewEngine(
   internal val backend: LinuxWebKitBackend,
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = backend == LinuxWebKitBackend.X11
+  override val component: JComponent?
+    get() = null
 
   private enum class State { New, Creating, Active, Closing, Closed }
 
@@ -122,6 +125,14 @@ internal class LinuxWebKitWebViewEngine(
 
   override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     inboundMessageHandler = receiver::transferFromJs
+  }
+
+  override fun requestWebViewFocus() {
+    error("Linux is not supported")
+  }
+
+  override fun clearWebViewFocus() {
+    error("Linux is not supported")
   }
 
   internal fun setSnapshotHandler(handler: ((Int, Int, IntArray) -> Unit)?) {

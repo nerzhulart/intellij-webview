@@ -586,6 +586,8 @@ internal class WebViewRuntimeTest {
   // TODO: merge with NoOP
   private class FakeEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
+    override val component: JComponent?
+      get() = null
 
     override suspend fun loadFile(file: Path) {
     }
@@ -605,6 +607,14 @@ internal class WebViewRuntimeTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
 
+    override fun requestWebViewFocus() {
+      TODO("Not yet implemented")
+    }
+
+    override fun clearWebViewFocus() {
+      TODO("Not yet implemented")
+    }
+
     override suspend fun close() {
     }
 
@@ -619,6 +629,8 @@ internal class WebViewRuntimeTest {
       private set
     var closeCount = 0
       private set
+    override val component: JComponent?
+      get() = null
 
     override suspend fun loadFile(file: Path) {
     }
@@ -638,6 +650,14 @@ internal class WebViewRuntimeTest {
 
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
       messageReceiver = receiver
+    }
+
+    override fun requestWebViewFocus() {
+      TODO("Not yet implemented")
+    }
+
+    override fun clearWebViewFocus() {
+      TODO("Not yet implemented")
     }
 
     override suspend fun close() {

@@ -9,7 +9,6 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefClient
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.impl.ComponentBackedWebViewEngine
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
@@ -17,6 +16,7 @@ import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
 import com.intellij.util.ui.EDT
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -63,7 +63,7 @@ internal class JcefWebViewEngine(
   parentScope: CoroutineScope,
   jbCefApp: JBCefApp,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
-) : ComponentBackedWebViewEngine {
+) : WebViewEngine {
   private companion object {
     private const val INITIAL_URL = "about:blank"
     private const val QUERY_FUNCTION = "__wviJcefQuery"
@@ -102,6 +102,7 @@ internal class JcefWebViewEngine(
     .setUrl(INITIAL_URL)
     .setEnableOpenDevToolsMenuItem(false)
     .build()
+  override val isHeavyweight: Boolean = false
 
   override val component: JComponent
 

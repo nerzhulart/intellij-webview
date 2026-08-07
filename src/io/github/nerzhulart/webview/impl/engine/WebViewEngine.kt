@@ -7,6 +7,7 @@ import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.nio.file.Path
+import javax.swing.JComponent
 
 /**
  * Platform-independent runtime engine for a native system WebView instance.
@@ -18,6 +19,11 @@ import java.nio.file.Path
 @ApiStatus.Internal
 interface WebViewEngine {
   val isHeavyweight: Boolean
+
+  /**
+   * Cached component of the webview
+   */
+  val component: JComponent?
   suspend fun loadFile(file: Path)
 
   /**
@@ -36,4 +42,6 @@ interface WebViewEngine {
   suspend fun close()
   suspend fun transferToJs(rawJson: String)
   fun connectMessageBus(receiver: WebViewJsMessageReceiver)
+  fun requestWebViewFocus()
+  fun clearWebViewFocus()
 }
