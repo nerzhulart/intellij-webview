@@ -7,8 +7,8 @@ import io.github.nerzhulart.webview.api.WebViewApiId
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.api.WebViewCallable
 import io.github.nerzhulart.webview.api.WebViewImplementable
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
@@ -464,7 +464,8 @@ internal class WebViewMessageBusTest {
     suspend fun declared(params: TestPayload): TestPayload
   }
 
-  private class RecordingEngine : WebViewEngineBridge {
+  // TODO: why RecordingEngine and CapturingEngine?
+  private class RecordingEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
 
     val transferredMessages = ArrayList<String>()

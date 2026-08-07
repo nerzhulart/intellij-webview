@@ -3,11 +3,11 @@ package io.github.nerzhulart.webview.impl.linux
 
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewLogger
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.EDT
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -27,7 +27,7 @@ import kotlin.coroutines.resume
 internal class LinuxWebKitWebViewEngine(
   parentScope: CoroutineScope,
   internal val backend: LinuxWebKitBackend,
-) : WebViewEngineBridge {
+) : WebViewEngine {
   override val isHeavyweight: Boolean = backend == LinuxWebKitBackend.X11
 
   private enum class State { New, Creating, Active, Closing, Closed }

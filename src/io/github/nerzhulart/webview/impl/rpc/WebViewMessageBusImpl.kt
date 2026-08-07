@@ -9,7 +9,7 @@ import io.github.nerzhulart.webview.api.WebViewMessageRegistration
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.api.WebViewNotificationHandler
 import io.github.nerzhulart.webview.api.WebViewRpcException
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +38,7 @@ import java.util.concurrent.ConcurrentHashMap
 @ApiStatus.Internal
 internal class WebViewMessageBusImpl internal constructor(
   private val scope: CoroutineScope,
-  private val engine: WebViewEngineBridge,
+  private val engine: WebViewEngine,
   private val json: Json = DEFAULT_JSON,
 ) : WebViewMessageBus {
   val interop: WebViewInterop = WebViewMessageBusInterop(this)

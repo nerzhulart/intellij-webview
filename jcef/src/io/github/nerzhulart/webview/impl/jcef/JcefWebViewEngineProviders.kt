@@ -2,7 +2,7 @@
 package io.github.nerzhulart.webview.impl.jcef
 
 import com.intellij.openapi.util.SystemInfo
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineAvailability
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCapabilities
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
@@ -25,7 +25,7 @@ internal class JcefEngineProvider : WebViewEngineProvider {
 
   override fun availabilityBlocking(): WebViewEngineAvailability = JcefWebViewRuntime.availabilityBlocking()
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
     return createJcefWebViewEngine(parentScope = scope, documentStartScripts = options.documentStartScripts)
   }
 }

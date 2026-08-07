@@ -10,8 +10,8 @@ import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.engine.WebView
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineAvailability
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCapabilities
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
@@ -454,11 +454,11 @@ internal class MacWebViewHotkeysInIdeTest {
 
     override fun availabilityBlocking(): WebViewEngineAvailability = delegate.availabilityBlocking()
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       return (delegate.createEngine(scope, options) as MacWebViewEngine).also { engine = it }
     }
 
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
+    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngine): NativeWebViewHostPeer {
       return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
     }
   }

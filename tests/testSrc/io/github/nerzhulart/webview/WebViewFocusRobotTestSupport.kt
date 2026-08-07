@@ -7,8 +7,8 @@ import com.intellij.openapi.util.Disposer
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.createWebViewFocusEntrySink
 import io.github.nerzhulart.webview.impl.engine.registerWebViewFocusExitHandler
 import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
@@ -55,7 +55,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runFocusInteropScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -157,7 +157,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runModifierDoubleClickShortcutScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -240,7 +240,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runBrowserTextNavigationScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -343,7 +343,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runAltF4WindowCloseScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -417,7 +417,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runAltF1ShortcutScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -490,7 +490,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runMacFirstResponderFocusTransferScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
     assertNativeFocusInsideWebView: suspend () -> Unit,
@@ -571,7 +571,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runNonTabbableSelectionScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -667,7 +667,7 @@ internal object WebViewFocusRobotTestSupport {
   suspend fun runBadComboPopupThenSwingRefocusScenario(
     frame: JFrame,
     scope: CoroutineScope,
-    engine: WebViewEngineBridge,
+    engine: WebViewEngine,
     nativeHostPeer: NativeWebViewHostPeer,
     tempDir: Path,
   ) {
@@ -1128,7 +1128,7 @@ internal object WebViewFocusRobotTestSupport {
   }
 
   private suspend fun waitForJavaScriptResult(
-    webView: WebViewEngineBridge,
+    webView: WebViewEngine,
     @Language("JavaScript") script: String,
     expected: String,
     description: String,
@@ -1145,7 +1145,7 @@ internal object WebViewFocusRobotTestSupport {
     assertTrue(matched, "$description, lastJsResult=$lastResult")
   }
 
-  private suspend fun clearWebInput(webView: WebViewEngineBridge) {
+  private suspend fun clearWebInput(webView: WebViewEngine) {
     waitForJavaScriptResult(
       webView = webView,
       script = "const input = document.getElementById('web-input'); if (input) { input.value = ''; true } else false",
@@ -1154,11 +1154,11 @@ internal object WebViewFocusRobotTestSupport {
     )
   }
 
-  private suspend fun webInputValueJson(webView: WebViewEngineBridge): String? {
+  private suspend fun webInputValueJson(webView: WebViewEngine): String? {
     return webView.evaluateJavaScript("JSON.stringify(document.getElementById('web-input')?.value ?? '')")
   }
 
-  private suspend fun assertWebInputValue(webView: WebViewEngineBridge, expected: String, description: String) {
+  private suspend fun assertWebInputValue(webView: WebViewEngine, expected: String, description: String) {
     val actual = webView.evaluateJavaScript("document.getElementById('web-input')?.value === '${expected}'")
     assertEquals("true", actual, "$description, expected=$expected, jsResult=$actual")
   }
@@ -1355,12 +1355,12 @@ internal object WebViewFocusRobotTestSupport {
     robot.waitForIdle()
   }
 
-  private suspend fun clickWebElementCenter(robot: Robot, host: Component, webView: WebViewEngineBridge, elementId: String) {
+  private suspend fun clickWebElementCenter(robot: Robot, host: Component, webView: WebViewEngine, elementId: String) {
     clickScreenPoint(robot, webElementCenterOnScreen(host, webView, elementId))
     robot.waitForIdle()
   }
 
-  private suspend fun webElementCenterOnScreen(host: Component, webView: WebViewEngineBridge, elementId: String): Point {
+  private suspend fun webElementCenterOnScreen(host: Component, webView: WebViewEngine, elementId: String): Point {
     @Language("JavaScript")
     val elementCenterScript = """
       (() => {
@@ -1393,7 +1393,7 @@ internal object WebViewFocusRobotTestSupport {
     robot: Robot,
     frame: JFrame,
     host: Component,
-    webView: WebViewEngineBridge,
+    webView: WebViewEngine,
     elementId: String,
   ) {
     @Language("JavaScript")
@@ -1742,7 +1742,7 @@ internal object WebViewFocusRobotTestSupport {
     }
   }
 
-  private class NoopWebViewEngine : WebViewEngineBridge {
+  private class NoopWebViewEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
 
     override suspend fun loadFile(file: Path) {
