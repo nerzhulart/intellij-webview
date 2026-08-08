@@ -22,8 +22,8 @@ import io.github.nerzhulart.webview.impl.engine.WebViewRuntimeInfo
 import io.github.nerzhulart.webview.impl.engine.WebViewScriptResult
 import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
@@ -44,6 +44,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
 import java.nio.file.Path
 import java.time.Instant
 import javax.swing.JComponent
@@ -241,7 +242,7 @@ internal class WebViewRuntimeTest {
     )
     val runtime = WebViewRuntime().apply { providers = listOf(provider) }
 
-    val engine = runtime.createEngine(scope = this, engineKind = WebViewEngineKind.Jcef)
+    val engine = runtime.selectProvider(preference = WebViewEngineKind.Jcef).createEngine(scope = this, webViewEngineCreationOptions())
     try {
       assertEquals(
         listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT),
@@ -500,7 +501,7 @@ internal class WebViewRuntimeTest {
 
     override fun selectionPriority(preference: WebViewEngineKind): Int? = priorities[preference] ?: priority
 
-    override fun availabilityBlocking(): WebViewEngineAvailability {
+    override suspend fun availability(): WebViewEngineAvailability {
       availabilityFailure?.let { throw it }
       return availability
     }
@@ -512,7 +513,7 @@ internal class WebViewRuntimeTest {
       }
     }
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       error("Fake provider does not create engines")
     }
 
@@ -546,9 +547,9 @@ internal class WebViewRuntimeTest {
       }
     }
 
-    override fun availabilityBlocking(): WebViewEngineAvailability = WebViewEngineAvailability.Available
+    override suspend fun availability(): WebViewEngineAvailability = WebViewEngineAvailability.Available
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       creationOptions.add(options)
       return engine
     }
@@ -583,8 +584,11 @@ internal class WebViewRuntimeTest {
     }
   }
 
-  private class FakeEngine : WebViewEngineBridge {
+  // TODO: merge with NoOP
+  private class FakeEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
+    override val component: JComponent?
+      get() = null
 
     override suspend fun loadFile(file: Path) {
     }
@@ -604,6 +608,25 @@ internal class WebViewRuntimeTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
 
+    override fun attach(host: Component): Boolean {
+      return true
+    }
+
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
+    override fun requestFocus() {
+    }
+
+    override fun clearFocus() {
+    }
+
     override suspend fun close() {
     }
 
@@ -611,13 +634,15 @@ internal class WebViewRuntimeTest {
 
   private class CapturingEngine(
     override val isHeavyweight: Boolean = false,
-  ) : WebViewEngineBridge {
+  ) : WebViewEngine {
     val delivered = Channel<String>(Channel.UNLIMITED)
     private var messageReceiver: WebViewJsMessageReceiver? = null
     var lastAssetQuery: String? = null
       private set
     var closeCount = 0
       private set
+    override val component: JComponent?
+      get() = null
 
     override suspend fun loadFile(file: Path) {
     }
@@ -639,6 +664,26 @@ internal class WebViewRuntimeTest {
       messageReceiver = receiver
     }
 
+    override fun attach(host: Component): Boolean {
+      return true
+    }
+
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
+    override fun requestFocus() {
+    }
+
+    override fun clearFocus() {
+    }
+
     override suspend fun close() {
       closeCount++
       delivered.close()
@@ -651,6 +696,7 @@ internal class WebViewRuntimeTest {
 
   private suspend fun awaitLog(loggerFactory: TestLoggerFactory, marker: String): String {
     return withTimeout(5.seconds) {
+      // TODO: what is this? what is toBuffer and what is awaitLog?
       var log = loggerFactory.toBuffer()
       while (!log.contains(marker)) {
         delay(10)

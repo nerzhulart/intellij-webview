@@ -3,16 +3,25 @@ package io.github.nerzhulart.webview.impl.mac
 
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.trace
+import com.intellij.ui.mac.foundation.Foundation
 import com.intellij.ui.mac.foundation.ID
+import com.intellij.ui.mac.foundation.MacUtil
+import com.intellij.util.ui.update.DebouncedUpdates
+import com.intellij.util.ui.update.UpdateQueue
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.MacMainThreadDispatcher
+import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.WebViewLogger
+import io.github.nerzhulart.webview.impl.WebViewShortcutRouter
+import io.github.nerzhulart.webview.impl.WebViewShortcutRouting
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
+import io.github.nerzhulart.webview.impl.WebViewEditShortcutPolicy
 import io.github.nerzhulart.webview.impl.openWebViewPopupUrlExternally
 import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
@@ -28,15 +37,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
+import java.awt.Component
+import java.awt.KeyboardFocusManager
+import java.awt.Toolkit
+import java.awt.event.KeyEvent
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JComponent
+import javax.swing.SwingUtilities
+import kotlin.time.Duration.Companion.milliseconds
 
 private val LOG = logger<MacWebViewEngine>()
 
 /**
- * macOS implementation of [WebViewEngineBridge] backed by a native `WKWebView`.
+ * macOS implementation of [WebViewEngine] backed by a native `WKWebView`.
  *
  * Lifecycle state machine: `New → Active → Closing → Closed`.
  *
@@ -47,8 +63,11 @@ private val LOG = logger<MacWebViewEngine>()
 internal class MacWebViewEngine(
   parentScope: CoroutineScope,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
-) : WebViewEngineBridge {
+) : WebViewEngine {
   override val isHeavyweight: Boolean = true
+  // TODO: should we return some wrapper component for it?
+  override val component: JComponent?
+    get() = null
 
   private companion object {
     const val EVAL_PREFIX = "__eval__:"
@@ -253,7 +272,7 @@ internal class MacWebViewEngine(
     val currentHandles = handles
     handles = null
     if (currentHandles != null) {
-      com.intellij.ui.mac.foundation.Foundation.executeOnMainThread(false, false) {
+      Foundation.executeOnMainThread(false, false) {
         WKWebViewBridge.release(currentHandles)
         handlesReady.cancel(CancellationException("Engine closed"))
         state.set(State.Closed)
@@ -311,18 +330,9 @@ internal class MacWebViewEngine(
     WKWebViewBridge.setHidden(wv, hidden)
   }
 
-  internal fun requestFocus() {
-    val wv = handles?.webView ?: return
-    WKWebViewBridge.requestFocus(wv)
-  }
 
   internal fun makeFirstResponder(nativeView: ID) {
     WKWebViewBridge.makeFirstResponder(nativeView)
-  }
-
-  internal fun clearFocus() {
-    val wv = handles?.webView ?: return
-    WKWebViewBridge.clearFocus(wv)
   }
 
   internal fun performEditCommand(command: WebViewEditCommand): Boolean {
@@ -415,10 +425,251 @@ internal class MacWebViewEngine(
     return true
   }
 
+  /**
+   * Peer's section
+   */
+
+  private data class Attachment(
+    val parentContentView: ID,
+    val clipView: ID,
+  )
+
+  @Volatile
+  private var attachmentRequested = false
+
+  @Volatile
+  private var attachmentGeneration = 0L
+
+  @Volatile
+  private var hostHidden = true
+
+  /** Accessed only on the macOS main thread. */
+  private var attachment: Attachment? = null
+
+  /** Accessed only on the macOS main thread. */
+  private var lastAppliedLayout: MacNativeLayout? = null
+
+  /**
+   * Throttle queue for resize/move coalescing. The first event arms a 16 ms timer;
+   * subsequent events collapse into the latest layout without starving continuous drags.
+   */
+  private val resizeUpdates: UpdateQueue<MacNativeLayout> = DebouncedUpdates
+    .forScope<MacNativeLayout>(scope, "webview-native-frame", 16.milliseconds)
+    .withContext(MacMainThreadDispatcher)
+    .runLatest { layout -> applyLayout(layout) }
+
+  /**
+   * WKWebView edit shortcuts are AppKit actions, not key events that can be safely replayed after
+   * the IDE dispatcher sees them. The peer therefore dispatches commands through the responder chain.
+   */
+  override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER
+
+  override fun attach(host: Component): Boolean {
+    if (attachmentRequested) return true
+
+    initialize()
+
+    val contentView = resolveParentContentView(host) ?: return false
+    val initialLayout = resolveLayout(host) ?: return false
+    WebViewLogger.LOG.info("Attaching WKWebView host: layout=$initialLayout, showing=${host.isShowing}")
+
+    // WKWebView reports bare modifier transitions through AppKit while it owns first responder.
+    // The Swing host is the right boundary for mirroring them into AWT because it owns attach/detach lifecycle.
+    setModifierKeyHandler { event -> postModifierKeyEvent(host, event) }
+    attachmentRequested = true
+    val generation = ++attachmentGeneration
+    hostHidden = true
+
+    scope.launch(MacMainThreadDispatcher) {
+      if (!awaitReadyForAttachment() || !isCurrentAttachment(generation)) return@launch
+
+      val clipView = WKWebViewBridge.createClippingContainer(contentView)
+      if (!isCurrentAttachment(generation)) {
+        WKWebViewBridge.releaseClippingContainer(clipView)
+        return@launch
+      }
+
+      val webViewAttached = attachToParent(clipView)
+      if (!webViewAttached || !isCurrentAttachment(generation)) {
+        detachFromParent()
+        WKWebViewBridge.releaseClippingContainer(clipView)
+        return@launch
+      }
+
+      attachment = Attachment(contentView, clipView)
+      lastAppliedLayout = null
+      applyLayout(initialLayout)
+
+      SwingUtilities.invokeLater {
+        (host as? SwingWebViewHostPanel)?.let { hostPanel ->
+          hostPanel.syncNativePeerWithSwingState()
+          hostPanel.syncWebViewFocusWithSwingFocusOwner()
+        }
+      }
+    }
+    return true
+  }
+
+  override fun detach() {
+    if (!attachmentRequested) return
+
+    attachmentRequested = false
+    attachmentGeneration++
+    hostHidden = true
+    setModifierKeyHandler(null)
+    scope.launch(MacMainThreadDispatcher) {
+      releaseAttachment()
+    }
+  }
+
+  override fun scheduleFrameUpdate(host: Component) {
+    if (!attachmentRequested) return
+    val layout = resolveLayout(host) ?: return
+    resizeUpdates.queue(layout)
+  }
+
+  override fun hasNonEmptyNativeBounds(host: Component): Boolean {
+    return resolveLayout(host)?.hasVisibleBounds == true
+  }
+
+  override fun updateVisibility(host: Component, hidden: Boolean) {
+    if (!attachmentRequested) return
+    hostHidden = hidden
+
+    if (!hidden) {
+      scheduleFrameUpdate(host)
+    }
+
+    scope.launch(MacMainThreadDispatcher) {
+      updateNativeVisibility()
+    }
+  }
+
+  override fun requestFocus() {
+    if (!attachmentRequested) return
+
+    scope.launch(MacMainThreadDispatcher) {
+      if (attachment != null) {
+        val wv = handles?.webView ?: return@launch
+        WKWebViewBridge.requestFocus(wv)
+      }
+    }
+  }
+
+  override fun clearFocus() {
+    if (!attachmentRequested) return
+
+    scope.launch(MacMainThreadDispatcher) {
+      if (attachment != null) {
+        val wv = handles?.webView ?: return@launch
+        WKWebViewBridge.clearFocus(wv)
+      }
+    }
+  }
+
+  override fun clearFocusForSwingFocusTransfer() {
+    if (!attachmentRequested) return
+
+    scope.launch(MacMainThreadDispatcher) {
+      val focusTarget = attachment?.parentContentView ?: return@launch
+      makeFirstResponder(focusTarget)
+    }
+  }
+
+  /**
+   * Accepts the key press that matched the IDE shortcut and lets AppKit route the edit command to
+   * WKWebView or its current private editor responder.
+   */
+  override fun handleWebViewShortcut(event: KeyEvent, command: WebViewEditCommand): Boolean {
+    return attachmentRequested && event.id == KeyEvent.KEY_PRESSED && performEditCommand(command)
+  }
+
+  /**
+   * Mirrors native modifier-only transitions into the AWT event queue without moving focus out of WKWebView.
+   * The shared router keeps this path limited to bare Shift/Ctrl gesture candidates; browser edit shortcuts
+   * and normal WebKit handling stay untouched.
+   */
+  private fun postModifierKeyEvent(host: Component, event: WKWebViewBridge.ModifierKeyEvent) {
+    if (!attachmentRequested || !host.isShowing) return
+
+    val eventSource = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow ?: host
+    val keyEvent = KeyEvent(
+      eventSource,
+      event.id,
+      System.currentTimeMillis(),
+      event.modifiersEx,
+      event.keyCode,
+      KeyEvent.CHAR_UNDEFINED,
+      event.keyLocation,
+    )
+    if (WebViewShortcutRouter.route(keyEvent) != WebViewShortcutRouting.FORWARD_TO_IDE_KEEP_BROWSER_HANDLING) return
+
+    Toolkit.getDefaultToolkit().systemEventQueue.postEvent(keyEvent)
+  }
+
+  private fun applyLayout(layout: MacNativeLayout) {
+    val currentAttachment = attachment ?: return
+    if (layout != lastAppliedLayout) {
+      lastAppliedLayout = layout
+      val containerFrame = layout.containerFrame
+      WKWebViewBridge.setFrame(
+        currentAttachment.clipView,
+        containerFrame.x,
+        containerFrame.y,
+        containerFrame.width,
+        containerFrame.height,
+      )
+      val webViewFrame = layout.webViewFrame
+      setFrame(
+        webViewFrame.x,
+        webViewFrame.y,
+        webViewFrame.width,
+        webViewFrame.height,
+      )
+      WebViewLogger.LOG.debug("Applying WKWebView host layout: $layout")
+    }
+
+    updateNativeVisibility()
+  }
+
+  private fun updateNativeVisibility() {
+    val currentAttachment = attachment ?: return
+    val hidden = hostHidden || lastAppliedLayout?.hasVisibleBounds != true
+    WKWebViewBridge.setHidden(currentAttachment.clipView, hidden)
+  }
+
+  private fun releaseAttachment() {
+    val currentAttachment = attachment ?: return
+    attachment = null
+    lastAppliedLayout = null
+    detachFromParent()
+    WKWebViewBridge.releaseClippingContainer(currentAttachment.clipView)
+  }
+
+  private fun isCurrentAttachment(generation: Long): Boolean {
+    return attachmentRequested && attachmentGeneration == generation
+  }
+
+  private fun resolveLayout(host: Component): MacNativeLayout? {
+    val anchor = SwingWebViewHostPanel.resolveAnchor(host) ?: return null
+    val fullBounds = SwingWebViewHostPanel.calculateHostBounds(host, anchor)
+    val clippedBounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
+    return calculateMacNativeLayout(fullBounds, clippedBounds, anchor.height)
+  }
+
+  private fun resolveParentContentView(host: Component): ID? {
+    val window = SwingUtilities.getWindowAncestor(host) ?: return null
+    val nsWindow = MacUtil.getWindowFromJavaWindow(window)
+    if (Foundation.isNil(nsWindow)) return null
+    val contentView = Foundation.invoke(nsWindow, "contentView")
+    return if (Foundation.isNil(contentView)) null else contentView
+  }
+
+
 }
 
 /**
- * Factory function for creating a macOS WebView engine.
+ * Factory function for creating a macOS WebView
  */
 @ApiStatus.Internal
 internal fun createMacWebViewEngine(
@@ -434,3 +685,31 @@ internal data class MacWebViewFirstResponderState(
   val isInsideWebView: Boolean,
   val responderDescription: String,
 )
+
+internal data class MacNativeLayout(
+  val containerFrame: SwingWebViewHostPanel.NativeFrame,
+  val webViewFrame: SwingWebViewHostPanel.NativeFrame,
+) {
+  val hasVisibleBounds: Boolean
+    get() = containerFrame.width > 0.0 && containerFrame.height > 0.0
+}
+
+internal fun calculateMacNativeLayout(
+  fullBounds: SwingWebViewHostPanel.NativeBounds,
+  clippedBounds: SwingWebViewHostPanel.NativeBounds,
+  anchorHeight: Int,
+): MacNativeLayout {
+  val containerFrame = SwingWebViewHostPanel.NativeFrame(
+    x = clippedBounds.x.toDouble(),
+    y = (anchorHeight - clippedBounds.y - clippedBounds.height).toDouble(),
+    width = clippedBounds.width.toDouble(),
+    height = clippedBounds.height.toDouble(),
+  )
+  val webViewFrame = SwingWebViewHostPanel.NativeFrame(
+    x = (fullBounds.x - clippedBounds.x).toDouble(),
+    y = (clippedBounds.y + clippedBounds.height - fullBounds.y - fullBounds.height).toDouble(),
+    width = fullBounds.width.toDouble(),
+    height = fullBounds.height.toDouble(),
+  )
+  return MacNativeLayout(containerFrame, webViewFrame)
+}

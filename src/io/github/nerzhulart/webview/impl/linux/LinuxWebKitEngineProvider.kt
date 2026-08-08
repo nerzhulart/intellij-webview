@@ -2,14 +2,13 @@
 package io.github.nerzhulart.webview.impl.linux
 
 import com.intellij.openapi.util.SystemInfo
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineAvailability
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCapabilities
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 
@@ -26,17 +25,12 @@ internal class LinuxWebKitEngineProvider : WebViewEngineProvider {
     }
   }
 
-  override fun availabilityBlocking(): WebViewEngineAvailability {
+  override suspend fun availability(): WebViewEngineAvailability {
     if (!SystemInfo.isLinux) return WebViewEngineAvailability.Unavailable("Linux is required")
     return WebViewEngineAvailability.Unavailable("Linux WebKitGTK WebView is disabled")
   }
 
-  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+  override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
     error("Linux WebKitGTK WebView is disabled")
   }
-
-  override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-    return LinuxNativeWebViewHostPeer(engine as LinuxWebKitWebViewEngine)
-  }
-
 }

@@ -80,7 +80,7 @@ internal class WinWebViewOverlayBoundsTest {
       val rootPanel = JPanel(null).apply {
         preferredSize = Dimension(220, 320)
       }
-      val hostPanel = SwingWebViewHostPanel(scope, engine, nativeHostPeer = WinNativeWebViewHostPeer(engine)).apply {
+      val hostPanel = SwingWebViewHostPanel(scope, engine).apply {
         setBounds(20, 40, 300, 200)
       }
       rootPanel.add(hostPanel)
@@ -111,7 +111,7 @@ internal class WinWebViewOverlayBoundsTest {
       val root = JPanel(null).apply {
         preferredSize = Dimension(420, 320)
       }
-      val hostPanel = SwingWebViewHostPanel(scope, engine, nativeHostPeer = WinNativeWebViewHostPeer(engine)).apply {
+      val hostPanel = SwingWebViewHostPanel(scope, engine).apply {
         setBounds(20, 40, 300, 200)
       }
       val overlayPanel = JPanel().apply {

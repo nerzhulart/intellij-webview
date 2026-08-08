@@ -10,8 +10,8 @@ import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.engine.WebView
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineAvailability
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCapabilities
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
@@ -19,8 +19,6 @@ import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.mac.MacNativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacWebViewEngine
 import io.github.nerzhulart.webview.impl.mac.MacWebViewFirstResponderState
 import io.github.nerzhulart.webview.impl.mac.MacWkWebViewEngineProvider
@@ -452,14 +450,10 @@ internal class MacWebViewHotkeysInIdeTest {
 
     override fun selectionPriority(preference: WebViewEngineKind): Int? = delegate.selectionPriority(preference)
 
-    override fun availabilityBlocking(): WebViewEngineAvailability = delegate.availabilityBlocking()
+    override suspend fun availability(): WebViewEngineAvailability = delegate.availability()
 
-    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineBridge {
+    override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
       return (delegate.createEngine(scope, options) as MacWebViewEngine).also { engine = it }
-    }
-
-    override fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-      return MacNativeWebViewHostPeer(scope, engine as MacWebViewEngine)
     }
   }
 

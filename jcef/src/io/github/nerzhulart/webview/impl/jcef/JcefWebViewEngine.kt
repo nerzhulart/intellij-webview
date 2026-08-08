@@ -9,7 +9,6 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefClient
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.impl.ComponentBackedWebViewEngine
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
@@ -17,6 +16,7 @@ import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
 import com.intellij.util.ui.EDT
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +46,7 @@ import org.cef.handler.CefResourceRequestHandlerAdapter
 import org.cef.misc.BoolRef
 import org.cef.network.CefRequest
 import org.intellij.lang.annotations.Language
+import java.awt.Component
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.util.ArrayDeque
@@ -63,7 +64,7 @@ internal class JcefWebViewEngine(
   parentScope: CoroutineScope,
   jbCefApp: JBCefApp,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
-) : ComponentBackedWebViewEngine {
+) : WebViewEngine {
   private companion object {
     private const val INITIAL_URL = "about:blank"
     private const val QUERY_FUNCTION = "__wviJcefQuery"
@@ -102,6 +103,7 @@ internal class JcefWebViewEngine(
     .setUrl(INITIAL_URL)
     .setEnableOpenDevToolsMenuItem(false)
     .build()
+  override val isHeavyweight: Boolean = false
 
   override val component: JComponent
 
@@ -195,6 +197,23 @@ internal class JcefWebViewEngine(
     messageReceiver = receiver
   }
 
+  override fun attach(host: Component): Boolean {
+    // TODO: should we attach our component to this host here?
+    return true
+  }
+
+  override fun detach() {
+    // TODO: see above
+  }
+
+  override fun scheduleFrameUpdate(host: Component) {
+    // TODO: should we still have some controller for native only operations to avoid no ops like this
+  }
+
+  override fun updateVisibility(host: Component, hidden: Boolean) {
+    // TODO: see above
+  }
+
   override suspend fun close() {
     if (!closed.compareAndSet(false, true)) return
 
@@ -223,14 +242,14 @@ internal class JcefWebViewEngine(
     }
   }
 
-  override fun requestWebViewFocus() {
+  override fun requestFocus() {
     runOnEdt {
       cefBrowser.uiComponent.requestFocusInWindow()
       cefBrowser.setFocus(true)
     }
   }
 
-  override fun clearWebViewFocus() {
+  override fun clearFocus() {
     runOnEdt {
       cefBrowser.setFocus(false)
     }

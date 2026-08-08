@@ -3,11 +3,11 @@ package io.github.nerzhulart.webview.impl.linux
 
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewLogger
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.EDT
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -16,10 +16,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.jetbrains.annotations.ApiStatus
+import java.awt.Component
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JComponent
 import javax.swing.SwingUtilities
 import kotlin.coroutines.resume
 
@@ -27,8 +29,10 @@ import kotlin.coroutines.resume
 internal class LinuxWebKitWebViewEngine(
   parentScope: CoroutineScope,
   internal val backend: LinuxWebKitBackend,
-) : WebViewEngineBridge {
+) : WebViewEngine {
   override val isHeavyweight: Boolean = backend == LinuxWebKitBackend.X11
+  override val component: JComponent?
+    get() = null
 
   private enum class State { New, Creating, Active, Closing, Closed }
 
@@ -124,6 +128,10 @@ internal class LinuxWebKitWebViewEngine(
     inboundMessageHandler = receiver::transferFromJs
   }
 
+  override fun attach(host: Component): Boolean {
+    TODO("Not yet implemented")
+  }
+
   internal fun setSnapshotHandler(handler: ((Int, Int, IntArray) -> Unit)?) {
     snapshotHandler = handler
   }
@@ -203,10 +211,18 @@ internal class LinuxWebKitWebViewEngine(
     }
   }
 
-  internal fun detach() {
+  override fun detach() {
     val handle = nativeHandle
     if (handle == 0L || state.get() == State.Closed) return
     runOnEdt { LinuxWebKitGtkBridge.detach(handle) }
+  }
+
+  override fun scheduleFrameUpdate(host: Component) {
+    TODO("Not yet implemented")
+  }
+
+  override fun updateVisibility(host: Component, hidden: Boolean) {
+    TODO("Not yet implemented")
   }
 
   internal fun setBounds(x: Int, y: Int, width: Int, height: Int, scale: Double) {
@@ -224,13 +240,13 @@ internal class LinuxWebKitWebViewEngine(
     runOnEdt { LinuxWebKitGtkBridge.setVisible(handle, !hidden) }
   }
 
-  internal fun requestFocus() {
+  override fun requestFocus() {
     val handle = nativeHandle
     if (handle == 0L || state.get() != State.Active) return
     runOnEdt { LinuxWebKitGtkBridge.focus(handle) }
   }
 
-  internal fun clearFocus() {
+  override fun clearFocus() {
     val handle = nativeHandle
     if (handle == 0L || state.get() != State.Active) return
     runOnEdt { LinuxWebKitGtkBridge.clearFocus(handle) }

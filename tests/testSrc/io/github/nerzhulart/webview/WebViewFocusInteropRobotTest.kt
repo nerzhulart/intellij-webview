@@ -7,15 +7,11 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
 import io.github.nerzhulart.webview.impl.NativeBridgeLibraryAvailability
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.mac.MacNativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.mac.MacWebViewEngine
 import io.github.nerzhulart.webview.impl.mac.MacWebViewFirstResponderState
 import io.github.nerzhulart.webview.impl.mac.MacWkWebViewEngineProvider
-import io.github.nerzhulart.webview.impl.windows.WinNativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.windows.WinWebViewEngine
 import io.github.nerzhulart.webview.impl.windows.WindowsWebView2EngineProvider
 import io.github.nerzhulart.webview.impl.windows.winWebView2BridgeLibrary
 import kotlinx.coroutines.CoroutineScope
@@ -107,7 +103,6 @@ class WebViewFocusInteropRobotTest {
         frame!!,
         scope!!,
         facade,
-        createNativeHostPeer(scope!!, facade),
         tempDir,
       )
     }
@@ -118,18 +113,17 @@ class WebViewFocusInteropRobotTest {
 
   @Test
   fun modifierDoubleClickInsideWebViewReachesAwt(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val engine = createPlatformEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runModifierDoubleClickShortcutScenario(
         frame!!,
         scope!!,
-        facade,
-        createNativeHostPeer(scope!!, facade),
+        engine,
         tempDir,
       )
     }
     finally {
-      facade.close()
+      engine.close()
     }
   }
 
@@ -137,18 +131,17 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.WINDOWS)
   fun browserTextNavigationShortcutsStayInsideWebView(): Unit = runBlocking {
     val tempDir = Files.createTempDirectory("webview-text-navigation-test")
-    val facade = createPlatformEngine(scope!!)
+    val engine = createPlatformEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runBrowserTextNavigationScenario(
         frame!!,
         scope!!,
-        facade,
-        createNativeHostPeer(scope!!, facade),
+        engine,
         tempDir,
       )
     }
     finally {
-      facade.close()
+      engine.close()
       tempDir.toFile().deleteRecursively()
     }
   }
@@ -157,18 +150,17 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.WINDOWS)
   fun altF1InsideWebViewReachesAwtWithAltModifier(): Unit = runBlocking {
     val tempDir = Files.createTempDirectory("webview-alt-f1-test")
-    val facade = createPlatformEngine(scope!!)
+    val engine = createPlatformEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runAltF1ShortcutScenario(
         frame!!,
         scope!!,
-        facade,
-        createNativeHostPeer(scope!!, facade),
+        engine,
         tempDir,
       )
     }
     finally {
-      facade.close()
+      engine.close()
       tempDir.toFile().deleteRecursively()
     }
   }
@@ -177,18 +169,17 @@ class WebViewFocusInteropRobotTest {
   @EnabledOnOs(OS.WINDOWS)
   fun altF4InsideWebViewClosesFrame(): Unit = runBlocking {
     val tempDir = Files.createTempDirectory("webview-alt-f4-test")
-    val facade = createPlatformEngine(scope!!)
+    val engine = createPlatformEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runAltF4WindowCloseScenario(
         frame!!,
         scope!!,
-        facade,
-        createNativeHostPeer(scope!!, facade),
+        engine,
         tempDir,
       )
     }
     finally {
-      facade.close()
+      engine.close()
       tempDir.toFile().deleteRecursively()
     }
   }
@@ -203,7 +194,6 @@ class WebViewFocusInteropRobotTest {
         frame = frame!!,
         scope = scope!!,
         engine = facade,
-        nativeHostPeer = MacNativeWebViewHostPeer(scope!!, facade),
         tempDir = tempDir,
         assertNativeFocusInsideWebView = { assertFirstResponderInsideWebView(facade) },
         assertNativeFocusReadyForSwingTyping = { assertFirstResponderOutsideWebView(facade) },
@@ -217,40 +207,38 @@ class WebViewFocusInteropRobotTest {
   @Test
   @EnabledOnOs(OS.WINDOWS)
   fun selectingTextInWebViewWithoutTabbablesDoesNotBounceFocusBackToSwing(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val engine = createPlatformEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runNonTabbableSelectionScenario(
         frame!!,
         scope!!,
-        facade,
-        createNativeHostPeer(scope!!, facade),
+        engine,
         tempDir,
       )
     }
     finally {
-      facade.close()
+      engine.close()
     }
   }
 
   @Test
   @EnabledOnOs(OS.WINDOWS)
   fun clickingBadComboPopupThenSwingFieldClosesPopupAndMovesFocusBack(@TempDir tempDir: Path): Unit = runBlocking {
-    val facade = createPlatformEngine(scope!!)
+    val engine = createPlatformEngine(scope!!)
     try {
       WebViewFocusRobotTestSupport.runBadComboPopupThenSwingRefocusScenario(
         frame!!,
         scope!!,
-        facade,
-        createNativeHostPeer(scope!!, facade),
+        engine,
         tempDir,
       )
     }
     finally {
-      facade.close()
+      engine.close()
     }
   }
 
-  private fun createPlatformEngine(scope: CoroutineScope): WebViewEngineBridge {
+  private fun createPlatformEngine(scope: CoroutineScope): WebViewEngine {
     val osName = System.getProperty("os.name", "")
     return when {
       osName.startsWith("Mac", ignoreCase = true) -> {
@@ -275,14 +263,6 @@ class WebViewFocusInteropRobotTest {
       jcefNativeBundlePath = null,
       debugName = null,
     )
-  }
-
-  private fun createNativeHostPeer(scope: CoroutineScope, engine: WebViewEngineBridge): NativeWebViewHostPeer {
-    return when (engine) {
-      is MacWebViewEngine -> MacNativeWebViewHostPeer(scope, engine)
-      is WinWebViewEngine -> WinNativeWebViewHostPeer(engine)
-      else -> error("Unsupported WebView engine for focus interop Robot test: ${engine.javaClass.name}")
-    }
   }
 
   private fun ensureJna() {

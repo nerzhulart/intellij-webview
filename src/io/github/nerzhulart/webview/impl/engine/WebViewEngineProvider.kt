@@ -15,8 +15,6 @@ import io.github.nerzhulart.webview.impl.CONSOLE_LOG_CATEGORY
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
 import kotlinx.coroutines.CoroutineScope
@@ -44,9 +42,7 @@ interface WebViewEngineProvider {
 
   fun selectionPriority(preference: WebViewEngineKind): Int?
 
-  suspend fun availability(): WebViewEngineAvailability = availabilityBlocking()
-
-  fun availabilityBlocking(): WebViewEngineAvailability
+  suspend fun availability(): WebViewEngineAvailability
 
   suspend fun createWebView(
     webViewScope: CoroutineScope,
@@ -104,7 +100,6 @@ interface WebViewEngineProvider {
               webViewScope,
               engine,
               bus.interop.createWebViewFocusEntrySink(),
-              provider.createNativeHostPeer(webViewScope, engine),
             )
           }
           focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
@@ -167,19 +162,14 @@ interface WebViewEngineProvider {
     }
   }
 
-  fun runtimeInfo(engine: WebViewEngineBridge): WebViewRuntimeInfo {
+  fun runtimeInfo(engine: WebViewEngine): WebViewRuntimeInfo {
     return WebViewRuntimeInfo(id, capabilities, displayName)
   }
 
   fun createEngine(
     scope: CoroutineScope,
     options: WebViewEngineCreationOptions,
-  ): WebViewEngineBridge
-
-  fun createNativeHostPeer(
-    scope: CoroutineScope,
-    engine: WebViewEngineBridge,
-  ): NativeWebViewHostPeer? = null
+  ): WebViewEngine
 
   interface CreatedWebView {
     val webView: WebView

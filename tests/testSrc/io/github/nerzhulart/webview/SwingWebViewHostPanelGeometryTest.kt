@@ -4,12 +4,10 @@ package io.github.nerzhulart.webview
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
-import io.github.nerzhulart.webview.impl.ComponentBackedWebViewEngine
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewFocusEntrySink
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.mac.MacNativeLayout
 import io.github.nerzhulart.webview.impl.mac.calculateMacNativeLayout
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -26,6 +24,7 @@ import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import org.junit.jupiter.api.Disabled
 import javax.swing.JComponent
 import javax.swing.JRootPane
 import javax.swing.JPanel
@@ -343,6 +342,7 @@ class SwingWebViewHostPanelGeometryTest {
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 430, 260), bounds)
   }
 
+  // TODO: Fails after ComponentBackedEngine is removed
   @Test
   fun componentBackedEngine_isMountedDirectlyAndReceivesFocusDelegation() {
     val engine = FakeComponentBackedEngine()
@@ -370,6 +370,7 @@ class SwingWebViewHostPanelGeometryTest {
     }
   }
 
+  // TODO: fails after removal of Peers
   @Test
   fun swingFocusTransfer_clearsComponentBackedEngineFocus() {
     val engine = FakeComponentBackedEngine()
@@ -390,21 +391,19 @@ class SwingWebViewHostPanelGeometryTest {
   @Test
   fun swingFocusTransfer_usesNativePeerTransferHookWithoutExplicitClear() {
     val engine = FakeNativeEngine()
-    val peer = RecordingNativePeer()
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
     val scope = CoroutineScope(SupervisorJob())
     try {
       val host = SwingWebViewHostPanel(
         scope = scope,
         engine = engine,
-        nativeHostPeer = peer,
       )
 
       host.clearWebViewFocusForSwingFocusTransfer()
       host.clearWebViewFocus()
 
-      assertEquals(1, peer.clearFocusForSwingTransferCount)
-      assertEquals(1, peer.clearFocusCount)
+      assertEquals(1, engine.clearFocusForSwingTransferCount)
+      assertEquals(1, engine.clearFocusCount)
     }
     finally {
       scope.cancel()
@@ -414,14 +413,12 @@ class SwingWebViewHostPanelGeometryTest {
   @Test
   fun swingHostFocusRequest_skipsForcedFallbackForMouseActivation() {
     val engine = FakeNativeEngine()
-    val peer = RecordingNativePeer()
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
     val scope = CoroutineScope(SupervisorJob())
     try {
       val host = SwingWebViewHostPanel(
         scope = scope,
         engine = engine,
-        nativeHostPeer = peer,
       ).apply {
         // Force requestFocusInWindow() to fail so the test covers the fallback branch without
         // involving the platform focus manager or a native window.
@@ -438,14 +435,13 @@ class SwingWebViewHostPanelGeometryTest {
   @Test
   fun swingHostFocusRequest_keepsForcedFallbackForNativeFocusRequests() {
     val engine = FakeNativeEngine()
-    val peer = RecordingNativePeer()
+    // TODO: use runBlocking and its scope in all tests
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
     val scope = CoroutineScope(SupervisorJob())
     try {
       val host = SwingWebViewHostPanel(
         scope = scope,
         engine = engine,
-        nativeHostPeer = peer,
       ).apply {
         // Force requestFocusInWindow() to fail so the test covers the fallback branch without
         // involving the platform focus manager or a native window.
@@ -525,6 +521,7 @@ class SwingWebViewHostPanelGeometryTest {
     }
   }
 
+  // TODO: fails after removal of Peers
   @Test
   fun swingFocusTransfer_notifiesPageLeaveAndClearsNativeFocusOnce() {
     val engine = FakeComponentBackedEngine()
@@ -591,9 +588,38 @@ class SwingWebViewHostPanelGeometryTest {
     }
   }
 
-  private class RecordingNativePeer(
-    private val attachResult: Boolean = true,
-  ) : NativeWebViewHostPeer {
+  // TODO: merge with FakeComponentBacked? control behavior with flags?
+  private class FakeNativeEngine : WebViewEngine {
+    override val isHeavyweight: Boolean = false
+    override val component: JComponent?
+      get() = null
+
+    override suspend fun loadFile(file: Path) {
+    }
+
+    override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
+    }
+
+    override suspend fun loadHtml(html: String, baseFile: Path?) {
+    }
+
+    override suspend fun evaluateJavaScript(script: String): String? = null
+
+    override suspend fun transferToJs(rawJson: String) {
+    }
+
+    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    }
+
+    override suspend fun close() {
+    }
+
+    /**
+     * From Peer's section
+     */
+
+    private val attachResult: Boolean = true
+
     var attachCount = 0
       private set
     var detachCount = 0
@@ -628,33 +654,13 @@ class SwingWebViewHostPanelGeometryTest {
     override fun clearFocusForSwingFocusTransfer() {
       clearFocusForSwingTransferCount++
     }
+
   }
 
-  private class FakeNativeEngine : WebViewEngineBridge {
-    override val isHeavyweight: Boolean = false
-
-    override suspend fun loadFile(file: Path) {
-    }
-
-    override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
-    }
-
-    override suspend fun loadHtml(html: String, baseFile: Path?) {
-    }
-
-    override suspend fun evaluateJavaScript(script: String): String? = null
-
-    override suspend fun transferToJs(rawJson: String) {
-    }
-
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
-    }
-
-    override suspend fun close() {
-    }
-  }
-
-  private class FakeComponentBackedEngine : ComponentBackedWebViewEngine {
+  // Merge with Fake?
+  private class FakeComponentBackedEngine : WebViewEngine {
+    override val isHeavyweight: Boolean
+      get() = false
     override val component: JComponent = JPanel()
     var requestFocusCount = 0
       private set
@@ -678,14 +684,27 @@ class SwingWebViewHostPanelGeometryTest {
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
     }
 
+    override fun attach(host: Component): Boolean {
+      return true
+    }
+
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
     override suspend fun close() {
     }
 
-    override fun requestWebViewFocus() {
+    override fun requestFocus() {
       requestFocusCount++
     }
 
-    override fun clearWebViewFocus() {
+    override fun clearFocus() {
       clearFocusCount++
     }
   }

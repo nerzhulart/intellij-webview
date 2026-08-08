@@ -7,8 +7,8 @@ import io.github.nerzhulart.webview.api.WebViewApiId
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.api.WebViewCallable
 import io.github.nerzhulart.webview.api.WebViewImplementable
-import io.github.nerzhulart.webview.impl.WebViewEngineBridge
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.awaitCancellation
@@ -24,7 +24,9 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.awt.Component
 import java.nio.file.Path
+import javax.swing.JComponent
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -464,10 +466,13 @@ internal class WebViewMessageBusTest {
     suspend fun declared(params: TestPayload): TestPayload
   }
 
-  private class RecordingEngine : WebViewEngineBridge {
+  // TODO: why RecordingEngine and CapturingEngine?
+  private class RecordingEngine : WebViewEngine {
     override val isHeavyweight: Boolean = false
+    override val component: JComponent? = null
 
     val transferredMessages = ArrayList<String>()
+
     private val transfers = Channel<String>(Channel.UNLIMITED)
 
     suspend fun awaitTransfer(): String = withTimeout(1.seconds) { transfers.receive() }
@@ -491,6 +496,25 @@ internal class WebViewMessageBusTest {
     }
 
     override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    }
+
+    override fun attach(host: Component): Boolean {
+      return true
+    }
+
+    override fun detach() {
+    }
+
+    override fun scheduleFrameUpdate(host: Component) {
+    }
+
+    override fun updateVisibility(host: Component, hidden: Boolean) {
+    }
+
+    override fun requestFocus() {
+    }
+
+    override fun clearFocus() {
     }
 
     override suspend fun close() {

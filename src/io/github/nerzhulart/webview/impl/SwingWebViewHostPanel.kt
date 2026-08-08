@@ -7,10 +7,9 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFocusManager
 import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
-import io.github.nerzhulart.webview.impl.host.NativeWebViewHostPeer
-import io.github.nerzhulart.webview.impl.host.WebViewEditShortcutPolicy
 import com.intellij.util.concurrency.annotations.RequiresEdt
 import com.intellij.util.ui.EDT
+import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 import java.awt.AWTEvent
@@ -47,7 +46,7 @@ import javax.swing.SwingUtilities
 private val LOG = logger<SwingWebViewHostPanel>()
 
 /**
- * Swing host panel that manages the lifecycle of a native [WebViewEngineBridge].
+ * Swing host panel that manages the lifecycle of a native [WebViewEngine].
  *
  * The native WebView is attached in [addNotify] when the panel joins a displayable Swing
  * hierarchy, and detached in [removeNotify] when the panel is removed. The first native show
@@ -61,10 +60,9 @@ private val LOG = logger<SwingWebViewHostPanel>()
 @ApiStatus.Internal
 internal class SwingWebViewHostPanel(
   val scope: CoroutineScope,
-  val engine: WebViewEngineBridge,
+  val engine: WebViewEngine,
   private val focusEntrySink: WebViewFocusEntrySink? = null,
-  nativeHostPeer: NativeWebViewHostPeer? = null,
-) : JPanel(BorderLayout()), SwingWebViewHost, KeyboardAwareFocusOwner {
+) : JPanel(BorderLayout()), KeyboardAwareFocusOwner {
 
   internal data class NativeFrame(
     val x: Double,
@@ -156,18 +154,17 @@ internal class SwingWebViewHostPanel(
     }
   }
 
-  override val component: JComponent
+  val component: JComponent
     get() = this
 
   override fun skipKeyEventDispatcher(event: KeyEvent): Boolean {
-    val peer = nativePeer ?: return false
-    val policy = peer.editShortcutPolicy
+    val policy = engine.editShortcutPolicy
     if (policy == WebViewEditShortcutPolicy.NONE || !focusInsideHost) return false
 
     val command = WebViewEditCommand.matchingCommand(event.keyCode, event.modifiersEx, WebViewEditCommand.DEFAULTS) ?: return false
     // Returning true only keeps the IDE dispatcher out of this shortcut. The backend policy decides
     // whether the original native event path handles it or an explicit native command is required.
-    if (policy == WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER && peer.handleWebViewShortcut(event, command)) {
+    if (policy == WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER && engine.handleWebViewShortcut(event, command)) {
       event.consume()
     }
     return true
@@ -181,12 +178,10 @@ internal class SwingWebViewHostPanel(
   private var swingFocusOwnerListener: PropertyChangeListener? = null
   private var listenersInstalled = false
   private var snapshotImage: BufferedImage? = null
-  private val componentBackedEngine = engine as? ComponentBackedWebViewEngine
-  private val nativePeer = if (componentBackedEngine == null) nativeHostPeer else null
   private var focusInsideHost = false
   private var pendingExitDirection: WebViewFocusDirection? = null
   private var focusSyncInProgress = false
-  private var nativePeerAttached = false
+  private var engineAttached = false
   private var heavyweightRegistration: Disposable? = null
   private val focusLogId = Integer.toHexString(System.identityHashCode(this))
 
@@ -233,10 +228,12 @@ internal class SwingWebViewHostPanel(
     isFocusable = true
     isRequestFocusEnabled = true
     addFocusListener(webViewFocusListener)
-    componentBackedEngine?.let {
-      installComponentBackedFocusTraversal(it.component)
-      it.component.addFocusListener(webViewFocusListener)
-      add(it.component, BorderLayout.CENTER)
+    // TODO the logic of focus traversal should be polymprphic and inside WebViewEngine?
+    // it should not depend on presence of JComponent
+    engine.component?.let {
+      installComponentBackedFocusTraversal(component)
+      it.addFocusListener(webViewFocusListener)
+      add(it, BorderLayout.CENTER)
     }
   }
 
@@ -259,10 +256,10 @@ internal class SwingWebViewHostPanel(
   @RequiresEdt
   override fun removeNotify() {
     unregisterHeavyweight()
-    if (nativePeerAttached) {
-      nativePeer?.detach()
+    if (engineAttached) {
+        engine.detach()
     }
-    nativePeerAttached = false
+    engineAttached = false
     uninstallListeners()
     super.removeNotify()
   }
@@ -284,14 +281,14 @@ internal class SwingWebViewHostPanel(
   @RequiresEdt
   private fun scheduleFrameUpdate() {
     if (ensureNativePeerAttached()) {
-      nativePeer?.scheduleFrameUpdate(this)
+      engine.scheduleFrameUpdate(this)
     }
   }
 
   @RequiresEdt
   private fun updateVisibility(hidden: Boolean) {
     if (hidden) {
-      nativePeer?.updateVisibility(this, true)
+      engine.updateVisibility(this, true)
       notifyHeavyweightChanged()
     }
     else {
@@ -306,34 +303,32 @@ internal class SwingWebViewHostPanel(
 
   @RequiresEdt
   private fun ensureNativePeerAttached(): Boolean {
-    val peer = nativePeer ?: return false
-    if (nativePeerAttached) return true
+    if (engineAttached) return true
     if (!isDisplayable) return false
-    nativePeerAttached = peer.attach(this)
-    if (nativePeerAttached) {
+    engineAttached = engine.attach(this)
+    if (engineAttached) {
       ensureHeavyweightRegistered()
     }
-    return nativePeerAttached
+    return engineAttached
   }
 
   @RequiresEdt
   private fun syncNativePeerFromSwingEvent(allowReveal: Boolean) {
-    val peer = nativePeer ?: return
     if (!ensureNativePeerAttached()) return
 
     scheduleFrameUpdate()
     notifyHeavyweightChanged()
-    if (!allowReveal || !isReadyForNativeDisplay(peer)) {
-      peer.updateVisibility(this, true)
+    if (!allowReveal || !isReadyForNativeDisplay(engine)) {
+      engine.updateVisibility(this, true)
       return
     }
 
-    peer.updateVisibility(this, false)
+    engine.updateVisibility(this, false)
   }
 
   @RequiresEdt
   private fun ensureHeavyweightRegistered() {
-    if (!engine.isHeavyweight || heavyweightRegistration != null || !nativePeerAttached) return
+    if (!engine.isHeavyweight || heavyweightRegistration != null || !engineAttached) return
     heavyweightRegistration = WebViewHeavyweightHostRegistry.register(this)
   }
 
@@ -350,34 +345,24 @@ internal class SwingWebViewHostPanel(
     }
   }
 
-  private fun isReadyForNativeDisplay(peer: NativeWebViewHostPeer): Boolean {
-    return isDisplayable && isShowing && width > 0 && height > 0 && peer.hasNonEmptyNativeBounds(this)
+  private fun isReadyForNativeDisplay(engine: WebViewEngine): Boolean {
+    return isDisplayable && isShowing && width > 0 && height > 0 && engine.hasNonEmptyNativeBounds(this)
   }
 
-  override fun requestWebViewFocus() {
+  fun requestWebViewFocus() {
     logFocus("request.webViewFocus", focusDiagnostics())
     requestSwingFocusForNativeWebViewFocusIfNeeded()
-    requestNativeWebViewFocus()
+    engine.requestFocus()
   }
 
-  private fun requestNativeWebViewFocus() {
-    logFocus("request.nativeFocus", focusDiagnostics())
-    componentBackedEngine?.requestWebViewFocus() ?: nativePeer?.requestFocus()
-  }
-
-  override fun clearWebViewFocus() {
-    componentBackedEngine?.clearWebViewFocus() ?: nativePeer?.clearFocus()
+  fun clearWebViewFocus() {
+    logFocus("clear.webViewFocus", focusDiagnostics())
+    engine.clearFocus()
   }
 
   internal fun clearWebViewFocusForSwingFocusTransfer() {
     logFocus("clear.nativeFocusForSwingTransfer", focusDiagnostics())
-    val componentEngine = componentBackedEngine
-    if (componentEngine != null) {
-      componentEngine.clearWebViewFocus()
-    }
-    else {
-      nativePeer?.clearFocusForSwingFocusTransfer()
-    }
+    engine.clearFocusForSwingFocusTransfer()
   }
 
   internal fun exitWebViewFocus(direction: WebViewFocusDirection) {
