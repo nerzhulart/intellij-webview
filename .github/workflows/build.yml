@@ -1,4 +1,4 @@
-name: Build plugins
+name: Build and publish release
 
 on:
   workflow_dispatch:
@@ -9,14 +9,12 @@ on:
         type: string
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   build:
-    name: Build plugin archives
+    name: Build release artifacts
     runs-on: ubuntu-latest
-    environment: npm
 
     steps:
       - name: Check out repository
@@ -143,15 +141,136 @@ jobs:
             build/npm/*.tgz
             build/npm/npm-packages.json
 
-      - name: Create or update GitHub release
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download plugin archives
+        uses: actions/download-artifact@v8
+        with:
+          name: webview-plugin-zips
+          path: release-assets
+
+      - name: Download npm packages
+        uses: actions/download-artifact@v8
+        with:
+          name: webview-npm-packages
+          path: release-npm
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Set up Gradle 9.1.0
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.1.0"
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+
+      - name: Validate release artifacts
+        id: artifacts
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          archive="build/distributions/webview-$VERSION.zip"
+          mapfile -d '' plugin_archives < <(find release-assets -type f -name '*.zip' -print0 | sort -z)
+          if [[ "${#plugin_archives[@]}" -ne 3 ]]; then
+            echo "::error::Expected 3 plugin ZIP files, found ${#plugin_archives[@]}."
+            exit 1
+          fi
+          for archive in "${plugin_archives[@]}"; do
+            archive_name="$(basename "$archive")"
+            if [[ "$archive_name" != *-"$VERSION".zip ]]; then
+              echo "::error::Plugin archive $archive_name does not match release version $VERSION."
+              exit 1
+            fi
+          done
+
+          mapfile -d '' root_archives < <(find release-assets -type f -name "webview-$VERSION.zip" -print0)
+          if [[ "${#root_archives[@]}" -ne 1 ]]; then
+            echo "::error::Expected one webview-$VERSION.zip, found ${#root_archives[@]}."
+            exit 1
+          fi
+
+          manifest="release-npm/npm-packages.json"
+          jq -e \
+            --arg version "$VERSION" \
+            --arg head_sha "$GITHUB_SHA" \
+            '.schemaVersion == 1 and .version == $version and .commitSha == $head_sha and (.packages | length) == 2' \
+            "$manifest" >/dev/null
+
+          jq -e '
+            ([.packages[] | [.canonicalName, .publishedName]] | sort_by(.[0])) ==
+            [
+              ["@nerzhulart/webview-sdk", "@nerzhulart/webview-sdk"],
+              ["@nerzhulart/webview-testkit", "@nerzhulart/webview-testkit"]
+            ]
+          ' "$manifest" >/dev/null
+
+          while IFS=$'\t' read -r published_name file expected_integrity; do
+            if [[ "$file" == */* || "$file" == *\\* ]]; then
+              echo "::error::Unsafe npm archive path in manifest: $file"
+              exit 1
+            fi
+            archive="release-npm/$file"
+            if [[ ! -f "$archive" ]]; then
+              echo "::error::Missing npm archive: $archive"
+              exit 1
+            fi
+
+            package_json="$(tar -xOf "$archive" package/package.json)"
+            actual_name="$(jq -r '.name' <<<"$package_json")"
+            actual_version="$(jq -r '.version' <<<"$package_json")"
+            if [[ "$actual_name" != "$published_name" || "$actual_version" != "$VERSION" ]]; then
+              echo "::error::$file contains $actual_name@$actual_version, expected $published_name@$VERSION."
+              exit 1
+            fi
+
+            actual_integrity="sha512-$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+            if [[ "$actual_integrity" != "$expected_integrity" ]]; then
+              echo "::error::Integrity mismatch for $file."
+              exit 1
+            fi
+          done < <(jq -r '.packages[] | [.publishedName, .file, .integrity] | @tsv' "$manifest")
+
+          if [[ "$VERSION" == *-* ]]; then
+            dist_tag="next"
+          else
+            dist_tag="latest"
+          fi
+          echo "dist_tag=$dist_tag" >>"$GITHUB_OUTPUT"
+          echo "plugin_archive=${root_archives[0]}" >>"$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLUGIN_ARCHIVE: ${{ steps.artifacts.outputs.plugin_archive }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          archive="$PLUGIN_ARCHIVE"
           tag="v$VERSION"
 
           if [[ ! -f "$archive" ]]; then
@@ -190,21 +309,16 @@ jobs:
       - name: Publish npm packages
         shell: bash
         env:
+          DIST_TAG: ${{ steps.artifacts.outputs.dist_tag }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-
-          if [[ "$VERSION" == *-* ]]; then
-            dist_tag="next"
-          else
-            dist_tag="latest"
-          fi
 
           advance_prerelease_latest_if_no_stable() {
             local published_name="$1"
             local latest_version
 
-            if [[ "$dist_tag" != "next" ]]; then
+            if [[ "$DIST_TAG" != "next" ]]; then
               return
             fi
             latest_version="$(npm view "$published_name" dist-tags.latest --json 2>/dev/null | jq -r '. // empty')" || latest_version=""
@@ -235,7 +349,7 @@ jobs:
               exit 1
             fi
 
-            npm publish "./build/npm/$file" --access public --tag "$dist_tag"
+            npm publish "./release-npm/$file" --access public --tag "$DIST_TAG"
             actual_integrity=""
             for attempt in {1..60}; do
               if actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>/dev/null | jq -r '.')"; then
@@ -256,11 +370,12 @@ jobs:
 
           while IFS=$'\t' read -r published_name file integrity; do
             publish_or_verify "$published_name" "$file" "$integrity"
-          done < <(jq -r '.packages | sort_by(.publishedName)[] | [.publishedName, .file, .integrity] | @tsv' build/npm/npm-packages.json)
+          done < <(jq -r '.packages | sort_by(.publishedName)[] | [.publishedName, .file, .integrity] | @tsv' release-npm/npm-packages.json)
 
       - name: Publish WebView plugin to JetBrains Marketplace
         shell: bash
         env:
+          PLUGIN_ARCHIVE: ${{ steps.artifacts.outputs.plugin_archive }}
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
@@ -270,6 +385,7 @@ jobs:
             exit 1
           fi
           gradle \
+            -PpluginArchiveFile="$PLUGIN_ARCHIVE" \
             -PpluginVersion="$VERSION" \
             :publishPlugin \
             --stacktrace \

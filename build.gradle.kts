@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
+import org.jetbrains.intellij.platform.gradle.tasks.PublishPluginTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
 
 plugins {
@@ -84,6 +85,14 @@ intellijPlatform {
 
 tasks {
   val testIdeaRoot = layout.buildDirectory.dir("test-idea-root")
+
+  named<PublishPluginTask>("publishPlugin") {
+    providers.gradleProperty("pluginArchiveFile").orNull?.let {
+      archiveFile.set(layout.projectDirectory.file(it))
+      setDependsOn(emptyList<Any>())
+    }
+  }
+
   val prepareTestNativeLibraries by registering(Sync::class) {
     from("lib/webview-native")
     into(testIdeaRoot.map { it.dir("community/plugins/ui.webview/lib/webview-native") })
