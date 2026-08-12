@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -140,3 +140,47 @@ jobs:
           path: |
             build/npm/*.tgz
             build/npm/npm-packages.json
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          archive="build/distributions/webview-$VERSION.zip"
+          tag="v$VERSION"
+
+          if [[ ! -f "$archive" ]]; then
+            echo "::error::Plugin archive not found: $archive"
+            exit 1
+          fi
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha')"
+            if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $tag points to $tag_sha, but this build used $GITHUB_SHA."
+              exit 1
+            fi
+          fi
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$archive" \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            release_args=(
+              release create "$tag"
+              "$archive"
+              --repo "$GITHUB_REPOSITORY"
+              --target "$GITHUB_SHA"
+              --title "$tag"
+              --generate-notes
+            )
+            version_without_build="${VERSION%%+*}"
+            if [[ "$version_without_build" == *-* ]]; then
+              release_args+=(--prerelease)
+            fi
+            gh "${release_args[@]}"
+          fi
