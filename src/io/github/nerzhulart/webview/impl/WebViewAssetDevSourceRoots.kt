@@ -1,7 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package io.github.nerzhulart.webview.impl
 
-import com.intellij.idea.AppMode
 import com.intellij.openapi.application.ApplicationManager
 import io.github.nerzhulart.webview.api.WebViewAssetSource
 import java.nio.file.Files
@@ -22,7 +21,6 @@ internal class WebViewAssetDevSourceRoots {
     if (java.lang.Boolean.getBoolean("io.github.nerzhulart.webview.assets.use.source.dir")) return true
 
     val application = runCatching { ApplicationManager.getApplication() }.getOrNull()
-    return application?.isUnitTestMode == true ||
-           AppMode.isRunningFromDevBuild()
+    return application?.isUnitTestMode == true
   }
 }

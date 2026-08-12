@@ -27,7 +27,7 @@ data class WebViewEngineRequirements(
   val interactiveInput: Boolean = false,
 )
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 data class WebViewEngineCapabilities(
   val assetServing: Boolean,
   val messagePassing: Boolean,
@@ -51,7 +51,7 @@ data class WebViewEngineCapabilities(
   }
 }
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 @JvmInline
 value class WebViewEngineId(val value: String) {
   override fun toString(): String = value
@@ -64,7 +64,7 @@ value class WebViewEngineId(val value: String) {
   }
 }
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 sealed class WebViewEngineAvailability private constructor() {
   data object Available : WebViewEngineAvailability()
   data class Unavailable(val reason: String) : WebViewEngineAvailability()

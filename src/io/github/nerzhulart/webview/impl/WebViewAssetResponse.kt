@@ -4,7 +4,7 @@ package io.github.nerzhulart.webview.impl
 import java.nio.charset.StandardCharsets
 import org.jetbrains.annotations.ApiStatus
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 class WebViewAssetResponse(
   val statusCode: Int,
   val statusText: String,
