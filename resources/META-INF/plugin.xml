@@ -13,7 +13,7 @@
     </ul>
   ]]></description>
 
-  <content namespace="nerzhulart">
+  <content>
     <module name="io.github.nerzhulart.webview.jcef" loading="optional"/>
   </content>
 
