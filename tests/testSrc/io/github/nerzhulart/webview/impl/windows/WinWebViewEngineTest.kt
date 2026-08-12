@@ -486,7 +486,6 @@ internal class WinWebViewEngineTest {
     }
   }
 
-  // TODO: fails after removal of Peers
   @Test
   fun transientFocusFailuresDoNotEscapeDispatcherTask() {
     val bridge = FakeWinWebView2Bridge()

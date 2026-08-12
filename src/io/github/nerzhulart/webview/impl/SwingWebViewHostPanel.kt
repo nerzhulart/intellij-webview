@@ -228,12 +228,10 @@ internal class SwingWebViewHostPanel(
     isFocusable = true
     isRequestFocusEnabled = true
     addFocusListener(webViewFocusListener)
-    // TODO the logic of focus traversal should be polymprphic and inside WebViewEngine?
-    // it should not depend on presence of JComponent
-    engine.component?.let {
-      installComponentBackedFocusTraversal(component)
-      it.addFocusListener(webViewFocusListener)
-      add(it, BorderLayout.CENTER)
+    engine.component?.let { engineComponent ->
+      installComponentBackedFocusTraversal(engineComponent)
+      engineComponent.addFocusListener(webViewFocusListener)
+      add(engineComponent, BorderLayout.CENTER)
     }
   }
 
