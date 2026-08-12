@@ -81,8 +81,10 @@ interface WebViewEngine {
 
   /**
    * Called when Swing focus moves outside the host. Backends may need a platform-specific
-   * transfer that differs from clearing native focus completely.
+   * transfer that differs from clearing native focus completely. The default implementation
+   * clears focus normally.
    */
   fun clearFocusForSwingFocusTransfer() {
+    clearFocus()
   }
 }

@@ -342,7 +342,6 @@ class SwingWebViewHostPanelGeometryTest {
     assertEquals(SwingWebViewHostPanel.NativeBounds(20, 40, 430, 260), bounds)
   }
 
-  // TODO: Fails after ComponentBackedEngine is removed
   @Test
   fun componentBackedEngine_isMountedDirectlyAndReceivesFocusDelegation() {
     val engine = FakeComponentBackedEngine()
@@ -370,7 +369,6 @@ class SwingWebViewHostPanelGeometryTest {
     }
   }
 
-  // TODO: fails after removal of Peers
   @Test
   fun swingFocusTransfer_clearsComponentBackedEngineFocus() {
     val engine = FakeComponentBackedEngine()
@@ -521,7 +519,6 @@ class SwingWebViewHostPanelGeometryTest {
     }
   }
 
-  // TODO: fails after removal of Peers
   @Test
   fun swingFocusTransfer_notifiesPageLeaveAndClearsNativeFocusOnce() {
     val engine = FakeComponentBackedEngine()

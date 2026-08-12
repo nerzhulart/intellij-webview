@@ -292,14 +292,14 @@ internal class WinWebViewEngine(
   }
 
   override fun requestFocus() {
-    if (!attached) return // TODO: moved from Peer's requestFocus, do we need it? maybe merge with state
+    if (currentParentHwnd == 0L) return
     if (state.get() != State.Active) return
     pendingFocusOp.set(FocusOp.Focus)
     scheduleFocusApply()
   }
 
   override fun clearFocus() {
-    if (!attached) return // TODO: moved from Peer's requestFocus, do we need it? maybe merge with state
+    if (currentParentHwnd == 0L) return
     if (state.get() != State.Active) return
     pendingFocusOp.set(FocusOp.Clear)
     scheduleFocusApply()
