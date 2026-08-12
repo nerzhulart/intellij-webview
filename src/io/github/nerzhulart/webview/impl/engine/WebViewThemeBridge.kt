@@ -6,6 +6,7 @@ import com.intellij.ide.ui.UISettingsListener
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.colors.EditorColorsListener
 import com.intellij.openapi.editor.colors.EditorColorsManager
+import com.intellij.ui.JBColor
 import io.github.nerzhulart.webview.api.WebViewApiId
 import io.github.nerzhulart.webview.api.WebViewCallable
 import io.github.nerzhulart.webview.api.WebViewImplementable
@@ -13,7 +14,6 @@ import io.github.nerzhulart.webview.api.WebViewInterop
 import io.github.nerzhulart.webview.api.WebViewMessageRegistration
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.StartupUiUtil
 import kotlinx.serialization.Serializable
 import javax.swing.UIManager
 import kotlin.math.ceil
@@ -58,7 +58,7 @@ private fun sendThemeChanged(themeEvents: WebViewThemeHostEvents) {
   }
 }
 
-private fun currentWebViewTheme(): String = if (StartupUiUtil.isDarkTheme) "dark" else "light"
+private fun currentWebViewTheme(): String = if (!JBColor.isBright()) "dark" else "light"
 
 private fun currentWebViewFonts(): WebViewThemeFontsPayload {
   return WebViewThemeFontsPayload(

@@ -34,7 +34,7 @@ import javax.swing.JComponent
 
 private val LOG = logger<WebViewEngineProvider>()
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 interface WebViewEngineProvider {
   val id: WebViewEngineId
   val displayName: String
@@ -192,7 +192,7 @@ private data class WebViewBusSetup(
   val themeRegistration: WebViewMessageRegistration,
 )
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 data class WebViewEngineCreationOptions(
   val strictPreference: Boolean,
   val jcefNativeBundlePath: Path?,
@@ -205,7 +205,7 @@ data class WebViewEngineCreationOptions(
   }
 }
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 data class WebViewScript(
   @Language("JavaScript")
   val script: String,

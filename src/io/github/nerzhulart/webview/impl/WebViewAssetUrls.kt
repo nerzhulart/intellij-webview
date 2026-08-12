@@ -22,12 +22,12 @@ internal fun webViewAssetCustomSchemeUrl(entry: WebViewAssetPath, query: String?
   return "$WEBVIEW_ASSET_CUSTOM_SCHEME://$WEBVIEW_ASSET_CUSTOM_SCHEME_HOST/${entry.path}${querySuffix(query)}"
 }
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 fun webViewAssetHttpsUrl(entry: WebViewAssetPath, query: String? = null): String {
   return "https://$WEBVIEW_ASSET_HTTPS_HOST/${entry.path}${querySuffix(query)}"
 }
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 fun resolveWebViewAssetUrl(url: String, resolver: WebViewAssetResolver?, diagnosticEngine: String? = null): WebViewAssetResponse? {
   val timedResponse = measureTimedValue {
     val request: WebViewAssetRequest?

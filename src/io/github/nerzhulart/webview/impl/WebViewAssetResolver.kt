@@ -12,7 +12,7 @@ import java.nio.file.Path
 
 private val LOG = logger<WebViewAssetResolver>()
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 class WebViewAssetResolver(
   private val root: WebViewAssetRoot,
   private val commonFontRoot: Path = defaultCommonFontRoot(),

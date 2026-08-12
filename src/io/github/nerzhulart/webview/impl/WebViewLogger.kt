@@ -12,7 +12,7 @@ import org.jetbrains.annotations.ApiStatus
  *
  * Category: `#io.github.nerzhulart.webview`
  */
-@ApiStatus.Internal
+@ApiStatus.Experimental
 object WebViewLogger {
   val LOG: Logger = Logger.getInstance("#io.github.nerzhulart.webview")
 

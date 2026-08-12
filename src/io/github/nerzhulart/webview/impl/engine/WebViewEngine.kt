@@ -21,7 +21,7 @@ import javax.swing.JComponent
  * unless documented otherwise. [evaluateJavaScript] is a suspend function that
  * internally dispatches to the native main thread.
  */
-@ApiStatus.Internal
+@ApiStatus.Experimental
 interface WebViewEngine {
   val isHeavyweight: Boolean
 

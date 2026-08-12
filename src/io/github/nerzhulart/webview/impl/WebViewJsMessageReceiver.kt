@@ -3,7 +3,7 @@ package io.github.nerzhulart.webview.impl
 
 import org.jetbrains.annotations.ApiStatus
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 fun interface WebViewJsMessageReceiver {
   fun transferFromJs(rawJson: String)
 }

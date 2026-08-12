@@ -3,7 +3,7 @@ package io.github.nerzhulart.webview.impl.engine
 
 import org.jetbrains.annotations.ApiStatus
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 enum class WebViewEngineKind {
   System,
   Jcef,
