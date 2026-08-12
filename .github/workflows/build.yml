@@ -10,11 +10,13 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build:
     name: Build plugin archives
     runs-on: ubuntu-latest
+    environment: npm
 
     steps:
       - name: Check out repository
@@ -184,3 +186,91 @@ jobs:
             fi
             gh "${release_args[@]}"
           fi
+
+      - name: Publish npm packages
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$VERSION" == *-* ]]; then
+            dist_tag="next"
+          else
+            dist_tag="latest"
+          fi
+
+          advance_prerelease_latest_if_no_stable() {
+            local published_name="$1"
+            local latest_version
+
+            if [[ "$dist_tag" != "next" ]]; then
+              return
+            fi
+            latest_version="$(npm view "$published_name" dist-tags.latest --json 2>/dev/null | jq -r '. // empty')" || latest_version=""
+            if [[ -z "$latest_version" || "$latest_version" == *-* ]]; then
+              npm dist-tag add "$published_name@$VERSION" latest
+            fi
+          }
+
+          publish_or_verify() {
+            local published_name="$1"
+            local file="$2"
+            local expected_integrity="$3"
+            local view_error
+            view_error="$(mktemp)"
+
+            if existing_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>"$view_error" | jq -r '.')"; then
+              if [[ "$existing_integrity" != "$expected_integrity" ]]; then
+                echo "::error::$published_name@$VERSION already exists with different integrity."
+                exit 1
+              fi
+              echo "$published_name@$VERSION is already published with matching integrity."
+              advance_prerelease_latest_if_no_stable "$published_name"
+              return
+            fi
+            if ! grep -q 'E404' "$view_error"; then
+              cat "$view_error" >&2
+              echo "::error::Unable to query $published_name@$VERSION before publishing."
+              exit 1
+            fi
+
+            npm publish "./build/npm/$file" --access public --tag "$dist_tag"
+            actual_integrity=""
+            for attempt in {1..60}; do
+              if actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>/dev/null | jq -r '.')"; then
+                break
+              fi
+              if [[ "$attempt" -eq 60 ]]; then
+                echo "::error::Unable to verify $published_name@$VERSION after publishing."
+                exit 1
+              fi
+              sleep 5
+            done
+            if [[ "$actual_integrity" != "$expected_integrity" ]]; then
+              echo "::error::Registry integrity mismatch after publishing $published_name@$VERSION."
+              exit 1
+            fi
+            advance_prerelease_latest_if_no_stable "$published_name"
+          }
+
+          while IFS=$'\t' read -r published_name file integrity; do
+            publish_or_verify "$published_name" "$file" "$integrity"
+          done < <(jq -r '.packages | sort_by(.publishedName)[] | [.publishedName, .file, .integrity] | @tsv' build/npm/npm-packages.json)
+
+      - name: Publish WebView plugin to JetBrains Marketplace
+        shell: bash
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PUBLISH_TOKEN:-}" ]]; then
+            echo "::error::PUBLISH_TOKEN repository secret is not configured"
+            exit 1
+          fi
+          gradle \
+            -PpluginVersion="$VERSION" \
+            :publishPlugin \
+            --stacktrace \
+            --no-configuration-cache
