@@ -81,6 +81,13 @@ intellijPlatform {
       sinceBuild = "262.8665"
     }
   }
+  publishing {
+    channels.set(
+      providers.gradleProperty("pluginVersion").map { pluginVersion ->
+        listOf(if ('-' in pluginVersion.substringBefore('+')) "eap" else "default")
+      },
+    )
+  }
 }
 
 tasks {
