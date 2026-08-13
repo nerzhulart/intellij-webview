@@ -1,7 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { apiId, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/webview-sdk"
-import { defineWebViewMock } from "@nerzhulart/webview-testkit"
+import { apiId, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
+import { defineWebViewMock } from "@nerzhulart/intellij-webview-sdk-testkit"
 import type {
   MarkdownChangedBlockDescriptor,
   MarkdownCommandDescriptor,

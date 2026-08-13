@@ -112,7 +112,7 @@ Parameterized previews use:
 bun webview-preview acp-chat --mock default
 ```
 
-Preview scripts use Bun and `@nerzhulart/webview-testkit`; production view code stays free of mock branches.
+Preview scripts use Bun and `@nerzhulart/intellij-webview-sdk-testkit`; production view code stays free of mock branches.
 
 ## Build Native Bridges
 

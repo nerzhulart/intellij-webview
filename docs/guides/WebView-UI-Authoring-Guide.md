@@ -6,7 +6,7 @@ Use this guide to add a local WebView page to an IntelliJ plugin that depends on
 
 - Kotlin host: `createWebViewPanel(...)`, `WebViewPanelOptions`, and `WebViewAssetRoot.forView(...)`.
 - Kotlin contracts: `WebViewApi`, `WebViewImplementable`, `WebViewCallable`, `WebViewApiId`, and `WebViewInterop`.
-- TypeScript contracts: `apiId`, `webView.callable(...)`, and `webView.implement(...)` from `@nerzhulart/webview-sdk`.
+- TypeScript contracts: `apiId`, `webView.callable(...)`, and `webView.implement(...)` from `@nerzhulart/intellij-webview-sdk`.
 - Frontend sources: `webview-src/views/<view-id>`.
 - Packaged assets: `webview/views/<view-id>` in the plugin classpath.
 
@@ -46,8 +46,8 @@ Install the exact TypeScript package versions matching the WebView Runtime plugi
 ```json
 {
   "devDependencies": {
-    "@nerzhulart/webview-sdk": "0.1.0",
-    "@nerzhulart/webview-testkit": "0.1.0",
+    "@nerzhulart/intellij-webview-sdk": "0.1.0",
+    "@nerzhulart/intellij-webview-sdk-testkit": "0.1.0",
     "vite": "^8.0.0"
   }
 }
@@ -65,7 +65,7 @@ import {
   defineWebViewViewConfigs,
   selectWebViewViewBuildEntries,
   withWebViewBuildWatch,
-} from "@nerzhulart/webview-sdk/vite"
+} from "@nerzhulart/intellij-webview-sdk/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
 const outputRoot = process.env.WEBVIEW_OUTPUT_ROOT
@@ -133,7 +133,7 @@ panel.interop.implement(EditorHostApi.ID, editorHostApi)
 TypeScript calls it:
 
 ```ts
-import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
+import { apiId, webView, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
 
 interface EditorHostApi extends WebViewCallable {
   openFile(params: { path: string; line?: number }): Promise<{ opened: boolean }>
@@ -178,12 +178,12 @@ webview-src/test/my-view/
   my-view.browser.test.ts
 ```
 
-Define browser-side host behavior with `defineWebViewMock(...)` from `@nerzhulart/webview-testkit`. Production view code continues to import only `@nerzhulart/webview-sdk`.
+Define browser-side host behavior with `defineWebViewMock(...)` from `@nerzhulart/intellij-webview-sdk-testkit`. Production view code continues to import only `@nerzhulart/intellij-webview-sdk`.
 
 A runnable preview entry point looks like this:
 
 ```ts
-import { runWebViewMockPreview } from "@nerzhulart/webview-testkit/node"
+import { runWebViewMockPreview } from "@nerzhulart/intellij-webview-sdk-testkit/node"
 
 await runWebViewMockPreview({
   importMetaUrl: import.meta.url,
@@ -217,7 +217,7 @@ Start the preview from the test and interact through user-visible locators:
 
 ```ts
 import { expect, test } from "@playwright/test"
-import { startWebViewMockPreview } from "@nerzhulart/webview-testkit"
+import { startWebViewMockPreview } from "@nerzhulart/intellij-webview-sdk-testkit"
 
 test("runs the view", async ({ page }) => {
   const preview = await startWebViewMockPreview({
@@ -244,7 +244,7 @@ Use `window.__WVI_MOCK__.calls` only when asserting a bridge call that cannot be
 Close transient browser UI when Swing focus leaves the WebView:
 
 ```ts
-import { addWebViewFocusLeaveListener } from "@nerzhulart/webview-sdk"
+import { addWebViewFocusLeaveListener } from "@nerzhulart/intellij-webview-sdk"
 
 const dispose = addWebViewFocusLeaveListener(() => closePopup())
 ```

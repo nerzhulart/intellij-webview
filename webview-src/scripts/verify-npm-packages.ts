@@ -18,8 +18,8 @@ const repositoryRoot = resolve(sourceRoot, "..")
 const packageOutputRoot = resolve(repositoryRoot, "build", "npm")
 const fixtureRoot = resolve(packageOutputRoot, "verification")
 const manifest = JSON.parse(await readFile(resolve(packageOutputRoot, "npm-packages.json"), "utf8")) as PackageManifest
-const sdk = requiredPackage("@nerzhulart/webview-sdk")
-const testkit = requiredPackage("@nerzhulart/webview-testkit")
+const sdk = requiredPackage("@nerzhulart/intellij-webview-sdk")
+const testkit = requiredPackage("@nerzhulart/intellij-webview-sdk-testkit")
 
 await rm(fixtureRoot, { recursive: true, force: true })
 await Promise.all([
@@ -38,15 +38,15 @@ await Promise.all([
       verify: "node verify.mjs",
     },
     devDependencies: {
-      "@nerzhulart/webview-sdk": localPackageSpec(sdk.file),
-      "@nerzhulart/webview-testkit": localPackageSpec(testkit.file),
+      "@nerzhulart/intellij-webview-sdk": localPackageSpec(sdk.file),
+      "@nerzhulart/intellij-webview-sdk-testkit": localPackageSpec(testkit.file),
       "@types/node": "^22.10.0",
       typescript: "^5.6.0",
       vite: "^8.0.0",
     },
   }),
   writeJson(resolve(fixtureRoot, "tsconfig.json"), {
-    extends: "@nerzhulart/webview-sdk/tsconfig.view.json",
+    extends: "@nerzhulart/intellij-webview-sdk/tsconfig.view.json",
     compilerOptions: {
       strict: true,
       types: ["node"],
@@ -59,7 +59,7 @@ await Promise.all([
 <body><script type="module" src="./src/main.ts"></script></body>
 </html>
 `, "utf8"),
-  writeFile(resolve(fixtureRoot, "views", "smoke", "src", "main.ts"), `import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
+  writeFile(resolve(fixtureRoot, "views", "smoke", "src", "main.ts"), `import { apiId, webView, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
 
 interface VerificationHostApi extends WebViewCallable {
   ping(): Promise<string>
@@ -68,15 +68,15 @@ interface VerificationHostApi extends WebViewCallable {
 const verificationHostApiId = apiId<VerificationHostApi>()("verification.host")
 void webView.callable(verificationHostApiId)
 `, "utf8"),
-  writeFile(resolve(fixtureRoot, "test", "smoke", "mocks", "default.ts"), `import { defineWebViewMock } from "@nerzhulart/webview-testkit"
+  writeFile(resolve(fixtureRoot, "test", "smoke", "mocks", "default.ts"), `import { defineWebViewMock } from "@nerzhulart/intellij-webview-sdk-testkit"
 
 export default defineWebViewMock(() => {})
 `, "utf8"),
-  writeFile(resolve(fixtureRoot, "verify-imports.ts"), `import { apiId, type WebViewCallable } from "@nerzhulart/webview-sdk"
-import { defineWebViewViewConfig } from "@nerzhulart/webview-sdk/vite"
-import { defineWebViewMock, startWebViewMockPreview } from "@nerzhulart/webview-testkit"
-import { runWebViewMockPreview } from "@nerzhulart/webview-testkit/node"
-import { withWebViewMockBridge } from "@nerzhulart/webview-testkit/vite"
+  writeFile(resolve(fixtureRoot, "verify-imports.ts"), `import { apiId, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
+import { defineWebViewViewConfig } from "@nerzhulart/intellij-webview-sdk/vite"
+import { defineWebViewMock, startWebViewMockPreview } from "@nerzhulart/intellij-webview-sdk-testkit"
+import { runWebViewMockPreview } from "@nerzhulart/intellij-webview-sdk-testkit/node"
+import { withWebViewMockBridge } from "@nerzhulart/intellij-webview-sdk-testkit/vite"
 
 void [apiId, defineWebViewViewConfig, defineWebViewMock, startWebViewMockPreview, runWebViewMockPreview, withWebViewMockBridge]
 type Verification = WebViewCallable
@@ -84,15 +84,15 @@ type Verification = WebViewCallable
   writeFile(resolve(fixtureRoot, "build.mjs"), `import { dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { build } from "vite"
-import { defineWebViewViewConfig } from "@nerzhulart/webview-sdk/vite"
+import { defineWebViewViewConfig } from "@nerzhulart/intellij-webview-sdk/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
 await build(defineWebViewViewConfig({ webviewSrcDir, id: "smoke" }))
 `, "utf8"),
   writeFile(resolve(fixtureRoot, "verify.mjs"), `import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { apiId } from "@nerzhulart/webview-sdk"
-import { defineWebViewMock, startWebViewMockPreview } from "@nerzhulart/webview-testkit"
+import { apiId } from "@nerzhulart/intellij-webview-sdk"
+import { defineWebViewMock, startWebViewMockPreview } from "@nerzhulart/intellij-webview-sdk-testkit"
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url))
 const id = apiId()("verification")

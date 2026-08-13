@@ -4,7 +4,7 @@ import cytoscape, { type Core, type ElementDefinition, type EventObject, type La
 import fcose from "cytoscape-fcose"
 import { marked } from "marked"
 import mermaid from "mermaid"
-import { apiId, webView, webViewTheme, type WebViewCallable } from "@nerzhulart/webview-sdk"
+import { apiId, webView, webViewTheme, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
 
 interface MarkdownGraphDto {
   nodes: MarkdownGraphNodeDto[]

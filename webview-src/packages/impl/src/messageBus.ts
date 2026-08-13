@@ -14,7 +14,7 @@ import type {
   WebViewImplementable,
   WebViewImplementation,
   WebViewRuntimeOptions,
-} from "@nerzhulart/webview-sdk"
+} from "@nerzhulart/intellij-webview-sdk"
 import {
   callKey,
   CANCEL_CALL_METHOD,

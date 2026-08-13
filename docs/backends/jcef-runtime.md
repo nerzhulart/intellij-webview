@@ -25,7 +25,7 @@ Asset-backed pages use the virtual origin `https://ij-webview-assets.local/`. CE
 
 The native transport uses the JCEF query handler for page-to-host frames and JavaScript evaluation for host-to-page frames. JSON-RPC state remains in the common message-bus implementation so every engine exposes the same typed API.
 
-The raw transport names are internal details. Consumer plugins should use `WebViewInterop`, `WebViewApiId`, and `@nerzhulart/webview-sdk`.
+The raw transport names are internal details. Consumer plugins should use `WebViewInterop`, `WebViewApiId`, and `@nerzhulart/intellij-webview-sdk`.
 
 ## Constraints
 

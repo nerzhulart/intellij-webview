@@ -7,7 +7,7 @@ import type {
   WebViewFocusEntry,
   WebViewFocusExit,
   WebViewMessageRegistration,
-} from "@nerzhulart/webview-sdk"
+} from "@nerzhulart/intellij-webview-sdk"
 
 interface FocusPageImplementation {
   enter(params: WebViewFocusEntry): void

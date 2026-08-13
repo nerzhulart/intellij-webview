@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { apiId, webView, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/webview-sdk"
+import { apiId, webView, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 
 // Typed mirror of the Kotlin `AcpBridgeApi` (namespace "acp.bridge").
 

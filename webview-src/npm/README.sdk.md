@@ -9,14 +9,14 @@ Install the package under its published name:
 ```json
 {
   "devDependencies": {
-    "@nerzhulart/webview-sdk": "{{VERSION}}"
+    "@nerzhulart/intellij-webview-sdk": "{{VERSION}}"
   }
 }
 ```
 
 ```ts
-import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
-import { defineWebViewViewConfigs } from "@nerzhulart/webview-sdk/vite"
+import { apiId, webView, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
+import { defineWebViewViewConfigs } from "@nerzhulart/intellij-webview-sdk/vite"
 ```
 
 Pin the exact version matching the WebView runtime plugin. Do not use a floating semver range.

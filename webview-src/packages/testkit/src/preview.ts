@@ -2,7 +2,7 @@
 
 import { createServer as createNetServer } from "node:net"
 import { createServer, type Plugin, type UserConfig } from "vite"
-import { defineWebViewViewConfig } from "@nerzhulart/webview-sdk/vite"
+import { defineWebViewViewConfig } from "@nerzhulart/intellij-webview-sdk/vite"
 import { resolveWebViewMockIconSetAsset } from "./iconSetAssetResolver"
 import { withWebViewMockBridge } from "./vite"
 import type { StartWebViewMockPreviewOptions, WebViewMockPreviewServer } from "./core"

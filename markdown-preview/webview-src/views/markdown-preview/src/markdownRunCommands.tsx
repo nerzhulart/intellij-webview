@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { AllIcons } from "@nerzhulart/webview-sdk"
+import { AllIcons } from "@nerzhulart/intellij-webview-sdk"
 import "@nerzhulart/webview-controls/define/icon"
 import type { CSSProperties, MouseEvent } from "react"
 import { hastClassNames, hastText, type HastNode } from "./markdownHastUtils"

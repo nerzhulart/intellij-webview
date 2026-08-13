@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { IconSet } from "@nerzhulart/webview-sdk"
+import { IconSet } from "@nerzhulart/intellij-webview-sdk"
 import agentIcon from "../../icons/acpChatAgent.svg"
 import agentDarkIcon from "../../icons/acpChatAgent_dark.svg"
 import brainIcon from "../../icons/acpChatBrain.svg"

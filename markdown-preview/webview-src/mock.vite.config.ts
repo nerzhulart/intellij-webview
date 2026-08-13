@@ -3,8 +3,8 @@
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { defineWebViewViewConfig } from "@nerzhulart/webview-sdk/vite"
-import { withWebViewMockBridge } from "@nerzhulart/webview-testkit/vite"
+import { defineWebViewViewConfig } from "@nerzhulart/intellij-webview-sdk/vite"
+import { withWebViewMockBridge } from "@nerzhulart/intellij-webview-sdk-testkit/vite"
 
 const webviewSrcDir = dirname(fileURLToPath(import.meta.url))
 const iconResourceRoot = resolve(webviewSrcDir, "../../../../platform/icons/src")

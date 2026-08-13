@@ -8,12 +8,12 @@ Install it together with the matching SDK version:
 ```json
 {
   "devDependencies": {
-    "@nerzhulart/webview-sdk": "{{VERSION}}",
-    "@nerzhulart/webview-testkit": "{{VERSION}}"
+    "@nerzhulart/intellij-webview-sdk": "{{VERSION}}",
+    "@nerzhulart/intellij-webview-sdk-testkit": "{{VERSION}}"
   }
 }
 ```
 
-Browser mocks import `defineWebViewMock` from `@nerzhulart/webview-testkit`. Runnable preview scripts import `runWebViewMockPreview` from `@nerzhulart/webview-testkit/node`.
+Browser mocks import `defineWebViewMock` from `@nerzhulart/intellij-webview-sdk-testkit`. Runnable preview scripts import `runWebViewMockPreview` from `@nerzhulart/intellij-webview-sdk-testkit/node`.
 
 Pin both packages to the exact version matching the WebView runtime plugin. Licensed under Apache-2.0.

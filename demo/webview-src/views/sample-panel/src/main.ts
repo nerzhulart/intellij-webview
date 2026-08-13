@@ -3,7 +3,7 @@
 import ReactLib from "react"
 import { createRoot } from "react-dom/client"
 import mermaid from "mermaid"
-import { webView, webViewTheme } from "@nerzhulart/webview-sdk"
+import { webView, webViewTheme } from "@nerzhulart/intellij-webview-sdk"
 
 declare global {
   interface Window {

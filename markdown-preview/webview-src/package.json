@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@nerzhulart/webview-sdk": "file:../../webview-src",
+    "@nerzhulart/intellij-webview-sdk": "file:../../webview-src",
     "@nerzhulart/webview-controls": "file:../../webview-src/packages/controls",
     "d3-selection": "^3.0.0",
     "d3-zoom": "^3.0.0",
@@ -26,7 +26,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@nerzhulart/webview-testkit": "file:../../webview-src/packages/testkit",
+    "@nerzhulart/intellij-webview-sdk-testkit": "file:../../webview-src/packages/testkit",
     "@playwright/test": "^1.56.0",
     "@types/d3-selection": "^3.0.11",
     "@types/d3-zoom": "^3.0.8",

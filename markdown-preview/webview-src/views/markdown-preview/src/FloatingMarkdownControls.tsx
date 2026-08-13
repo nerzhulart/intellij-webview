@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { addWebViewFocusLeaveListener, AllIcons } from "@nerzhulart/webview-sdk"
+import { addWebViewFocusLeaveListener, AllIcons } from "@nerzhulart/intellij-webview-sdk"
 import { useEffect, useMemo, useState, type ChangeEvent } from "react"
 import type { MarkdownPreviewSettings } from "./markdownPreviewTypes"
 

@@ -2,7 +2,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useState, type MouseEvent } from "react"
 import ReactMarkdown, { type Components, type Options } from "react-markdown"
-import { getPerfLogger } from "@nerzhulart/webview-sdk"
+import { getPerfLogger } from "@nerzhulart/intellij-webview-sdk"
 import rehypeRaw from "rehype-raw"
 import rehypeSanitize from "rehype-sanitize"
 import rehypeSlug from "rehype-slug"

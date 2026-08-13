@@ -2,7 +2,7 @@
 /// <reference path="./bun-test.d.ts" />
 
 import { beforeEach, describe, expect, test } from "bun:test"
-import type { WebViewBridge, WebViewTheme, WebViewThemeApi } from "@nerzhulart/webview-sdk"
+import type { WebViewBridge, WebViewTheme, WebViewThemeApi } from "@nerzhulart/intellij-webview-sdk"
 
 type PostedMessage = Record<string, unknown>
 
