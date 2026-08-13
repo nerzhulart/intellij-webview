@@ -1,7 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { apiId } from "@nerzhulart/webview-sdk"
-import { defineWebViewMock, type MockCallable } from "@nerzhulart/webview-testkit"
+import { apiId } from "@nerzhulart/intellij-webview-sdk"
+import { defineWebViewMock, type MockCallable } from "@nerzhulart/intellij-webview-sdk-testkit"
 import type { AcpBridgeHostApi, AcpBridgePageApi } from "../../../views/acp-chat/src/bridge/webviewApi"
 
 const acpBridgeHostApiId = apiId<AcpBridgeHostApi>()("acp.bridge")

@@ -1,7 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 import { useEffect, useRef, useState } from "react"
-import { AllIcons } from "@nerzhulart/webview-sdk"
+import { AllIcons } from "@nerzhulart/intellij-webview-sdk"
 import { select } from "d3-selection"
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from "d3-zoom"
 import type mermaidApi from "mermaid"

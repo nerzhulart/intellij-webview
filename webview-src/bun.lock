@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@nerzhulart/webview-sdk",
+      "name": "@nerzhulart/intellij-webview-sdk",
       "dependencies": {
         "@base-ui/react": "1.6.0",
         "lit": "^3.0.0",

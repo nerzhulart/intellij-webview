@@ -5,7 +5,7 @@ import "@nerzhulart/webview-controls/jsx"
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
 import type { JbControlOption } from "@nerzhulart/webview-controls"
-import { AllIcons, defineWebViewNotification, webView } from "@nerzhulart/webview-sdk"
+import { AllIcons, defineWebViewNotification, webView } from "@nerzhulart/intellij-webview-sdk"
 
 const root = document.getElementById("root")
 if (!root) {

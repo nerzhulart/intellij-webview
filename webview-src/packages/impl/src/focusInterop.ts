@@ -8,7 +8,7 @@ import {
   type WebViewFocusDirection,
   type WebViewFocusHostApi,
   type WebViewFocusPageApi,
-} from "@nerzhulart/webview-sdk"
+} from "@nerzhulart/intellij-webview-sdk"
 
 const FOCUS_API_NAMESPACE = "webview.focus"
 const FOCUS_BOUNDARY_ATTRIBUTE = "data-webview-focus-boundary"

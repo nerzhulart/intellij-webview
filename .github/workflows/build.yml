@@ -222,8 +222,8 @@ jobs:
           jq -e '
             ([.packages[] | [.canonicalName, .publishedName]] | sort_by(.[0])) ==
             [
-              ["@nerzhulart/webview-sdk", "@nerzhulart/webview-sdk"],
-              ["@nerzhulart/webview-testkit", "@nerzhulart/webview-testkit"]
+              ["@nerzhulart/intellij-webview-sdk", "@nerzhulart/intellij-webview-sdk"],
+              ["@nerzhulart/intellij-webview-sdk-testkit", "@nerzhulart/intellij-webview-sdk-testkit"]
             ]
           ' "$manifest" >/dev/null
 
@@ -313,19 +313,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-
-          advance_prerelease_latest_if_no_stable() {
-            local published_name="$1"
-            local latest_version
-
-            if [[ "$DIST_TAG" != "next" ]]; then
-              return
-            fi
-            latest_version="$(npm view "$published_name" dist-tags.latest --json 2>/dev/null | jq -r '. // empty')" || latest_version=""
-            if [[ -z "$latest_version" || "$latest_version" == *-* ]]; then
-              npm dist-tag add "$published_name@$VERSION" latest
-            fi
-          }
+          unset NODE_AUTH_TOKEN
 
           publish_or_verify() {
             local published_name="$1"
@@ -340,7 +328,6 @@ jobs:
                 exit 1
               fi
               echo "$published_name@$VERSION is already published with matching integrity."
-              advance_prerelease_latest_if_no_stable "$published_name"
               return
             fi
             if ! grep -q 'E404' "$view_error"; then
@@ -365,7 +352,6 @@ jobs:
               echo "::error::Registry integrity mismatch after publishing $published_name@$VERSION."
               exit 1
             fi
-            advance_prerelease_latest_if_no_stable "$published_name"
           }
 
           while IFS=$'\t' read -r published_name file integrity; do

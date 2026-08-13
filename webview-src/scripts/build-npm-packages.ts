@@ -29,8 +29,8 @@ await writePackageFiles()
 
 const packages = await Promise.all([
   packPackage({
-    canonicalName: "@nerzhulart/webview-sdk",
-    publishedName: "@nerzhulart/webview-sdk",
+    canonicalName: "@nerzhulart/intellij-webview-sdk",
+    publishedName: "@nerzhulart/intellij-webview-sdk",
     stage: sdkStage,
     requiredFiles: [
       "dist/api/index.js",
@@ -45,8 +45,8 @@ const packages = await Promise.all([
     ],
   }),
   packPackage({
-    canonicalName: "@nerzhulart/webview-testkit",
-    publishedName: "@nerzhulart/webview-testkit",
+    canonicalName: "@nerzhulart/intellij-webview-sdk-testkit",
+    publishedName: "@nerzhulart/intellij-webview-sdk-testkit",
     stage: testkitStage,
     requiredFiles: [
       "dist/index.js",
@@ -129,7 +129,7 @@ async function buildJavaScript(): Promise<void> {
       outdir: resolve(testkitStage, "dist"),
       target: "node",
       packages: "external",
-      external: ["@nerzhulart/webview-sdk", "@nerzhulart/webview-sdk/*", "vite"],
+      external: ["@nerzhulart/intellij-webview-sdk", "@nerzhulart/intellij-webview-sdk/*", "vite"],
       splitting: true,
       naming: {
         entry: "[name].[ext]",
@@ -172,7 +172,7 @@ async function writePackageReadme(templatePath: string, outputPath: string): Pro
 
 function sdkPackageJson(): Record<string, unknown> {
   return {
-    name: "@nerzhulart/webview-sdk",
+    name: "@nerzhulart/intellij-webview-sdk",
     version,
     description: "TypeScript SDK for IntelliJ WebView",
     type: "module",
@@ -205,7 +205,7 @@ function sdkPackageJson(): Record<string, unknown> {
 
 function testkitPackageJson(): Record<string, unknown> {
   return {
-    name: "@nerzhulart/webview-testkit",
+    name: "@nerzhulart/intellij-webview-sdk-testkit",
     version,
     description: "Browser mock and preview testkit for the IntelliJ WebView TypeScript SDK",
     type: "module",
@@ -235,7 +235,7 @@ function testkitPackageJson(): Record<string, unknown> {
     bin: { "webview-preview": "./dist/cli.js" },
     files: ["dist", "types", "README.md", "LICENSE"],
     peerDependencies: {
-      "@nerzhulart/webview-sdk": version,
+      "@nerzhulart/intellij-webview-sdk": version,
       vite: "^8.0.0",
     },
     engines: {

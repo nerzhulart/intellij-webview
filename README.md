@@ -8,7 +8,7 @@ WebView Runtime is an experimental, independently installed plugin for IntelliJ-
 
 - Bundled frontend assets served from plugin resources through a virtual WebView origin.
 - A typed JSON-RPC bridge built around `WebViewApi`, `WebViewApiId`, and `WebViewInterop`.
-- A small TypeScript API exposed as `@nerzhulart/webview-sdk`.
+- A small TypeScript API exposed as `@nerzhulart/intellij-webview-sdk`.
 - Native WKWebView and WebView2 backends, plus JCEF fallback.
 - Browser previews, deterministic host mocks, and Playwright smoke tests.
 - Shared Web Components and optional React controls styled for IDE UI.
@@ -60,10 +60,10 @@ interface EditorHostApi : WebViewImplementable {
 panel.interop.implement(EditorHostApi.ID, editorHostApi)
 ```
 
-TypeScript calls it through `@nerzhulart/webview-sdk`:
+TypeScript calls it through `@nerzhulart/intellij-webview-sdk`:
 
 ```ts
-import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
+import { apiId, webView, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
 
 interface EditorHostApi extends WebViewCallable {
   openFile(params: { path: string }): Promise<void>
@@ -92,8 +92,8 @@ The source manifests remain private workspace packages, while releases publish p
 ```json
 {
   "devDependencies": {
-    "@nerzhulart/webview-sdk": "0.1.0",
-    "@nerzhulart/webview-testkit": "0.1.0"
+    "@nerzhulart/intellij-webview-sdk": "0.1.0",
+    "@nerzhulart/intellij-webview-sdk-testkit": "0.1.0"
   }
 }
 ```

@@ -67,7 +67,7 @@ Close the returned registration if it has a shorter lifetime than the panel.
 ## Call Kotlin from TypeScript
 
 ```ts
-import { apiId, webView, type WebViewCallable } from "@nerzhulart/webview-sdk"
+import { apiId, webView, type WebViewCallable } from "@nerzhulart/intellij-webview-sdk"
 
 type OpenFileRequest = { path: string; line?: number }
 type OpenFileResult = { opened: boolean }
@@ -105,7 +105,7 @@ panel.interop.callable(EditorPageApi.ID).selectionChanged(selection)
 TypeScript implements the matching protocol:
 
 ```ts
-import { apiId, webView, type WebViewImplementable } from "@nerzhulart/webview-sdk"
+import { apiId, webView, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 
 interface EditorPageApi extends WebViewImplementable {
   selectionChanged(params: { start: number; end: number }): void
@@ -151,7 +151,7 @@ export function editorHostApi() {
 }
 ```
 
-Browser mocks implement the same typed IDs through `@nerzhulart/webview-testkit`; production code does not switch into a mock mode.
+Browser mocks implement the same typed IDs through `@nerzhulart/intellij-webview-sdk-testkit`; production code does not switch into a mock mode.
 
 ## Review Checklist
 

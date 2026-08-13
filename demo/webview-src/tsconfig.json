@@ -1,13 +1,13 @@
 {
-  "extends": "@nerzhulart/webview-sdk/tsconfig.view.json",
+  "extends": "@nerzhulart/intellij-webview-sdk/tsconfig.view.json",
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "types": ["node"],
     "paths": {
-      "@nerzhulart/webview-sdk": ["../../webview-src/packages/api/src/index.ts"],
-      "@nerzhulart/webview-sdk/vite": ["../../webview-src/packages/build/src/index.ts"],
-      "@nerzhulart/webview-testkit": ["../../webview-src/packages/testkit/src/index.ts"],
-      "@nerzhulart/webview-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"]
+      "@nerzhulart/intellij-webview-sdk": ["../../webview-src/packages/api/src/index.ts"],
+      "@nerzhulart/intellij-webview-sdk/vite": ["../../webview-src/packages/build/src/index.ts"],
+      "@nerzhulart/intellij-webview-sdk-testkit": ["../../webview-src/packages/testkit/src/index.ts"],
+      "@nerzhulart/intellij-webview-sdk-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"]
     }
   },
   "include": ["build.ts", "vite.config.ts", "playwright.config.ts", "views/**/*.ts", "views/**/*.tsx", "views/**/*.d.ts", "test/**/*.ts", "test/**/*.tsx"]

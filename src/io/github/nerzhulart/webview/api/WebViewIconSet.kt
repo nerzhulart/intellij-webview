@@ -31,7 +31,7 @@ class WebViewIconSet private constructor(
     }
 
     /**
-     * Returns the platform `AllIcons` icon set expected by the frontend `AllIcons` export from `@nerzhulart/webview-sdk`.
+     * Returns the platform `AllIcons` icon set expected by the frontend `AllIcons` export from `@nerzhulart/intellij-webview-sdk`.
      */
     @JvmStatic
     fun allIcons(): WebViewIconSet = of("AllIcons", AllIcons::class.java)

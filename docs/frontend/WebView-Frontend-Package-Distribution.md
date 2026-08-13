@@ -9,8 +9,8 @@ The npm artifacts and their source manifests use the project owner's npm scope d
 ```json
 {
   "devDependencies": {
-    "@nerzhulart/webview-sdk": "0.1.0",
-    "@nerzhulart/webview-testkit": "0.1.0"
+    "@nerzhulart/intellij-webview-sdk": "0.1.0",
+    "@nerzhulart/intellij-webview-sdk-testkit": "0.1.0"
   }
 }
 ```
@@ -30,7 +30,7 @@ Changing the target IDE without changing the frontend API does not require a sep
 
 ## Public Package Surface
 
-`@nerzhulart/webview-sdk` provides:
+`@nerzhulart/intellij-webview-sdk` provides:
 
 - `.` — typed browser APIs such as `apiId` and `webView`;
 - `./vite` — supported Vite configuration helpers;
@@ -39,7 +39,7 @@ Changing the target IDE without changing the frontend API does not require a sep
 
 The low-level `./runtime` entry is intentionally not published. The installed runtime plugin supplies and injects the bridge in IDE-hosted views.
 
-`@nerzhulart/webview-testkit` provides:
+`@nerzhulart/intellij-webview-sdk-testkit` provides:
 
 - `.` — mock definitions and preview server API;
 - `./node` — runnable preview helpers;

@@ -21,7 +21,7 @@ val assetRoot = WebViewAssetRoot.forView("chat")
 Define the same ID:
 
 ```ts
-import { AllIcons, IconSet } from "@nerzhulart/webview-sdk"
+import { AllIcons, IconSet } from "@nerzhulart/intellij-webview-sdk"
 
 const ChatIcons = IconSet.define("ChatIcons")
 

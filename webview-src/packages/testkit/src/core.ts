@@ -15,7 +15,7 @@ import type {
   WebViewNotificationDescriptor,
   WebViewTheme,
   WebViewThemeChangedParams,
-} from "@nerzhulart/webview-sdk"
+} from "@nerzhulart/intellij-webview-sdk"
 
 export type MockWebViewSide = "host" | "page"
 type WebViewStringKey<Api> = Extract<keyof Api, string>

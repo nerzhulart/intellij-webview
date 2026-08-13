@@ -12,10 +12,10 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.0.0",
     "@assistant-ui/react": "^0.14.0",
-    "@nerzhulart/webview-sdk": "file:../../webview-src",
+    "@nerzhulart/intellij-webview-sdk": "file:../../webview-src",
     "@nerzhulart/webview-controls": "file:../../webview-src/packages/controls",
     "@nerzhulart/webview-react-controls": "file:../../webview-src/packages/react-controls",
-    "@nerzhulart/webview-testkit": "file:../../webview-src/packages/testkit",
+    "@nerzhulart/intellij-webview-sdk-testkit": "file:../../webview-src/packages/testkit",
     "cytoscape": "^3.33.1",
     "cytoscape-fcose": "^2.2.0",
     "d3-selection": "^3.0.0",
