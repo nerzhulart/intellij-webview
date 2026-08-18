@@ -24,7 +24,6 @@ import java.nio.file.Path
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import org.junit.jupiter.api.Disabled
 import javax.swing.JComponent
 import javax.swing.JRootPane
 import javax.swing.JPanel
@@ -605,7 +604,7 @@ class SwingWebViewHostPanelGeometryTest {
     override suspend fun transferToJs(rawJson: String) {
     }
 
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
     }
 
     override suspend fun close() {
@@ -678,7 +677,7 @@ class SwingWebViewHostPanelGeometryTest {
     override suspend fun transferToJs(rawJson: String) {
     }
 
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
     }
 
     override fun attach(host: Component): Boolean {

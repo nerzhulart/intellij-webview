@@ -2,6 +2,7 @@
 package io.github.nerzhulart.webview.impl
 
 import com.intellij.openapi.diagnostic.Logger
+import io.github.nerzhulart.webview.api.WebViewMessageBus
 import io.github.nerzhulart.webview.api.WebViewMessageRegistration
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
@@ -18,17 +19,11 @@ internal class WebViewConsoleCapture(consoleLogCategory: String = CONSOLE_LOG_CA
   @Volatile
   private var viewId: String? = null
 
-  fun register(bus: WebViewMessageBusImpl): WebViewMessageRegistration {
-    return bus.registerNotificationHandler(ConsoleNotification) { payload, _ ->
-      log(payload)
-    }
-  }
-
   fun setViewId(viewId: String?) {
     this.viewId = viewId
   }
 
-  private fun log(payload: WebViewConsolePayload) {
+  internal fun log(payload: WebViewConsolePayload) {
     val message = formatMessage(payload)
     val logger = logger()
     when (payload.method.lowercase()) {
@@ -215,6 +210,14 @@ internal class WebViewConsoleCapture(consoleLogCategory: String = CONSOLE_LOG_CA
       })();
     """.trimIndent())
   }
+}
+
+internal fun WebViewMessageBus.registerConsole(consoleLogCategory: String): WebViewConsoleCapture {
+  val capture = WebViewConsoleCapture(consoleLogCategory)
+  this.registerNotificationHandler(ConsoleNotification) { payload, _ ->
+    capture.log(payload)
+  }
+  return capture
 }
 
 internal const val CONSOLE_LOG_CATEGORY: String = "#io.github.nerzhulart.webview.console"

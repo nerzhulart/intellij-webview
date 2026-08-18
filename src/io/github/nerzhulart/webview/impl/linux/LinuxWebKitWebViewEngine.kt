@@ -124,8 +124,8 @@ internal class LinuxWebKitWebViewEngine(
     }
   }
 
-  override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
-    inboundMessageHandler = receiver::transferFromJs
+  override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
+    inboundMessageHandler = handler::transferFromJs
   }
 
   override fun attach(host: Component): Boolean {

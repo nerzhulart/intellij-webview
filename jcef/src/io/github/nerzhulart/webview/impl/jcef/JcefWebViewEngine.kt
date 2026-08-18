@@ -193,8 +193,8 @@ internal class JcefWebViewEngine(
     scheduleDeliveryFlush()
   }
 
-  override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
-    messageReceiver = receiver
+  override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
+    messageReceiver = handler
   }
 
   override fun attach(host: Component): Boolean {

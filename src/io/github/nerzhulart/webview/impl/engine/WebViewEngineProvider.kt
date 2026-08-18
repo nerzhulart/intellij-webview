@@ -9,13 +9,14 @@ import com.intellij.openapi.vfs.toNioPathOrNull
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewInterop
-import io.github.nerzhulart.webview.api.WebViewMessageRegistration
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.impl.CONSOLE_LOG_CATEGORY
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
+import io.github.nerzhulart.webview.impl.registerConsole
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
+import io.github.nerzhulart.webview.impl.rpc.registerRuntimeInfoHandler
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DisposableHandle
@@ -47,123 +48,27 @@ interface WebViewEngineProvider {
   suspend fun createWebView(
     webViewScope: CoroutineScope,
     options: WebViewEngineCreationOptions,
-  ): CreatedWebView {
+  ): WebView {
     return LOG.traceWebViewPerf(
       "webview.provider.createWebView.total",
       "provider=$id, debugName=${options.debugName.orEmpty()}",
     ) {
-      val provider = this
-      val consoleCapture = WebViewConsoleCapture(options.consoleLogCategory)
-      val engine = LOG.traceWebViewPerf(
-        "webview.provider.engine.create",
-        "provider=$id, debugName=${options.debugName.orEmpty()}",
+
+      val engine = LOG.traceWebViewPerf("webview.provider.engine.create", "provider=$id, debugName=${options.debugName.orEmpty()}",
       ) {
         createEngine(webViewScope, options.withDocumentStartScript(WebViewConsoleCapture.DOCUMENT_START_SCRIPT))
       }
-      val runtimeInfoValue = runtimeInfo(engine)
-      val busSetup = LOG.traceWebViewPerf(
-        "webview.provider.bus.setup",
-        "provider=$id, debugName=${options.debugName.orEmpty()}",
-      ) {
-        val bus = WebViewMessageBusImpl(webViewScope, engine)
-        bus.registerRuntimeInfoHandler(runtimeInfoValue)
-        val consoleRegistration = consoleCapture.register(bus)
-        val themeRegistration = bus.interop.registerThemeHandler()
-        engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
-        WebViewBusSetup(bus, consoleRegistration, themeRegistration)
-      }
-      val bus = busSetup.bus
-      val consoleRegistration = busSetup.consoleRegistration
-      val themeRegistration = busSetup.themeRegistration
-      val closed = AtomicBoolean(false)
-      val closeOnScopeCompletion = AtomicReference<DisposableHandle?>(null)
-      val createdWebView = object : WebView, CreatedWebView {
-        private var hostComponent: SwingWebViewHostPanel? = null
-        private var focusRegistration: WebViewMessageRegistration? = null
-        private val firstAssetLoadLogged = AtomicBoolean(false)
+      val runtimeInfo = WebViewRuntimeInfo(id, capabilities, displayName)
 
-        override val webView: WebView
-          get() = this
+      val bus = WebViewMessageBusImpl(webViewScope, engine)
 
-        override val runtimeInfo: WebViewRuntimeInfo = runtimeInfoValue
-        override val interop: WebViewInterop = bus.interop
-        override val isHeavyweight: Boolean = engine.isHeavyweight
+      // TODO: extract some createMessageBus method
+      val consoleCapture = bus.registerConsole(options.consoleLogCategory)
+      bus.registerRuntimeInfoHandler(runtimeInfo)
+      bus.interop.registerThemeHandler()
 
-        override fun createHostComponent(): JComponent {
-          hostComponent?.let { return it }
-
-          val host = LOG.traceWebViewPerf(
-            "webview.provider.hostComponent.create",
-            "provider=${provider.id}, debugName=${options.debugName.orEmpty()}",
-          ) {
-            SwingWebViewHostPanel(
-              webViewScope,
-              engine,
-              bus.interop.createWebViewFocusEntrySink(),
-            )
-          }
-          focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-          hostComponent = host
-          return host
-        }
-
-        override suspend fun loadFile(file: VirtualFile) {
-          consoleCapture.setViewId(null)
-          val path = file.toNioPathOrNull() ?: error("WebView can load only local files: ${file.presentableUrl}")
-          engine.loadFile(path)
-        }
-
-        override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
-          if (firstAssetLoadLogged.compareAndSet(false, true)) {
-            LOG.traceWebViewPerf(
-              "webview.provider.firstLoadAsset.enqueue",
-              "provider=${provider.id}, viewId=${root.viewId}, entry=$entry, debugName=${options.debugName.orEmpty()}",
-            ) {
-              consoleCapture.setViewId(root.viewId)
-              engine.loadAsset(root, entry, query.withWebViewTheme())
-            }
-          }
-          else {
-            consoleCapture.setViewId(root.viewId)
-            engine.loadAsset(root, entry, query.withWebViewTheme())
-          }
-        }
-
-        override suspend fun loadHtml(html: String) {
-          consoleCapture.setViewId(null)
-          engine.loadHtml(html)
-        }
-
-        override suspend fun evaluateJavaScript(script: String): WebViewScriptResult {
-          return WebViewScriptResult(engine.evaluateJavaScript(script))
-        }
-
-        override suspend fun close() {
-          if (!closed.compareAndSet(false, true)) return
-          closeOnScopeCompletion.getAndSet(null)?.dispose()
-          focusRegistration?.close()
-          focusRegistration = null
-          consoleRegistration.close()
-          themeRegistration.close()
-          bus.close()
-          engine.close()
-        }
-      }
-      closeOnScopeCompletion.set(webViewScope.coroutineContext.job.invokeOnCompletion {
-        runCatching {
-          runBlocking(NonCancellable) {
-            createdWebView.close()
-          }
-        }.onFailure {
-          LOG.warn("Failed to close WebView after its scope completed", it)
-        }
-      })
-      createdWebView
+      return@traceWebViewPerf WebViewImpl(engine, webViewScope, runtimeInfo, bus, consoleCapture, options.debugName)
     }
-  }
-
-  fun runtimeInfo(engine: WebViewEngine): WebViewRuntimeInfo {
-    return WebViewRuntimeInfo(id, capabilities, displayName)
   }
 
   fun createEngine(
@@ -171,13 +76,6 @@ interface WebViewEngineProvider {
     options: WebViewEngineCreationOptions,
   ): WebViewEngine
 
-  interface CreatedWebView {
-    val webView: WebView
-
-    val isHeavyweight: Boolean
-
-    fun createHostComponent(): JComponent
-  }
 
   companion object {
     @JvmField
@@ -186,13 +84,7 @@ interface WebViewEngineProvider {
   }
 }
 
-private data class WebViewBusSetup(
-  val bus: WebViewMessageBusImpl,
-  val consoleRegistration: WebViewMessageRegistration,
-  val themeRegistration: WebViewMessageRegistration,
-)
-
-@ApiStatus.Experimental
+@ApiStatus.Internal
 data class WebViewEngineCreationOptions(
   val strictPreference: Boolean,
   val jcefNativeBundlePath: Path?,
@@ -205,25 +97,101 @@ data class WebViewEngineCreationOptions(
   }
 }
 
+class WebViewImpl internal constructor(
+  private val engine: WebViewEngine,
+  private val webViewScope: CoroutineScope,
+  override val runtimeInfo: WebViewRuntimeInfo,
+  private val bus: WebViewMessageBusImpl,
+  private val consoleCapture: WebViewConsoleCapture,
+  private val debugName: String?,
+) : WebView {
+  private var hostComponent: SwingWebViewHostPanel? = null
+  private val firstAssetLoadLogged = AtomicBoolean(false)
+
+  private val closed = AtomicBoolean(false)
+  private val closeOnScopeCompletion = AtomicReference<DisposableHandle?>(null)
+
+  override val interop: WebViewInterop = bus.interop
+  override val isHeavyweight: Boolean = engine.isHeavyweight
+
+  init {
+    closeOnScopeCompletion.set(webViewScope.coroutineContext.job.invokeOnCompletion {
+      runCatching {
+        // TODO it's complete bullshit to call close in runBlocking. Need to come up how to make it in the coroutine way
+        runBlocking(NonCancellable) {
+          close()
+        }
+      }.onFailure {
+        LOG.warn("Failed to close WebView after its scope completed", it)
+      }
+    })
+  }
+  override fun createHostComponent(): JComponent {
+    hostComponent?.let { return it }
+
+    val host = LOG.traceWebViewPerf(
+      "webview.provider.hostComponent.create",
+      "provider=${runtimeInfo.engineId}, debugName=${debugName}",
+    ) {
+      SwingWebViewHostPanel(
+        webViewScope,
+        engine,
+        bus.interop.createWebViewFocusEntrySink(),
+      )
+    }
+    bus.interop.registerWebViewFocusExitHandler(host)
+    hostComponent = host
+    return host
+  }
+
+  override suspend fun loadFile(file: VirtualFile) {
+    consoleCapture.setViewId(null)
+    val path = file.toNioPathOrNull() ?: error("WebView can load only local files: ${file.presentableUrl}")
+    engine.loadFile(path)
+  }
+
+  override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
+    if (firstAssetLoadLogged.compareAndSet(false, true)) {
+      LOG.traceWebViewPerf(
+        "webview.provider.firstLoadAsset.enqueue",
+        "provider=${runtimeInfo.engineId}, viewId=${root.viewId}, entry=$entry, debugName=${debugName}",
+      ) {
+        consoleCapture.setViewId(root.viewId)
+        engine.loadAsset(root, entry, query.withWebViewTheme())
+      }
+    } else {
+      consoleCapture.setViewId(root.viewId)
+      engine.loadAsset(root, entry, query.withWebViewTheme())
+    }
+  }
+
+  override suspend fun loadHtml(html: String) {
+    consoleCapture.setViewId(null)
+    engine.loadHtml(html)
+  }
+
+  override suspend fun evaluateJavaScript(script: String): WebViewScriptResult {
+    return WebViewScriptResult(engine.evaluateJavaScript(script))
+  }
+
+  override suspend fun close() {
+    if (!closed.compareAndSet(false, true)) return
+    // here we disable disposing on completion registered on init block
+    closeOnScopeCompletion.getAndSet(null)?.dispose()
+    bus.close()
+    engine.close()
+  }
+}
+
+
 @ApiStatus.Experimental
 data class WebViewScript(
   @Language("JavaScript")
   val script: String,
 )
 
-private fun WebViewMessageBusImpl.registerRuntimeInfoHandler(runtimeInfo: WebViewRuntimeInfo) {
-  registerNotificationHandler(WebViewRuntimeNotifications.runtimeInfoRequest) { _, _ ->
-    notify(
-      WebViewRuntimeNotifications.runtimeInfo,
-      WebViewRuntimeInfoPayload(
-        displayName = runtimeInfo.displayName,
-        overlayVisible = isEngineOverlayEnabled(),
-      ),
-    )
-  }
-}
 
-private fun isEngineOverlayEnabled(): Boolean {
+internal fun isEngineOverlayEnabled(): Boolean {
   return try {
     RegistryManager.getInstance().get(WEBVIEW_ENGINE_OVERLAY_REGISTRY_KEY).asBoolean()
   }
@@ -232,21 +200,21 @@ private fun isEngineOverlayEnabled(): Boolean {
   }
 }
 
-private class WebViewRuntimeNotification<Params : Any>(
+class WebViewRuntimeNotification<Params : Any>(
   override val method: String,
   override val paramsSerializer: KSerializer<Params>,
 ) : WebViewNotification<Params>
 
 @Serializable
-private object EmptyWebViewRuntimePayload
+internal object EmptyWebViewRuntimePayload
 
 @Serializable
-private data class WebViewRuntimeInfoPayload(
+internal data class WebViewRuntimeInfoPayload(
   val displayName: String,
   val overlayVisible: Boolean,
 )
 
-private object WebViewRuntimeNotifications {
+internal object WebViewRuntimeNotifications {
   val runtimeInfoRequest = WebViewRuntimeNotification("$/webview/runtimeInfoRequest", EmptyWebViewRuntimePayload.serializer())
   val runtimeInfo = WebViewRuntimeNotification("$/webview/runtimeInfo", WebViewRuntimeInfoPayload.serializer())
 }
