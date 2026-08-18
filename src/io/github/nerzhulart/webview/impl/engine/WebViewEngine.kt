@@ -46,9 +46,7 @@ interface WebViewEngine {
 
   suspend fun close()
   suspend fun transferToJs(rawJson: String)
-  fun connectMessageBus(receiver: WebViewJsMessageReceiver)
-//  fun requestWebViewFocus()
-//  fun clearWebViewFocus()
+  fun setFromJsHandler(handler: WebViewJsMessageReceiver)
 
   /**
    * Native Peer section

@@ -90,7 +90,6 @@ internal object WebViewFocusRobotTestSupport {
     }
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
 
     try {
@@ -169,7 +168,6 @@ internal object WebViewFocusRobotTestSupport {
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     val modifierEventRegistration = recordModifierKeyEvents(modifierEvents)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
 
     try {
@@ -249,7 +247,6 @@ internal object WebViewFocusRobotTestSupport {
     }
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
 
     try {
@@ -351,7 +348,6 @@ internal object WebViewFocusRobotTestSupport {
     }
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
 
     try {
@@ -426,7 +422,6 @@ internal object WebViewFocusRobotTestSupport {
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
     val keyEventRegistration = recordKeyEvents(keyEvents, KeyEvent.VK_F1)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
 
     try {
@@ -508,7 +503,6 @@ internal object WebViewFocusRobotTestSupport {
     }
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeFocusInteropPage(tempDir)
 
     try {
@@ -599,7 +593,6 @@ internal object WebViewFocusRobotTestSupport {
     }
     val host = SwingWebViewHostPanel(scope, engine, bus.interop.createWebViewFocusEntrySink())
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeNonTabbableSelectionPage(tempDir)
 
     try {
@@ -685,7 +678,6 @@ internal object WebViewFocusRobotTestSupport {
       preferredSize = Dimension(8, 1)
     }
     val focusRegistration = bus.interop.registerWebViewFocusExitHandler(host)
-    engine.connectMessageBus { rawJson -> bus.transferFromJs(rawJson) }
     writeComboPopupPage(tempDir)
 
     try {
@@ -1723,7 +1715,7 @@ internal object WebViewFocusRobotTestSupport {
     override suspend fun transferToJs(rawJson: String) {
     }
 
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
     }
 
     override suspend fun close() {

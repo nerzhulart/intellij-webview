@@ -7,6 +7,7 @@ import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewInterop
 import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
+import javax.swing.JComponent
 
 @ApiStatus.Internal
 interface WebView {
@@ -15,6 +16,10 @@ interface WebView {
    */
   val interop: WebViewInterop
   val runtimeInfo: WebViewRuntimeInfo
+
+  val isHeavyweight: Boolean
+
+  fun createHostComponent(): JComponent
 
   suspend fun loadFile(file: VirtualFile)
 

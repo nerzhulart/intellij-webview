@@ -89,6 +89,12 @@ internal class WebViewMessageBusImpl internal constructor(
     }
   }
 
+
+
+  init {
+    engine.setFromJsHandler { rawJson -> transferFromJs(rawJson) }
+  }
+
   internal fun <Params : Any, Result : Any> registerApiCallHandler(
     method: String,
     paramsSerializer: KSerializer<Params>,

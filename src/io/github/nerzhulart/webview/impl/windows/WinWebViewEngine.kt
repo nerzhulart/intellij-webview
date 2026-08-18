@@ -251,8 +251,8 @@ internal class WinWebViewEngine(
     }
   }
 
-  override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
-    inboundMessageHandler = receiver::transferFromJs
+  override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
+    inboundMessageHandler = handler::transferFromJs
   }
 
   internal fun attachToParent(parentHwnd: Long) {

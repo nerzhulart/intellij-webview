@@ -55,7 +55,7 @@ class WebViewRuntime {
             consoleLogCategory = options.consoleLogCategory,
           ),
         )
-      }.webView
+      }
     }
   }
 
@@ -94,7 +94,7 @@ class WebViewRuntime {
             ),
           )
         }
-        val webViewInstance = createdWebView.webView
+        val webViewInstance = createdWebView
         webView = webViewInstance
         val hostComponent = LOG.traceWebViewPerf(
           "webview.panel.hostComponent.create",

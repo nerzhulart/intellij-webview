@@ -384,8 +384,8 @@ internal class WebViewRuntimeTest {
       assertFalse(lightweightWebView.isHeavyweight)
     }
     finally {
-      heavyweightWebView.webView.close()
-      lightweightWebView.webView.close()
+      heavyweightWebView.close()
+      lightweightWebView.close()
     }
   }
 
@@ -506,9 +506,9 @@ internal class WebViewRuntimeTest {
       return availability
     }
 
-    override suspend fun createWebView(webViewScope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngineProvider.CreatedWebView {
+    override suspend fun createWebView(webViewScope: CoroutineScope, options: WebViewEngineCreationOptions): WebView {
       createCount++
-      return FakeCreatedWebView(FakeWebView(WebViewRuntimeInfo(id, capabilities, displayName), webViewScope)) {
+      return FakeWebView(WebViewRuntimeInfo(id, capabilities, displayName), webViewScope) {
         hostComponentCount++
       }
     }
@@ -517,18 +517,6 @@ internal class WebViewRuntimeTest {
       error("Fake provider does not create engines")
     }
 
-  }
-
-  private class FakeCreatedWebView(
-    override val webView: FakeWebView,
-    private val onHostComponentCreated: () -> Unit,
-  ) : WebViewEngineProvider.CreatedWebView {
-    override val isHeavyweight: Boolean = false
-
-    override fun createHostComponent(): JComponent {
-      onHostComponentCreated()
-      return JPanel()
-    }
   }
 
   private class FakeEngineProvider(
@@ -558,7 +546,15 @@ internal class WebViewRuntimeTest {
   private class FakeWebView(
     override val runtimeInfo: WebViewRuntimeInfo,
     scope: CoroutineScope,
+    private val onHostComponentCreated: () -> Unit
   ) : WebView {
+
+    override val isHeavyweight: Boolean = false
+
+    override fun createHostComponent(): JComponent {
+      onHostComponentCreated()
+      return JPanel()
+    }
     private val messageBus: WebViewMessageBusImpl = WebViewMessageBusImpl(scope, FakeEngine())
     override val interop = messageBus.interop
     var loadAssetCount = 0
@@ -605,7 +601,7 @@ internal class WebViewRuntimeTest {
       error("WebView message transport is not connected")
     }
 
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
     }
 
     override fun attach(host: Component): Boolean {
@@ -660,8 +656,8 @@ internal class WebViewRuntimeTest {
       delivered.send(rawJson)
     }
 
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
-      messageReceiver = receiver
+    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
+      messageReceiver = handler
     }
 
     override fun attach(host: Component): Boolean {

@@ -495,7 +495,7 @@ internal class WebViewMessageBusTest {
       transfers.send(rawJson)
     }
 
-    override fun connectMessageBus(receiver: WebViewJsMessageReceiver) {
+    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
     }
 
     override fun attach(host: Component): Boolean {
