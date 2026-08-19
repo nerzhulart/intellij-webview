@@ -82,7 +82,7 @@ internal class WebViewRuntimeSmokeTest {
       method.invoke(
         null,
         longRunningThreadsDisposable,
-        arrayOf("AWT-Wayland", "WLKeyboard.KeyRepeatManager", "WebView2-Thread"),
+        arrayOf("AWT-Wayland", "WLKeyboard.KeyRepeatManager"),
       )
     }
   }

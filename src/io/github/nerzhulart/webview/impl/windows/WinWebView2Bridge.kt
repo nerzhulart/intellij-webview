@@ -3,7 +3,6 @@ package io.github.nerzhulart.webview.impl.windows
 
 import com.intellij.openapi.util.SystemInfo
 import io.github.nerzhulart.webview.impl.NativeBridgeLibrary
-import io.github.nerzhulart.webview.impl.WebViewLogger
 import io.github.nerzhulart.webview.impl.webViewNativeArchDirectory
 import org.jetbrains.annotations.ApiStatus
 
@@ -21,7 +20,7 @@ private class WinWebView2BridgePluginAnchor
 
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-custom-scheme-assets-v11"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v12"
 
   init {
     if (SystemInfo.isWindows) {
@@ -33,16 +32,21 @@ internal object WinWebView2Bridge {
   private external fun abiVersionNative(): String
 
   @JvmStatic
-  private external fun createNative(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long
+  private external fun createNative(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long
 
   @JvmStatic
   private external fun destroyNative(handle: Long)
 
   @JvmStatic
-  private external fun attachToParentNative(handle: Long, parentHwnd: Long)
+  private external fun attachToParentNative(handle: Long, parentHwnd: Long, generation: Long)
 
   @JvmStatic
-  private external fun detachFromParentNative(handle: Long)
+  private external fun parkBeforePeerDisposeNative(
+    handle: Long,
+    hostHwnd: Long,
+    parkingHwnd: Long,
+    generation: Long,
+  ): Boolean
 
   @JvmStatic
   private external fun setBoundsNative(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double)
@@ -75,23 +79,15 @@ internal object WinWebView2Bridge {
   private external fun transferToJsNative(handle: Long, rawJson: String)
 
   @JvmStatic
-  private external fun runMessageLoopNative()
+  private external fun completeAssetRequestNative(handle: Long, requestId: Long, response: AssetResponse?)
 
-  @JvmStatic
-  private external fun postTaskNative(runnable: Runnable, targetTid: Long)
-
-  @JvmStatic
-  private external fun stopMessageLoopNative(targetTid: Long)
-
-  @JvmStatic
-  private external fun currentThreadIdNative(): Long
-
-  fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long =
-    createNative(parentHwnd, userDataDir, documentStartScript, callbacks)
+  fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long =
+    createNative(parentHwnd, generation, userDataDir, documentStartScript, callbacks)
 
   fun destroy(handle: Long) = destroyNative(handle)
-  fun attachToParent(handle: Long, parentHwnd: Long) = attachToParentNative(handle, parentHwnd)
-  fun detachFromParent(handle: Long) = detachFromParentNative(handle)
+  fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) = attachToParentNative(handle, parentHwnd, generation)
+  fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean =
+    parkBeforePeerDisposeNative(handle, hostHwnd, parkingHwnd, generation)
   fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) = setBoundsNative(handle, x, y, width, height, scale)
   fun setVisible(handle: Long, visible: Boolean) = setVisibleNative(handle, visible)
   fun focus(handle: Long) = focusNative(handle)
@@ -106,33 +102,8 @@ internal object WinWebView2Bridge {
     callDevToolsProtocolMethodNative(handle, callId, methodName, paramsJson)
 
   fun transferToJs(handle: Long, rawJson: String) = transferToJsNative(handle, rawJson)
-
-  internal fun runMessageLoop() = runMessageLoopNative()
-  internal fun postTask(task: Runnable, targetTid: Long) = postTaskNative(task, targetTid)
-  internal fun stopMessageLoop(targetTid: Long) = stopMessageLoopNative(targetTid)
-  internal fun currentThreadId(): Long = currentThreadIdNative()
-
-  /**
-   * Called from the native dispatcher loop when a posted [Runnable] left a
-   * pending Java exception on the JNI thread. Must remain a non-internal
-   * `@JvmStatic` so that `call_static_method` from Rust can resolve it without
-   * name mangling.
-   */
-  @Suppress("unused")
-  @JvmStatic
-  fun reportTaskException(t: Throwable) {
-    WebViewLogger.LOG.error("Uncaught exception in WebView2 dispatcher task", t)
-  }
-
-  /**
-   * Called from the native dispatcher loop on unrecoverable runtime errors
-   * (Rust panic in the task glue, system error from GetMessageW, etc.).
-   */
-  @Suppress("unused")
-  @JvmStatic
-  fun reportDispatcherError(message: String) {
-    WebViewLogger.LOG.error(message)
-  }
+  fun completeAssetRequest(handle: Long, requestId: Long, response: AssetResponse?) =
+    completeAssetRequestNative(handle, requestId, response)
 
   private fun loadNativeLibrary() {
     val libraryPath = winWebView2BridgeLibrary.load()
@@ -142,16 +113,16 @@ internal object WinWebView2Bridge {
   internal interface Callbacks {
     fun onCreated(handle: Long)
     fun onCreateFailed(message: String)
+    fun onDestroyed(handle: Long)
     fun onMessage(raw: String)
     fun onEvaluationResult(evalId: Long, result: String?)
     fun onEvaluationError(evalId: Long, message: String)
     fun onDevToolsProtocolMethodResult(callId: Long, result: String?, error: String?)
     fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Boolean
-    fun onBeforeMouseFocus()
     fun onFocusGained()
     fun onLog(level: Int, message: String)
     fun onNativeDiagnostic(level: Int, event: String, message: String, data: String)
-    fun resolveAsset(url: String): AssetResponse?
+    fun onAssetRequested(handle: Long, requestId: Long, url: String)
   }
 
   @Suppress("unused")
@@ -188,10 +159,10 @@ internal object WinWebView2Bridge {
 
 @ApiStatus.Internal
 internal interface WinWebView2BridgeApi {
-  fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long
+  fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long
   fun destroy(handle: Long)
-  fun attachToParent(handle: Long, parentHwnd: Long)
-  fun detachFromParent(handle: Long)
+  fun attachToParent(handle: Long, parentHwnd: Long, generation: Long)
+  fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean
   fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double)
   fun setVisible(handle: Long, visible: Boolean)
   fun focus(handle: Long)
@@ -202,16 +173,18 @@ internal interface WinWebView2BridgeApi {
   fun evaluateJavaScript(handle: Long, evalId: Long, script: String)
   fun callDevToolsProtocolMethod(handle: Long, callId: Long, methodName: String, paramsJson: String)
   fun transferToJs(handle: Long, rawJson: String)
+  fun completeAssetRequest(handle: Long, requestId: Long, response: WinWebView2Bridge.AssetResponse?)
 }
 
 @ApiStatus.Internal
 internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
-  override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long =
-    WinWebView2Bridge.create(parentHwnd, userDataDir, documentStartScript, callbacks)
+  override fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long =
+    WinWebView2Bridge.create(parentHwnd, generation, userDataDir, documentStartScript, callbacks)
 
   override fun destroy(handle: Long) = WinWebView2Bridge.destroy(handle)
-  override fun attachToParent(handle: Long, parentHwnd: Long) = WinWebView2Bridge.attachToParent(handle, parentHwnd)
-  override fun detachFromParent(handle: Long) = WinWebView2Bridge.detachFromParent(handle)
+  override fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) = WinWebView2Bridge.attachToParent(handle, parentHwnd, generation)
+  override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean =
+    WinWebView2Bridge.parkBeforePeerDispose(handle, hostHwnd, parkingHwnd, generation)
   override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) =
     WinWebView2Bridge.setBounds(handle, x, y, width, height, scale)
 
@@ -228,4 +201,6 @@ internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
     WinWebView2Bridge.callDevToolsProtocolMethod(handle, callId, methodName, paramsJson)
 
   override fun transferToJs(handle: Long, rawJson: String) = WinWebView2Bridge.transferToJs(handle, rawJson)
+  override fun completeAssetRequest(handle: Long, requestId: Long, response: WinWebView2Bridge.AssetResponse?) =
+    WinWebView2Bridge.completeAssetRequest(handle, requestId, response)
 }

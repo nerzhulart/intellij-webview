@@ -20,8 +20,10 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
@@ -29,10 +31,12 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import java.awt.Canvas
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.EnumSet
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.coroutines.CoroutineContext
 
 internal class WinWebViewEngineTest {
@@ -203,6 +207,34 @@ internal class WinWebViewEngineTest {
 
     assertEquals(listOf(1L), bridge.destroyedHandles)
     scope.cancel()
+  }
+
+  @Test
+  fun closeWaitsUntilNativeConfirmsGlobalRefsWereReleased() {
+    val bridge = FakeWinWebView2Bridge().apply { deferDestroyCompletion = true }
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+
+    val closeJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
+    assertTrue(!closeJob.isCompleted, "close must wait for onDestroyed")
+    assertEquals(listOf(1L), bridge.destroyedHandles)
+
+    bridge.completeDestroy(1L)
+    runBlocking { closeJob.join() }
+    scope.cancel()
+  }
+
+  @Test
+  fun windowsEngineExposesAHeavyweightCanvasHost() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createTestEngine(scope, bridge)
+    try {
+      assertTrue(engine.component.components.single() is Canvas)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
   }
 
   @Test
@@ -458,12 +490,37 @@ internal class WinWebViewEngineTest {
       }
 
       val url = webViewAssetCustomSchemeUrl(WebViewAssetPath.indexHtml())
-      assertAssetResponse("first", firstBridge.callbacks.resolveAsset(url))
-      assertAssetResponse("second", secondBridge.callbacks.resolveAsset(url))
+      assertAssetResponse("first", requestAsset(firstBridge, 1L, url))
+      assertAssetResponse("second", requestAsset(secondBridge, 1L, url))
     }
     finally {
       closeEngine(firstEngine, firstScope)
       closeEngine(secondEngine, secondScope)
+    }
+  }
+
+  @Test
+  fun deferredAssetRequestCompletesFromIoWithoutBlockingNativeCallback(@TempDir tempDir: Path) {
+    Files.writeString(tempDir.resolve("index.html"), "deferred")
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    try {
+      runBlocking { engine.loadAsset(WebViewAssetRoot.fromDirectory(tempDir), WebViewAssetPath.indexHtml(), null) }
+      bridge.callbacks.onAssetRequested(1L, 17L, webViewAssetCustomSchemeUrl(WebViewAssetPath.indexHtml()))
+
+      val completion = runBlocking {
+        withTimeout(1_000) {
+          while (bridge.assetCompletions.isEmpty()) delay(10)
+          bridge.assetCompletions.single()
+        }
+      }
+      assertEquals(1L, completion.handle)
+      assertEquals(17L, completion.requestId)
+      assertAssetResponse("deferred", completion.response)
+    }
+    finally {
+      closeEngine(engine, scope)
     }
   }
 
@@ -688,6 +745,7 @@ internal class WinWebViewEngineTest {
     val urlLoads = mutableListOf<UrlLoad>()
     val jsTransfers = mutableListOf<JsTransfer>()
     val devToolsCalls = mutableListOf<DevToolsCall>()
+    val assetCompletions = CopyOnWriteArrayList<AssetCompletion>()
     val documentStartScripts = mutableListOf<String>()
     val focusedHandles = mutableListOf<Long>()
     val clearFocusedHandles = mutableListOf<Long>()
@@ -695,11 +753,12 @@ internal class WinWebViewEngineTest {
     var focusFailure: IllegalStateException? = null
     var clearFocusFailure: IllegalStateException? = null
     var deferProfilerStop: Boolean = false
+    var deferDestroyCompletion: Boolean = false
     var destroyFailure: RuntimeException? = null
     var pendingProfilerStopCallId: Long? = null
     private var nextHandle = 1L
 
-    override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    override fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
       this.callbacks = callbacks
       documentStartScripts.add(documentStartScript)
       createParentHwnds.add(parentHwnd)
@@ -711,14 +770,14 @@ internal class WinWebViewEngineTest {
       destroyedHandles.add(handle)
       callOrder.add("destroy:$handle")
       destroyFailure?.let { throw it }
+      if (!deferDestroyCompletion) callbacks.onDestroyed(handle)
     }
 
-    override fun attachToParent(handle: Long, parentHwnd: Long) {
+    override fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) {
       attachParents.add(parentHwnd)
     }
 
-    override fun detachFromParent(handle: Long) {
-    }
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean = true
 
     override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
       bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
@@ -769,8 +828,16 @@ internal class WinWebViewEngineTest {
       jsTransfers.add(JsTransfer(handle, rawJson))
     }
 
+    override fun completeAssetRequest(handle: Long, requestId: Long, response: WinWebView2Bridge.AssetResponse?) {
+      assetCompletions.add(AssetCompletion(handle, requestId, response))
+    }
+
     fun completeDevToolsCall(callId: Long, result: String?, error: String?) {
       callbacks.onDevToolsProtocolMethodResult(callId, result, error)
+    }
+
+    fun completeDestroy(handle: Long) {
+      callbacks.onDestroyed(handle)
     }
   }
 
@@ -778,4 +845,24 @@ internal class WinWebViewEngineTest {
     val handle: Long,
     val bounds: Bounds,
   )
+
+  private data class AssetCompletion(
+    val handle: Long,
+    val requestId: Long,
+    val response: WinWebView2Bridge.AssetResponse?,
+  )
+
+  private fun requestAsset(bridge: FakeWinWebView2Bridge, requestId: Long, url: String): WinWebView2Bridge.AssetResponse? {
+    bridge.callbacks.onAssetRequested(1L, requestId, url)
+    return runBlocking {
+      withTimeout(1_000) {
+        while (true) {
+          bridge.assetCompletions.firstOrNull { it.requestId == requestId }?.let { return@withTimeout it.response }
+          delay(10)
+        }
+        @Suppress("UNREACHABLE_CODE")
+        null
+      }
+    }
+  }
 }

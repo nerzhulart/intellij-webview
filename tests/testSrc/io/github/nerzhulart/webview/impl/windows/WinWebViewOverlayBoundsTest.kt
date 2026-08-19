@@ -38,7 +38,13 @@ internal class WinWebViewOverlayBoundsTest {
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent fixture scope.
     scope = CoroutineScope(SupervisorJob())
     bridge = FakeWinWebView2Bridge()
-    engine = WinWebViewEngine(scope, bridge, debugName = "overlay-test", webViewDispatcher = SyncDispatcher)
+    engine = WinWebViewEngine(
+      scope,
+      bridge,
+      debugName = "overlay-test",
+      webViewDispatcher = SyncDispatcher,
+      devToolsCpuProfilingEnabled = { false },
+    )
   }
 
   @AfterEach
@@ -98,7 +104,7 @@ internal class WinWebViewOverlayBoundsTest {
     runInEdtAndWait {
       bridge.callbacks.onCreated(bridge.createdHandles.single())
     }
-    assertEquals(Bounds(20, 40, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
+    assertEquals(Bounds(0, 0, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
     assertVisibilityApplied(Visibility(1L, true))
   }
 
@@ -165,9 +171,7 @@ internal class WinWebViewOverlayBoundsTest {
   private fun expectedBounds(host: SwingWebViewHostPanel): Bounds {
     var result: Bounds? = null
     runInEdtAndWait {
-      val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host)!!
-      val nativeBounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
-      result = Bounds(nativeBounds.x, nativeBounds.y, nativeBounds.width, nativeBounds.height, WindowsHwndUtil.scale(host))
+      result = Bounds(0, 0, host.width, host.height, WindowsHwndUtil.scale(host))
     }
     return result!!
   }
@@ -203,19 +207,19 @@ internal class WinWebViewOverlayBoundsTest {
 
     fun visibilitySnapshot(): List<Visibility> = visibility.toList()
 
-    override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    override fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
       this.callbacks = callbacks
       return nextHandle++.also { createdHandles.add(it) }
     }
 
     override fun destroy(handle: Long) {
+      callbacks.onDestroyed(handle)
     }
 
-    override fun attachToParent(handle: Long, parentHwnd: Long) {
+    override fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) {
     }
 
-    override fun detachFromParent(handle: Long) {
-    }
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean = true
 
     override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
       bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
@@ -247,6 +251,9 @@ internal class WinWebViewOverlayBoundsTest {
     }
 
     override fun transferToJs(handle: Long, rawJson: String) {
+    }
+
+    override fun completeAssetRequest(handle: Long, requestId: Long, response: WinWebView2Bridge.AssetResponse?) {
     }
   }
 

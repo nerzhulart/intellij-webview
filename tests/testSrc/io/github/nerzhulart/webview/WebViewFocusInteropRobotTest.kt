@@ -2,9 +2,7 @@
 package io.github.nerzhulart.webview
 
 import com.intellij.jna.JnaLoader
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.junit5.TestApplication
 import io.github.nerzhulart.webview.impl.NativeBridgeLibraryAvailability
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
@@ -21,14 +19,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.condition.DisabledIfSystemProperty
+import org.junit.jupiter.api.condition.DisabledOnOs
 import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
@@ -48,28 +45,6 @@ class WebViewFocusInteropRobotTest {
 
   private var frame: JFrame? = null
   private var scope: CoroutineScope? = null
-
-  companion object {
-    private val longRunningThreadsDisposable = Disposer.newDisposable("WebViewFocusInteropRobotTest long-running threads")
-
-    @JvmStatic
-    @BeforeAll
-    fun setUpClass() {
-      registerLongRunningThreads()
-    }
-
-    @JvmStatic
-    @AfterAll
-    fun tearDownClass() {
-      Disposer.dispose(longRunningThreadsDisposable)
-    }
-
-    private fun registerLongRunningThreads() {
-      val trackerClass = Class.forName("com.intellij.testFramework.common.ThreadLeakTracker")
-      val method = trackerClass.getMethod("longRunningThreadCreated", Disposable::class.java, Array<String>::class.java)
-      method.invoke(null, longRunningThreadsDisposable, arrayOf("WebView2-Thread"))
-    }
-  }
 
   @BeforeEach
   fun setUp() {
@@ -112,6 +87,7 @@ class WebViewFocusInteropRobotTest {
   }
 
   @Test
+  @DisabledOnOs(OS.WINDOWS, disabledReason = "WebView2 does not report bare modifier transitions; the WH_KEYBOARD_LL fallback was removed")
   fun modifierDoubleClickInsideWebViewReachesAwt(@TempDir tempDir: Path): Unit = runBlocking {
     val engine = createPlatformEngine(scope!!)
     try {
