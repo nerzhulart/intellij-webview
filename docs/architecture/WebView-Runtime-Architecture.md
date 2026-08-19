@@ -34,13 +34,15 @@ Creation must run on EDT. Cancel or complete `featureScope` when the owning UI i
 1. collect default and extension-provided `WebViewEngineProvider` implementations;
 2. filter them by required capabilities and engine preference;
 3. create the selected engine, message bus, console capture, theme bridge, and Swing host;
-4. load the initial asset and bind cleanup to the owner scope.
+4. load the initial asset and keep the engine, message bus, and Swing host bound to an internal child of the owner scope.
 
-`WebView`, `WebViewEngine`, `WebViewEngineFactory`, provider contracts, and host peers are internal. Consumer plugins must not cast to an engine or select a backend with OS checks.
+The session has no parallel `close()` protocol. Cancelling the owner scope closes the Swing host, message bus, and engine in that order; creation failures cancel only the internal view scope.
+
+`WebView`, `WebViewEngine`, provider contracts, and host peers are internal. Consumer plugins must not cast to an engine or select a backend with OS checks.
 
 ## Engine Selection
 
-`createWebViewPanel(...)` requires asset serving, message passing, and Swing embedding. Available providers are ordered by preference and report explicit availability diagnostics.
+`createWebViewPanel(...)` requires asset serving and message passing. Swing hosting is part of the engine contract itself: every engine creates a non-null `SwingWebViewHostPanel`, whether its backend is a native heavyweight peer or an embedded Swing component. Available providers are ordered by preference and report explicit availability diagnostics.
 
 | Provider | Use |
 | --- | --- |
@@ -49,7 +51,7 @@ Creation must run on EDT. Cancel or complete `featureScope` when the owning UI i
 | `JCEF` | Cross-OS fallback; default asset-backed backend on Linux |
 | `SYSTEM_LINUX` | Disabled WebKitGTK implementation scaffold; never selected |
 
-The `io.github.nerzhulart.webview.engine` registry value can force `SYSTEM` or `JCEF`. A forced choice is strict: an unavailable or incapable provider fails with diagnostics instead of silently changing backend.
+The `io.github.nerzhulart.webview.engine` registry value selects the `SYSTEM` or `JCEF` preference. `JCEF` excludes system providers; `SYSTEM` keeps the platform provider first and JCEF as its configured fallback.
 
 ## Asset Loading
 

@@ -47,8 +47,6 @@ object LightweightStandaloneSampleApp {
       val webViewEngine = provider.createEngine(
         scope,
         WebViewEngineCreationOptions(
-          strictPreference = true,
-          jcefNativeBundlePath = null,
           debugName = null,
         ),
       )

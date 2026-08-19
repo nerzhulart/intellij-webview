@@ -645,11 +645,11 @@ internal class WinWebViewEngine(
 
     val parentHwnd = currentParentHwnd
     if (parentHwnd == 0L) {
-      closeAfterFatalNativeFailure(event, message, data, IllegalStateException("Cannot recover WebView2 without a parent HWND"))
+      failPermanently(event, message, data, IllegalStateException("Cannot recover WebView2 without a parent HWND"))
       return
     }
     if (!recordRecoveryAttempt()) {
-      closeAfterFatalNativeFailure(event, message, data, IllegalStateException("WebView2 recovery limit exceeded"))
+      failPermanently(event, message, data, IllegalStateException("WebView2 recovery limit exceeded"))
       return
     }
 
@@ -676,11 +676,11 @@ internal class WinWebViewEngine(
       bridge.setVisible(nativeHandle, !hidden)
     }
     catch (t: Throwable) {
-      closeAfterFatalNativeFailure(event, message, data, t)
+      failPermanently(event, message, data, t)
     }
   }
 
-  private fun closeAfterFatalNativeFailure(event: String, message: String, data: String, cause: Throwable) {
+  private fun failPermanently(event: String, message: String, data: String, cause: Throwable) {
     val oldHandle = nativeHandle
     nativeHandle = 0
     state.set(State.Closed)

@@ -5,13 +5,12 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import javax.swing.JComponent
@@ -22,28 +21,15 @@ internal class MarkdownLinkGraphPanel(
   private val scope: CoroutineScope,
 ) {
   val component: JComponent = JPanel(BorderLayout())
-  @Volatile private var panel: WebViewPanel? = null
 
   init {
     loadWebView()
   }
 
-  fun dispose() {
-    val createdPanel = panel
-    panel = null
-    if (createdPanel == null) {
-      return
-    }
-    runBlocking {
-      runCatching { createdPanel.close() }
-        .onFailure { LOG.warn("Failed to close Markdown link graph WebView", it) }
-    }
-  }
-
   private fun loadWebView() {
     scope.launch {
       try {
-        val createdPanel = withContext(Dispatchers.EDT) {
+        withContext(Dispatchers.EDT) {
           createWebViewPanel(
             scope = scope,
             options = WebViewPanelOptions(
@@ -58,7 +44,9 @@ internal class MarkdownLinkGraphPanel(
             component.repaint()
           }
         }
-        panel = createdPanel
+      }
+      catch (t: CancellationException) {
+        throw t
       }
       catch (t: Throwable) {
         LOG.warn("Failed to load Markdown link graph WebView", t)

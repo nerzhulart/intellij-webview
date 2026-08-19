@@ -18,7 +18,6 @@ import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -72,17 +71,6 @@ internal class WebViewControlsShowcasePanel(
     tabbedPane.addChangeListener { loadSelectedTab() }
     SwingUtilities.invokeLater { loadSelectedTab() }
     return tabbedPane
-  }
-
-  fun dispose() {
-    val panelsToClose = panels.values.toList()
-    panels.clear()
-    runBlocking {
-      for (panel in panelsToClose) {
-        runCatching { panel.close() }
-          .onFailure { LOG.warn("Failed to close WebView controls showcase panel", it) }
-      }
-    }
   }
 
   private fun createTabContent(tab: ShowcaseTab): JComponent {

@@ -4,13 +4,11 @@ package io.github.nerzhulart.webview.demo
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.logger
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -25,8 +23,6 @@ private val LOG = logger<WebViewReactControlsShowcasePanel>()
 internal class WebViewReactControlsShowcasePanel(
   private val scope: CoroutineScope,
 ) {
-  private var panel: WebViewPanel? = null
-
   val component: JComponent = JPanel(BorderLayout()).apply {
     minimumSize = Dimension(400, 300)
     preferredSize = Dimension(900, 650)
@@ -34,15 +30,6 @@ internal class WebViewReactControlsShowcasePanel(
 
   init {
     loadShowcase()
-  }
-
-  fun dispose() {
-    val panelToClose = panel ?: return
-    panel = null
-    runBlocking {
-      runCatching { panelToClose.close() }
-        .onFailure { LOG.warn("Failed to close WebView React controls showcase panel", it) }
-    }
   }
 
   private fun loadShowcase() {
@@ -59,7 +46,6 @@ internal class WebViewReactControlsShowcasePanel(
         }
 
         withContext(Dispatchers.EDT) {
-          panel = createdPanel
           component.add(createdPanel.component, BorderLayout.CENTER)
           component.revalidate()
           component.repaint()

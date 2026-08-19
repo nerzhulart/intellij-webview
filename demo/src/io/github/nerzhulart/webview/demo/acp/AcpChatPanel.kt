@@ -9,8 +9,10 @@ import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewIconSet
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
@@ -27,39 +29,40 @@ internal class AcpChatPanel(
 ) {
   val component: JComponent = JPanel(BorderLayout())
 
-  @Volatile private var bridge: AcpProcessBridge? = null
-
   init {
     loadWebView()
-  }
-
-  /** The WebView is owned by [scope]; cancelling the scope closes it. Only our own process resource is released here. */
-  fun dispose() {
-    bridge?.stop()
-    bridge = null
   }
 
   private fun loadWebView() {
     scope.launch {
       try {
-        withContext(Dispatchers.EDT) {
+        val webViewPanel = withContext(Dispatchers.EDT) {
           createWebViewPanel(
             scope = scope,
             options = WebViewPanelOptions(
               assetRoot = ASSET_ROOT,
               debugName = "ACP chat",
             ),
-          ).also { webViewPanel ->
-            val pageApi = webViewPanel.interop.callable(AcpBridgePageApi.ID)
-            val processBridge = AcpProcessBridge(project, scope, pageApi)
-            bridge = processBridge
+          )
+        }
+        val pageApi = webViewPanel.interop.callable(AcpBridgePageApi.ID)
+        val processBridge = AcpProcessBridge(project, scope, pageApi)
+        try {
+          withContext(Dispatchers.EDT) {
             webViewPanel.interop.implement(AcpBridgeHostApi.ID, AcpBridgeHostApiImpl(project, scope, processBridge, webViewPanel.component))
             webViewPanel.reload()
             component.add(webViewPanel.component, BorderLayout.CENTER)
             component.revalidate()
             component.repaint()
           }
+          awaitCancellation()
         }
+        finally {
+          processBridge.stop()
+        }
+      }
+      catch (t: CancellationException) {
+        throw t
       }
       catch (t: Throwable) {
         LOG.warn("Failed to load ACP chat WebView", t)

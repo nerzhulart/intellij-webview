@@ -17,9 +17,10 @@ import io.github.nerzhulart.webview.api.createWebViewPanel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -78,9 +79,8 @@ internal class WebViewInIdeSmokeTest {
       )
     }
     finally {
-      runCatching { panel?.close() }
       runCatching { disposeFrame(frame) }
-      scope.cancel()
+      scope.coroutineContext.job.cancelAndJoin()
     }
   }
 

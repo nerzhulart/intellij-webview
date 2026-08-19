@@ -4,11 +4,9 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Disposer
 import com.intellij.platform.util.coroutines.childScope
 import io.github.nerzhulart.webview.demo.acp.AcpChatPanel
 import io.github.nerzhulart.webview.demo.markdown.linkgraph.MarkdownLinkGraphPanel
-import com.intellij.util.asDisposable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import javax.swing.JComponent
@@ -23,50 +21,38 @@ internal class WebViewDemoProjectService(
   }
 
   fun createSamplePanelContent(): WebViewDemoContent = createContent("WebViewDemoSamplePanel(${project.name})") { scope ->
-    val panel = WebViewDemoPanel(scope)
-    WebViewDemoContentPanel(panel.component, panel::dispose)
+    WebViewDemoPanel(scope).component
   }
 
   fun createControlsShowcaseContent(): WebViewDemoContent = createContent("WebViewDemoControlsShowcase(${project.name})") { scope ->
-    val panel = WebViewControlsShowcasePanel(project, scope)
-    WebViewDemoContentPanel(panel.component, panel::dispose)
+    WebViewControlsShowcasePanel(project, scope).component
   }
 
   fun createReactControlsShowcaseContent(): WebViewDemoContent = createContent("WebViewDemoReactControlsShowcase(${project.name})") { scope ->
-    val panel = WebViewReactControlsShowcasePanel(scope)
-    WebViewDemoContentPanel(panel.component, panel::dispose)
+    WebViewReactControlsShowcasePanel(scope).component
   }
 
   fun createUiDslShowcaseContent(): WebViewDemoContent = createContent("WebViewDemoUiDslShowcase(${project.name})") { scope ->
-    val panel = WebViewUiDslShowcasePanel(project, scope)
-    WebViewDemoContentPanel(panel.component, panel::dispose)
+    WebViewUiDslShowcasePanel(project, scope).component
   }
 
   fun createMarkdownLinkGraphContent(): WebViewDemoContent = createContent("WebViewDemoMarkdownLinkGraph(${project.name})") { scope ->
-    val panel = MarkdownLinkGraphPanel(project, scope)
-    WebViewDemoContentPanel(panel.component, panel::dispose)
+    MarkdownLinkGraphPanel(project, scope).component
   }
 
   fun createAcpChatContent(): WebViewDemoContent = createContent("WebViewDemoAcpChat(${project.name})") { scope ->
-    val panel = AcpChatPanel(project, scope)
-    WebViewDemoContentPanel(panel.component, panel::dispose)
+    AcpChatPanel(project, scope).component
   }
 
   private fun createContent(
     scopeName: String,
-    createPanel: (CoroutineScope) -> WebViewDemoContentPanel,
+    createPanel: (CoroutineScope) -> JComponent,
   ): WebViewDemoContent {
     val contentScope = coroutineScope.childScope(scopeName)
-    val panel = createPanel(contentScope)
-    val disposer = Disposer.newDisposable("WebViewDemoContent").also {
-      Disposer.register(it, contentScope.asDisposable())
-      Disposer.register(it, Disposable { contentScope.cancel() })
-      // Registered last, disposed first (LIFO): release WebView while contentScope is still alive.
-      Disposer.register(it, Disposable { panel.disposePanel() })
-    }
+    val component = createPanel(contentScope)
     return WebViewDemoContent(
-      component = panel.component,
-      disposer = disposer,
+      component = component,
+      disposer = Disposable { contentScope.cancel() },
     )
   }
 }
@@ -74,9 +60,4 @@ internal class WebViewDemoProjectService(
 internal data class WebViewDemoContent(
   val component: JComponent,
   val disposer: Disposable,
-)
-
-private data class WebViewDemoContentPanel(
-  val component: JComponent,
-  val disposePanel: () -> Unit,
 )

@@ -3,29 +3,26 @@
 
 package io.github.nerzhulart.webview.api
 
+import com.intellij.util.concurrency.annotations.RequiresEdt
 import io.github.nerzhulart.webview.impl.CONSOLE_LOG_CATEGORY
 import io.github.nerzhulart.webview.impl.engine.WebView
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
-import com.intellij.util.concurrency.annotations.RequiresEdt
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.annotations.ApiStatus
 import javax.swing.JComponent
 
 @ApiStatus.Experimental
 class WebViewPanel internal constructor(
-  @get:ApiStatus.Internal val webView: WebView,
-  val component: JComponent,
-  private val reloadPage: suspend (WebView) -> Unit,
+  @get:ApiStatus.Internal internal val webView: WebView,
+  private val assetRoot: WebViewAssetRoot,
+  private val indexPath: WebViewAssetPath,
+  private val query: String?,
 ) {
-  val interop: WebViewInterop
-    get() = webView.interop
+  val component: JComponent = webView.component
+  val interop: WebViewInterop = webView.interop
 
   suspend fun reload() {
-    reloadPage(webView)
-  }
-
-  suspend fun close() {
-    webView.close()
+    webView.loadAsset(assetRoot, indexPath, query)
   }
 }
 

@@ -3,11 +3,9 @@ package io.github.nerzhulart.webview
 
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.TestLoggerFactory
 import com.intellij.testFramework.junit5.RegistryKey
 import com.intellij.testFramework.junit5.TestApplication
-import io.github.nerzhulart.webview.impl.engine.WebView
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.engine.WebViewCreationOptions
@@ -18,15 +16,17 @@ import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineRequirements
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
-import io.github.nerzhulart.webview.impl.engine.WebViewRuntimeInfo
-import io.github.nerzhulart.webview.impl.engine.WebViewScriptResult
 import io.github.nerzhulart.webview.impl.WebViewApplicationModeScripts
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
+import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
+import io.github.nerzhulart.webview.impl.WebViewFocusEntrySink
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineCreationOptions
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,6 +35,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -54,7 +55,7 @@ import kotlin.time.Duration.Companion.seconds
 @TestApplication
 internal class WebViewRuntimeTest {
   @Test
-  fun createWebView_selectsProviderByPreferenceAndRequirements(): Unit = runBlocking {
+  fun createWebView_selectsProviderByPreferenceAndRequirements(): Unit = runWebViewTest {
     val rejected = FakeProvider(
       id = WebViewEngineId.SYSTEM_WINDOWS,
       capabilities = capabilities(assetServing = false),
@@ -77,11 +78,10 @@ internal class WebViewRuntimeTest {
     assertEquals(WebViewEngineId.JCEF, webView.runtimeInfo.engineId)
     assertEquals(0, rejected.createCount)
     assertEquals(1, selected.createCount)
-    webView.close()
   }
 
   @Test
-  fun createWebView_reportsCapabilitiesWhenNoProviderSatisfiesRequirements(): Unit = runBlocking {
+  fun createWebView_reportsCapabilitiesWhenNoProviderSatisfiesRequirements(): Unit = runWebViewTest {
     val runtime = WebViewRuntime().apply {
       providers = listOf(
         FakeProvider(
@@ -106,7 +106,7 @@ internal class WebViewRuntimeTest {
   }
 
   @Test
-  fun createWebView_continuesWhenProviderAvailabilityHasLinkageError(): Unit = runBlocking {
+  fun createWebView_continuesWhenProviderAvailabilityHasLinkageError(): Unit = runWebViewTest {
     val broken = FakeProvider(
       id = WebViewEngineId.SYSTEM_WINDOWS,
       capabilities = capabilities(assetServing = true),
@@ -125,11 +125,10 @@ internal class WebViewRuntimeTest {
     assertEquals(WebViewEngineId.JCEF, webView.runtimeInfo.engineId)
     assertEquals(0, broken.createCount)
     assertEquals(1, selected.createCount)
-    webView.close()
   }
 
   @Test
-  fun createWebView_reportsProviderAvailabilityLinkageError(): Unit = runBlocking {
+  fun createWebView_reportsProviderAvailabilityLinkageError(): Unit = runWebViewTest {
     val runtime = WebViewRuntime().apply {
       providers = listOf(
         FakeProvider(
@@ -150,7 +149,7 @@ internal class WebViewRuntimeTest {
 
   @Test
   @RegistryKey(key = "io.github.nerzhulart.webview.engine", value = "JCEF")
-  fun createWebView_appliesRegistryOverride(): Unit = runBlocking {
+  fun createWebView_appliesRegistryOverride(): Unit = runWebViewTest {
     val autoProvider = FakeProvider(
       id = WebViewEngineId.SYSTEM_MACOS,
       capabilities = capabilities(assetServing = true),
@@ -170,12 +169,11 @@ internal class WebViewRuntimeTest {
     assertEquals("JCEF", webView.runtimeInfo.displayName)
     assertEquals(0, autoProvider.createCount)
     assertEquals(1, overrideProvider.createCount)
-    webView.close()
   }
 
   @Test
   @RegistryKey(key = "io.github.nerzhulart.webview.debug.engine.overlay", value = "true")
-  fun createWebView_exposesRuntimeInfoToCommonBridge(): Unit = runBlocking {
+  fun createWebView_exposesRuntimeInfoToCommonBridge(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -191,11 +189,10 @@ internal class WebViewRuntimeTest {
     assertTrue(delivered.contains("\"method\":\"$RUNTIME_INFO_METHOD\""), delivered)
     assertTrue(delivered.contains("\"displayName\":\"JCEF\""), delivered)
     assertTrue(delivered.contains("\"overlayVisible\":true"), delivered)
-    webView.close()
   }
 
   @Test
-  fun createWebView_installsApplicationModeDocumentStartScript(): Unit = runBlocking {
+  fun createWebView_installsApplicationModeDocumentStartScript(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -209,11 +206,10 @@ internal class WebViewRuntimeTest {
     assertEquals(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT.script, script)
     assertTrue(script.contains("contextmenu"), script)
     assertTrue(script.contains("MutationObserver"), script)
-    webView.close()
   }
 
   @Test
-  fun createWebView_installsConsoleCaptureDocumentStartScript(): Unit = runBlocking {
+  fun createWebView_installsConsoleCaptureDocumentStartScript(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -230,11 +226,10 @@ internal class WebViewRuntimeTest {
     assertTrue(script.contains("window.chrome.webview.postMessage"), script)
     assertTrue(script.contains("window.webkit.messageHandlers"), script)
     assertTrue(script.contains("__wviJcefQuery"), script)
-    webView.close()
   }
 
   @Test
-  fun createEngine_installsApplicationModeDocumentStartScript(): Unit = runBlocking {
+  fun createEngine_installsApplicationModeDocumentStartScript(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -255,25 +250,7 @@ internal class WebViewRuntimeTest {
   }
 
   @Test
-  fun createWebView_propagatesConsoleLogCategory(): Unit = runBlocking {
-    val provider = FakeEngineProvider(
-      id = WebViewEngineId.JCEF,
-      displayName = "JCEF",
-      capabilities = capabilities(assetServing = true),
-    )
-    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
-
-    val webView = runtime.createWebView(
-      scope = this,
-      options = WebViewCreationOptions(consoleLogCategory = "#custom.webview.console"),
-    )
-
-    assertEquals("#custom.webview.console", provider.creationOptions.single().consoleLogCategory)
-    webView.close()
-  }
-
-  @Test
-  fun createWebView_logsConsoleNotificationsThroughRuntimeLogger(): Unit = runBlocking {
+  fun createWebView_logsConsoleNotificationsThroughRuntimeLogger(): Unit = runWebViewTest {
     val loggerFactory = Logger.getFactory() as? TestLoggerFactory
     assertNotNull(loggerFactory, "WebViewRuntimeTest expects TestLoggerFactory")
     val provider = FakeEngineProvider(
@@ -291,33 +268,73 @@ internal class WebViewRuntimeTest {
       scope = this,
       options = WebViewCreationOptions(consoleLogCategory = category),
     )
-    try {
-      webView.loadAsset(WebViewAssetRoot.forView(WebViewRuntimeTest::class.java, viewId))
-      provider.engine.transferFromJs(
-        """
-          {
-            "jsonrpc": "2.0",
-            "method": "$CONSOLE_LOG_METHOD",
-            "params": {
-              "method": "log",
-              "jsTimeEpochMs": $jsTimeEpochMs,
-              "args": ["$marker", "payload"]
-            }
+    webView.loadAsset(WebViewAssetRoot.forView(WebViewRuntimeTest::class.java, viewId))
+    provider.engine.transferFromJs(
+      """
+        {
+          "jsonrpc": "2.0",
+          "method": "$CONSOLE_LOG_METHOD",
+          "params": {
+            "method": "log",
+            "jsTimeEpochMs": $jsTimeEpochMs,
+            "args": ["$marker", "payload"]
           }
-        """.trimIndent(),
-      )
+        }
+      """.trimIndent(),
+    )
 
-      val log = awaitLog(loggerFactory!!, marker)
-      assertTrue(log.contains("$category.$viewId"), log)
-      assertTrue(log.contains("[js=${Instant.ofEpochMilli(jsTimeEpochMs)}] $marker payload"), log)
-    }
-    finally {
-      webView.close()
-    }
+    val log = awaitLog(loggerFactory!!, marker)
+    assertTrue(log.contains("$category.$viewId"), log)
+    assertTrue(log.contains("[js=${Instant.ofEpochMilli(jsTimeEpochMs)}] $marker payload"), log)
   }
 
   @Test
-  fun createWebView_appendsThemeQueryToAssetLoads(): Unit = runBlocking {
+  fun createPanel_logsConsoleNotificationsThroughConfiguredCategory(): Unit = runWebViewTest {
+    val loggerFactory = Logger.getFactory() as? TestLoggerFactory
+    assertNotNull(loggerFactory, "WebViewRuntimeTest expects TestLoggerFactory")
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+    val category = "#wvtest.panel"
+    val viewId = "panelConsole"
+    val assetRoot = WebViewAssetRoot.forView(WebViewRuntimeTest::class.java, viewId)
+    val marker = "panel-console-${System.nanoTime()}"
+    val jsTimeEpochMs = 1_782_995_696_789L
+    val testScope = this
+
+    withContext(Dispatchers.EDT) {
+      runtime.createWebViewPanel(
+        scope = testScope,
+        options = WebViewPanelOptions(
+          assetRoot = assetRoot,
+          consoleLogCategory = category,
+        ),
+      )
+    }
+    provider.engine.transferFromJs(
+      """
+        {
+          "jsonrpc": "2.0",
+          "method": "$CONSOLE_LOG_METHOD",
+          "params": {
+            "method": "log",
+            "jsTimeEpochMs": $jsTimeEpochMs,
+            "args": ["$marker", "payload"]
+          }
+        }
+      """.trimIndent(),
+    )
+
+    val log = awaitLog(loggerFactory!!, marker)
+    assertTrue(log.contains("$category.$viewId"), log)
+    assertTrue(log.contains("[js=${Instant.ofEpochMilli(jsTimeEpochMs)}] $marker payload"), log)
+  }
+
+  @Test
+  fun createWebView_appendsThemeQueryToAssetLoads(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -332,11 +349,10 @@ internal class WebViewRuntimeTest {
     val query = provider.engine.lastAssetQuery
     assertNotNull(query)
     assertTrue(query!!.startsWith("foo=bar&__webviewTheme="), query)
-    webView.close()
   }
 
   @Test
-  fun createWebView_exposesThemeToCommonBridge(): Unit = runBlocking {
+  fun createWebView_exposesThemeToCommonBridge(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -360,11 +376,10 @@ internal class WebViewRuntimeTest {
     assertTrue(delivered.contains("\"medium\":"), delivered)
     assertTrue(delivered.contains("\"mini\":"), delivered)
     assertTrue(delivered.contains("\"ligatures\":"), delivered)
-    webView.close()
   }
 
   @Test
-  fun createWebView_propagatesHeavyweightCapabilityToCreatedWebView(): Unit = runBlocking {
+  fun createWebView_wrapsHeavyweightAndLightweightEnginesInSwingHost(): Unit = runWebViewTest {
     val heavyweightProvider = FakeEngineProvider(
       id = WebViewEngineId.SYSTEM_WINDOWS,
       displayName = "WebView2",
@@ -375,22 +390,20 @@ internal class WebViewRuntimeTest {
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
       capabilities = capabilities(assetServing = true),
+      component = JPanel(),
     )
 
-    val heavyweightWebView = heavyweightProvider.createWebView(this, webViewEngineCreationOptions())
-    val lightweightWebView = lightweightProvider.createWebView(this, webViewEngineCreationOptions())
-    try {
-      assertTrue(heavyweightWebView.isHeavyweight)
-      assertFalse(lightweightWebView.isHeavyweight)
-    }
-    finally {
-      heavyweightWebView.close()
-      lightweightWebView.close()
-    }
+    val heavyweightWebView = WebViewRuntime().apply { providers = listOf(heavyweightProvider) }.createWebView(this)
+    val lightweightWebView = WebViewRuntime().apply { providers = listOf(lightweightProvider) }.createWebView(this)
+
+    assertTrue(heavyweightWebView.component is SwingWebViewHostPanel)
+    assertTrue(lightweightWebView.component is SwingWebViewHostPanel)
+    assertEquals(0, heavyweightWebView.component.componentCount)
+    assertSame(lightweightProvider.engine.component, lightweightWebView.component.getComponent(0))
   }
 
   @Test
-  fun createWebView_closesEngineWhenScopeCompletes(): Unit = runBlocking {
+  fun createWebView_closesEngineOnceWhenScopeCancellationIsRepeated(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -402,12 +415,47 @@ internal class WebViewRuntimeTest {
     runtime.createWebView(scope = webViewScope)
 
     webViewScope.coroutineContext.job.cancelAndJoin()
+    webViewScope.coroutineContext.job.cancelAndJoin()
 
     assertEquals(1, provider.engine.closeCount)
   }
 
   @Test
-  fun createPanel_requiresAssetServingAndCreatesProviderHostComponent(): Unit = runBlocking {
+  fun createWebView_scopeCompletionWaitsForEngineClose(): Unit = runWebViewTest {
+    val closeStarted = CompletableDeferred<Unit>()
+    val closeGate = CompletableDeferred<Unit>()
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+      closeStarted = closeStarted,
+      closeGate = closeGate,
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+    @Suppress("RAW_SCOPE_CREATION")
+    val webViewScope = CoroutineScope(SupervisorJob())
+    runtime.createWebView(webViewScope)
+
+    val cancellation = launch {
+      webViewScope.coroutineContext.job.cancelAndJoin()
+    }
+    try {
+      closeStarted.await()
+      assertFalse(cancellation.isCompleted)
+
+      closeGate.complete(Unit)
+      cancellation.join()
+      assertEquals(1, provider.engine.closeCount)
+    }
+    finally {
+      closeGate.complete(Unit)
+      webViewScope.cancel()
+      cancellation.join()
+    }
+  }
+
+  @Test
+  fun createPanel_requiresAssetServingAndCreatesProviderHostComponent(): Unit = runWebViewTest {
     val testScope = this
     val provider = FakeProvider(
       id = WebViewEngineId.JCEF,
@@ -424,16 +472,14 @@ internal class WebViewRuntimeTest {
       )
     }
 
-    val webView = panel.webView as FakeWebView
-    assertSame(webView, panel.webView)
-    assertEquals(1, webView.loadAssetCount)
-    assertEquals(1, provider.hostComponentCount)
-    assertEquals(WebViewAssetPath.indexHtml(), webView.lastAssetPath)
-    panel.webView.close()
+    assertSame(panel.webView.component, panel.component)
+    assertTrue(panel.component is SwingWebViewHostPanel)
+    assertEquals(1, provider.engine.loadAssetCount)
+    assertEquals(WebViewAssetPath.indexHtml(), provider.engine.lastAssetPath)
   }
 
   @Test
-  fun createPanel_closesEngineWhenScopeCompletes(): Unit = runBlocking {
+  fun createPanel_closesEngineWhenScopeCompletes(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
@@ -461,28 +507,60 @@ internal class WebViewRuntimeTest {
   }
 
   @Test
-  fun createPanel_propagatesConsoleLogCategory(): Unit = runBlocking {
-    val testScope = this
+  fun createWebView_doesNotCreateEngineForCancelledScope(): Unit = runWebViewTest {
     val provider = FakeEngineProvider(
       id = WebViewEngineId.JCEF,
       displayName = "JCEF",
       capabilities = capabilities(assetServing = true),
     )
     val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+    @Suppress("RAW_SCOPE_CREATION")
+    val cancelledScope = CoroutineScope(SupervisorJob()).also { it.cancel() }
+
+    val failure = runCatching { runtime.createWebView(cancelledScope) }.exceptionOrNull()
+
+    assertTrue(failure is CancellationException)
+    assertEquals(0, provider.creationOptions.size)
+  }
+
+  @Test
+  fun createWebView_closesEngineWhenHostCreationFails(): Unit = runWebViewTest {
+    val expectedFailure = IllegalStateException("host failed")
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+      hostCreationFailure = expectedFailure,
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+
+    val failure = runCatching { runtime.createWebView(this) }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException)
+    assertEquals(expectedFailure.message, failure?.message)
+    assertTrue(coroutineContext.job.isActive)
+    assertEquals(1, provider.engine.closeCount)
+  }
+
+  @Test
+  fun createPanel_closesSessionWhenInitialAssetLoadFailsWithoutCancellingOwner(): Unit = runWebViewTest {
+    val expectedFailure = IllegalStateException("load failed")
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+      loadAssetFailure = expectedFailure,
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
     val assetRoot = WebViewAssetRoot.fromClasspath(WebViewRuntimeTest::class.java, WebViewAssetPath.of("webview/views/smoke"))
 
-    val panel = withContext(Dispatchers.EDT) {
-      runtime.createWebViewPanel(
-        scope = testScope,
-        options = WebViewPanelOptions(
-          assetRoot = assetRoot,
-          consoleLogCategory = "#custom.panel.console",
-        ),
-      )
-    }
+    val failure = runCatching {
+      runtime.createWebViewPanel(this, WebViewPanelOptions(assetRoot = assetRoot))
+    }.exceptionOrNull()
 
-    assertEquals("#custom.panel.console", provider.creationOptions.single().consoleLogCategory)
-    panel.close()
+    assertSame(expectedFailure, failure)
+    assertTrue(coroutineContext.job.isActive)
+    assertEquals(1, provider.engine.closeCount)
   }
 
   private class FakeProvider(
@@ -494,9 +572,8 @@ internal class WebViewRuntimeTest {
     private val availability: WebViewEngineAvailability = WebViewEngineAvailability.Available,
     private val availabilityFailure: LinkageError? = null,
   ) : WebViewEngineProvider {
+    val engine = CapturingEngine()
     var createCount = 0
-      private set
-    var hostComponentCount = 0
       private set
 
     override fun selectionPriority(preference: WebViewEngineKind): Int? = priorities[preference] ?: priority
@@ -506,17 +583,10 @@ internal class WebViewRuntimeTest {
       return availability
     }
 
-    override suspend fun createWebView(webViewScope: CoroutineScope, options: WebViewEngineCreationOptions): WebView {
-      createCount++
-      return FakeWebView(WebViewRuntimeInfo(id, capabilities, displayName), webViewScope) {
-        hostComponentCount++
-      }
-    }
-
     override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
-      error("Fake provider does not create engines")
+      createCount++
+      return engine
     }
-
   }
 
   private class FakeEngineProvider(
@@ -524,16 +594,23 @@ internal class WebViewRuntimeTest {
     override val displayName: String,
     override val capabilities: WebViewEngineCapabilities,
     isHeavyweight: Boolean = false,
+    component: JComponent? = null,
+    loadAssetFailure: Throwable? = null,
+    hostCreationFailure: Throwable? = null,
+    closeStarted: CompletableDeferred<Unit>? = null,
+    closeGate: CompletableDeferred<Unit>? = null,
   ) : WebViewEngineProvider {
-    val engine = CapturingEngine(isHeavyweight)
+    val engine = CapturingEngine(
+      isHeavyweight,
+      component,
+      loadAssetFailure,
+      hostCreationFailure,
+      closeStarted,
+      closeGate,
+    )
     val creationOptions = mutableListOf<WebViewEngineCreationOptions>()
 
-    override fun selectionPriority(preference: WebViewEngineKind): Int? {
-      return when (preference) {
-        WebViewEngineKind.System, WebViewEngineKind.Jcef -> 10
-        else -> null
-      }
-    }
+    override fun selectionPriority(preference: WebViewEngineKind): Int = 10
 
     override suspend fun availability(): WebViewEngineAvailability = WebViewEngineAvailability.Available
 
@@ -543,108 +620,38 @@ internal class WebViewRuntimeTest {
     }
   }
 
-  private class FakeWebView(
-    override val runtimeInfo: WebViewRuntimeInfo,
-    scope: CoroutineScope,
-    private val onHostComponentCreated: () -> Unit
-  ) : WebView {
-
-    override val isHeavyweight: Boolean = false
-
-    override fun createHostComponent(): JComponent {
-      onHostComponentCreated()
-      return JPanel()
-    }
-    private val messageBus: WebViewMessageBusImpl = WebViewMessageBusImpl(scope, FakeEngine())
-    override val interop = messageBus.interop
-    var loadAssetCount = 0
-      private set
-    var lastAssetPath: WebViewAssetPath? = null
-      private set
-
-    override suspend fun loadFile(file: VirtualFile) {
-    }
-
-    override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
-      loadAssetCount++
-      lastAssetPath = entry
-    }
-
-    override suspend fun loadHtml(html: String) {
-    }
-
-    override suspend fun evaluateJavaScript(script: String): WebViewScriptResult = WebViewScriptResult(null)
-
-    override suspend fun close() {
-      messageBus.close()
-    }
-  }
-
-  // TODO: merge with NoOP
-  private class FakeEngine : WebViewEngine {
-    override val isHeavyweight: Boolean = false
-    override val component: JComponent?
-      get() = null
-
-    override suspend fun loadFile(file: Path) {
-    }
-
-    override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
-    }
-
-    override suspend fun loadHtml(html: String, baseFile: Path?) {
-    }
-
-    override suspend fun evaluateJavaScript(script: String): String? = null
-
-    override suspend fun transferToJs(rawJson: String) {
-      error("WebView message transport is not connected")
-    }
-
-    override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
-    }
-
-    override fun attach(host: Component): Boolean {
-      return true
-    }
-
-    override fun detach() {
-    }
-
-    override fun scheduleFrameUpdate(host: Component) {
-    }
-
-    override fun updateVisibility(host: Component, hidden: Boolean) {
-    }
-
-    override fun requestFocus() {
-    }
-
-    override fun clearFocus() {
-    }
-
-    override suspend fun close() {
-    }
-
-  }
-
   private class CapturingEngine(
     override val isHeavyweight: Boolean = false,
+    override val component: JComponent? = null,
+    private val loadAssetFailure: Throwable? = null,
+    private val hostCreationFailure: Throwable? = null,
+    private val closeStarted: CompletableDeferred<Unit>? = null,
+    private val closeGate: CompletableDeferred<Unit>? = null,
   ) : WebViewEngine {
     val delivered = Channel<String>(Channel.UNLIMITED)
     private var messageReceiver: WebViewJsMessageReceiver? = null
     var lastAssetQuery: String? = null
       private set
+    var lastAssetPath: WebViewAssetPath? = null
+      private set
+    var loadAssetCount = 0
+      private set
     var closeCount = 0
       private set
-    override val component: JComponent?
-      get() = null
+
+    override fun createHostComponent(scope: CoroutineScope, focusEntrySink: WebViewFocusEntrySink): SwingWebViewHostPanel {
+      hostCreationFailure?.let { throw it }
+      return super<WebViewEngine>.createHostComponent(scope, focusEntrySink)
+    }
 
     override suspend fun loadFile(file: Path) {
     }
 
     override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
+      loadAssetCount++
+      lastAssetPath = entry
       lastAssetQuery = query
+      loadAssetFailure?.let { throw it }
     }
 
     override suspend fun loadHtml(html: String, baseFile: Path?) {
@@ -682,6 +689,8 @@ internal class WebViewRuntimeTest {
 
     override suspend fun close() {
       closeCount++
+      closeStarted?.complete(Unit)
+      closeGate?.await()
       delivered.close()
     }
 
@@ -702,19 +711,29 @@ internal class WebViewRuntimeTest {
     }
   }
 
+  private fun runWebViewTest(block: suspend CoroutineScope.() -> Unit): Unit = runBlocking {
+    @Suppress("RAW_SCOPE_CREATION")
+    val webViewScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    try {
+      withContext(Dispatchers.EDT) {
+        block(webViewScope)
+      }
+    }
+    finally {
+      webViewScope.coroutineContext.job.cancelAndJoin()
+    }
+  }
+
   private fun capabilities(assetServing: Boolean): WebViewEngineCapabilities {
     return WebViewEngineCapabilities(
       assetServing = assetServing,
       messagePassing = true,
-      swingEmbedding = true,
       interactiveInput = true,
     )
   }
 
   private fun webViewEngineCreationOptions(): WebViewEngineCreationOptions {
     return WebViewEngineCreationOptions(
-      strictPreference = true,
-      jcefNativeBundlePath = null,
       debugName = null,
     )
   }

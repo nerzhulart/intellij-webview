@@ -16,7 +16,7 @@ import org.jetbrains.annotations.ApiStatus
 internal class LinuxWebKitEngineProvider : WebViewEngineProvider {
   override val id: WebViewEngineId = WebViewEngineId.SYSTEM_LINUX
   override val displayName: String = "WebKit"
-  override val capabilities = WebViewEngineCapabilities(assetServing = false, messagePassing = true, swingEmbedding = true, interactiveInput = false)
+  override val capabilities = WebViewEngineCapabilities(assetServing = false, messagePassing = true, interactiveInput = false)
 
   override fun selectionPriority(preference: WebViewEngineKind): Int? {
     return when (preference) {

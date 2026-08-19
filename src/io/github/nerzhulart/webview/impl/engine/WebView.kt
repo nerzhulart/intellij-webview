@@ -16,10 +16,7 @@ interface WebView {
    */
   val interop: WebViewInterop
   val runtimeInfo: WebViewRuntimeInfo
-
-  val isHeavyweight: Boolean
-
-  fun createHostComponent(): JComponent
+  val component: JComponent
 
   suspend fun loadFile(file: VirtualFile)
 
@@ -28,8 +25,6 @@ interface WebView {
   suspend fun loadHtml(@Language("HTML") html: String)
 
   suspend fun evaluateJavaScript(@Language("JavaScript") script: String): WebViewScriptResult
-
-  suspend fun close()
 }
 
 @ApiStatus.Internal
