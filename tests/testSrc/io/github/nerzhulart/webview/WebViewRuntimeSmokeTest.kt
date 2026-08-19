@@ -44,6 +44,7 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import java.nio.file.Files
 import java.nio.file.Path
+import javax.swing.JDialog
 import javax.swing.JFrame
 import javax.swing.JPanel
 import kotlin.time.Duration.Companion.milliseconds
@@ -176,6 +177,65 @@ internal class WebViewRuntimeSmokeTest {
     waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Page state was not retained after reattach")
     waitForJavaScript(panel.webView, "window.__wviReattachMarker === 'alive'", "true", "JavaScript state was not retained after reattach")
     assertEquals("4", javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "2 + 2").value))
+  }
+
+  @Test
+  @EnabledOnOs(OS.WINDOWS)
+  fun facade_survives_move_from_disposed_floating_window(): Unit = runSmokeTest {
+    val panel = createPanel(scope!!)
+    attach(panel)
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>floating-window-state</body></html>")
+    waitForJavaScript(
+      panel.webView,
+      /*language=JavaScript*/ "document.body.textContent.trim() === 'floating-window-state'",
+      "true",
+      "Initial page did not load",
+    )
+    assertEquals(
+      "true",
+      javaScriptResultContent(
+        panel.webView.evaluateJavaScript(/*language=JavaScript*/ "window.__wviFloatingMarker = 'alive'; true").value,
+      ),
+    )
+
+    val floating = withContext(Dispatchers.EDT) {
+      JDialog(frame!!, "WebView Runtime Floating Host", false).apply {
+        contentPane.layout = BorderLayout()
+        size = Dimension(400, 300)
+        frame!!.contentPane.remove(panel.component)
+        frame!!.revalidate()
+        frame!!.repaint()
+        contentPane.add(panel.component, BorderLayout.CENTER)
+        isVisible = true
+      }
+    }
+
+    try {
+      waitForJavaScript(
+        panel.webView,
+        /*language=JavaScript*/ "window.__wviFloatingMarker === 'alive'",
+        "true",
+        "JavaScript state was not retained after moving to a floating window",
+      )
+
+      withContext(Dispatchers.EDT) {
+        floating.contentPane.remove(panel.component)
+        floating.dispose()
+        frame!!.contentPane.add(panel.component, BorderLayout.CENTER)
+        frame!!.revalidate()
+        frame!!.repaint()
+      }
+
+      waitForJavaScript(
+        panel.webView,
+        /*language=JavaScript*/ "window.__wviFloatingMarker === 'alive'",
+        "true",
+        "JavaScript state was not retained after docking and disposing the floating window",
+      )
+    }
+    finally {
+      withContext(Dispatchers.EDT) { floating.dispose() }
+    }
   }
 
   @Test
