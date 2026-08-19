@@ -10,13 +10,11 @@ import com.intellij.ui.components.JBLabel
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewIconSet
 import io.github.nerzhulart.webview.api.WebViewNotification
-import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -40,8 +38,6 @@ internal class WebViewUiDslShowcasePanel(
   private val project: Project,
   private val scope: CoroutineScope,
 ) {
-  private var panel: WebViewPanel? = null
-
   val component: JComponent = JPanel(BorderLayout()).apply {
     minimumSize = Dimension(400, 300)
     preferredSize = Dimension(900, 650)
@@ -50,15 +46,6 @@ internal class WebViewUiDslShowcasePanel(
 
   init {
     loadShowcase()
-  }
-
-  fun dispose() {
-    val panelToClose = panel ?: return
-    panel = null
-    runBlocking {
-      runCatching { panelToClose.close() }
-        .onFailure { LOG.warn("Failed to close WebView UI DSL showcase panel", it) }
-    }
   }
 
   private fun loadShowcase() {
@@ -81,7 +68,6 @@ internal class WebViewUiDslShowcasePanel(
         }
 
         withContext(Dispatchers.EDT) {
-          panel = createdPanel
           component.removeAll()
           component.add(createdPanel.component, BorderLayout.CENTER)
           component.revalidate()

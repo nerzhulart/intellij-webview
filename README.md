@@ -43,6 +43,8 @@ suspend fun createEditorToolsPanel(scope: CoroutineScope): WebViewPanel {
 }
 ```
 
+The supplied `CoroutineScope` is the panel's lifetime owner. Cancel that scope when the owning UI is disposed; `WebViewPanel` has no separate `close()` method.
+
 Define the same typed contract on both sides. Kotlin implements an API called by the page:
 
 ```kotlin

@@ -5,7 +5,7 @@ import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
 import org.jetbrains.annotations.ApiStatus
 
 @ApiStatus.Internal
-internal interface WebViewFocusEntrySink {
+interface WebViewFocusEntrySink {
   fun enterWebViewFocus(direction: WebViewFocusDirection)
 
   fun leaveWebViewFocus()

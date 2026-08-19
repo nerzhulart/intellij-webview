@@ -162,6 +162,7 @@ internal class WebViewMessageBusImpl internal constructor(
    * Entrypoint for raw JSON-RPC frames arriving from JS (`postMessage` body).
    */
   internal fun transferFromJs(rawJson: String) {
+    // TODO: return silently is error prone. why do we check it at all instead of sending to channel?
     if (closed) return
     val result = incomingFrames.trySend(rawJson)
     if (result.isFailure) {
@@ -447,6 +448,7 @@ internal class WebViewMessageBusImpl internal constructor(
     check(!closed) { "WebViewMessageBus is closed" }
   }
 
+  // TODO: use scope termination instead
   fun close() {
     if (closed) return
     closed = true

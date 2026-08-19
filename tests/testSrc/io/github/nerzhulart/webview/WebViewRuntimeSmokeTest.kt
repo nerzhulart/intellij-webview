@@ -18,7 +18,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -31,7 +32,6 @@ import org.intellij.lang.annotations.Language
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -104,9 +104,9 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   @AfterEach
-  fun tearDown() {
-    runBlocking(Dispatchers.EDT) { frame?.dispose() }
-    scope?.cancel()
+  fun tearDown(): Unit = runBlocking {
+    scope?.coroutineContext?.job?.cancelAndJoin()
+    withContext(Dispatchers.EDT) { frame?.dispose() }
     frame = null
     scope = null
   }
@@ -114,35 +114,25 @@ internal class WebViewRuntimeSmokeTest {
   @Test
   fun evaluateJavaScript_returnsResult(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>test</body></html>")
+    attach(panel)
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>test</body></html>")
 
-      waitForJavaScript(panel.webView, "1 + 1", "2", "JavaScript evaluation did not return the expected result")
-    }
-    finally {
-      panel.close()
-    }
+    waitForJavaScript(panel.webView, "1 + 1", "2", "JavaScript evaluation did not return the expected result")
   }
 
   @Test
   fun loadHtml_beforeAttach_isAppliedAfterAttach(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
-    try {
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>queued-before-attach</body></html>")
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>queued-before-attach</body></html>")
 
-      attach(panel)
+    attach(panel)
 
-      waitForJavaScript(
-        panel.webView,
-        "document.body.textContent.trim() === 'queued-before-attach'",
-        "true",
-        "HTML queued before host attachment was not applied",
-      )
-    }
-    finally {
-      panel.close()
-    }
+    waitForJavaScript(
+      panel.webView,
+      "document.body.textContent.trim() === 'queued-before-attach'",
+      "true",
+      "HTML queued before host attachment was not applied",
+    )
   }
 
   @Test
@@ -151,84 +141,41 @@ internal class WebViewRuntimeSmokeTest {
     Files.writeString(tempDir.resolve("view.js"), /*language=JavaScript*/ "window.__assetValue = 'from-asset';")
 
     val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadAsset(WebViewAssetRoot.fromDirectory(tempDir))
+    attach(panel)
+    panel.webView.loadAsset(WebViewAssetRoot.fromDirectory(tempDir))
 
-      waitForJavaScript(
-        panel.webView,
-        """
-          window.__assetValue === 'from-asset' && window.__WVI__ && Boolean(window.__WVI__.transport())
-        """.trimIndent(),
-        "true",
-        "Asset directory bundle did not load through the WebView asset handler",
-      )
-    }
-    finally {
-      panel.close()
-    }
-  }
-
-  @Test
-  fun close_isIdempotent(): Unit = runSmokeTest {
-    val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>close</body></html>")
-      waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'close'", "true", "Close preflight page did not load")
-
-      panel.close()
-      panel.close()
-    }
-    finally {
-      panel.close()
-    }
-  }
-
-  @Test
-  fun evaluateJavaScript_afterClose_returnsNull(): Unit = runSmokeTest {
-    val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>close</body></html>")
-      waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'close'", "true", "Close preflight page did not load")
-
-      panel.close()
-
-      assertNull(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "1 + 1").value)
-    }
-    finally {
-      panel.close()
-    }
+    waitForJavaScript(
+      panel.webView,
+      """
+        window.__assetValue === 'from-asset' && window.__WVI__ && Boolean(window.__WVI__.transport())
+      """.trimIndent(),
+      "true",
+      "Asset directory bundle did not load through the WebView asset handler",
+    )
   }
 
   @Test
   fun facade_survives_host_detach_reattach(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>phase1</body></html>")
-      waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Initial page did not load")
-      assertEquals(
-        "true",
-        javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "window.__wviReattachMarker = 'alive'; true").value),
-      )
+    attach(panel)
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>phase1</body></html>")
+    waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Initial page did not load")
+    assertEquals(
+      "true",
+      javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "window.__wviReattachMarker = 'alive'; true").value),
+    )
 
-      withContext(Dispatchers.EDT) {
-        frame!!.contentPane.removeAll()
-        frame!!.revalidate()
-      }
-      delay(300.milliseconds)
-
-      attach(panel)
-
-      waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Page state was not retained after reattach")
-      waitForJavaScript(panel.webView, "window.__wviReattachMarker === 'alive'", "true", "JavaScript state was not retained after reattach")
-      assertEquals("4", javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "2 + 2").value))
+    withContext(Dispatchers.EDT) {
+      frame!!.contentPane.removeAll()
+      frame!!.revalidate()
     }
-    finally {
-      panel.close()
-    }
+    delay(300.milliseconds)
+
+    attach(panel)
+
+    waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'phase1'", "true", "Page state was not retained after reattach")
+    waitForJavaScript(panel.webView, "window.__wviReattachMarker === 'alive'", "true", "JavaScript state was not retained after reattach")
+    assertEquals("4", javaScriptResultContent(panel.webView.evaluateJavaScript(/*language=JavaScript*/ "2 + 2").value))
   }
 
   @Test
@@ -249,152 +196,85 @@ internal class WebViewRuntimeSmokeTest {
     }
     finally {
       registration.close()
-      panel.close()
     }
   }
 
   @Test
   fun applicationMode_preventsContextMenuDefault(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>menu target</body></html>")
+    attach(panel)
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>menu target</body></html>")
 
-      waitForJavaScript(
-        panel.webView,
-        """
-          (function() {
-            const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
-            document.body.dispatchEvent(event);
-            return String(event.defaultPrevented);
-          })()
-        """.trimIndent(),
-        "true",
-        "Application mode did not prevent the default context menu",
-      )
-    }
-    finally {
-      panel.close()
-    }
+    waitForJavaScript(
+      panel.webView,
+      """
+        (function() {
+          const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+          document.body.dispatchEvent(event);
+          return String(event.defaultPrevented);
+        })()
+      """.trimIndent(),
+      "true",
+      "Application mode did not prevent the default context menu",
+    )
   }
 
   @Test
   @Suppress("HtmlDeprecatedAttribute")
   fun applicationMode_disablesInputAssistForFormControls(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
-    try {
-      attach(panel)
-      panel.webView.loadHtml(
-        /*language=HTML*/
-        """
-          <html>
-          <body>
-            <input id="existing" autocomplete="email" autocorrect="on" autocapitalize="sentences" spellcheck="true">
-          </body>
-          </html>
-        """.trimIndent(),
-      )
+    attach(panel)
+    panel.webView.loadHtml(
+      /*language=HTML*/
+      """
+        <html>
+        <body>
+          <input id="existing" autocomplete="email" autocorrect="on" autocapitalize="sentences" spellcheck="true">
+        </body>
+        </html>
+      """.trimIndent(),
+    )
 
-      waitForJavaScript(
-        panel.webView,
-        """
-          (function() {
-            const existing = document.getElementById('existing');
-            return inputAssistState(existing);
+    waitForJavaScript(
+      panel.webView,
+      """
+        (function() {
+          const existing = document.getElementById('existing');
+          return inputAssistState(existing);
 
-            function inputAssistState(element) {
-              const attributeNames = ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'];
-              return attributeNames.map(name => element.getAttribute(name)).join('|') + '|' + String(element.spellcheck);
-            }
-          })()
-        """.trimIndent(),
-        "off|off|off|false|false",
-        "Initial form control input assist attributes were not disabled",
-      )
+          function inputAssistState(element) {
+            const attributeNames = ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'];
+            return attributeNames.map(name => element.getAttribute(name)).join('|') + '|' + String(element.spellcheck);
+          }
+        })()
+      """.trimIndent(),
+      "off|off|off|false|false",
+      "Initial form control input assist attributes were not disabled",
+    )
 
-      assertEquals(
-        "created",
-        javaScriptResultContent(
-          panel.webView.evaluateJavaScript(
-            /*language=JavaScript*/
-            """
-            (function() {
-              const dynamic = document.createElement('input');
-              dynamic.id = 'dynamic';
-              setInputAssistEnabled(dynamic);
-              document.body.appendChild(dynamic);
-
-              const host = document.createElement('div');
-              host.id = 'shadow-host';
-              document.body.appendChild(host);
-
-              const shadow = host.attachShadow({ mode: 'open' });
-              const shadowInput = document.createElement('input');
-              shadowInput.id = 'shadow';
-              setInputAssistEnabled(shadowInput);
-              shadow.appendChild(shadowInput);
-
-              return 'created';
-
-              function setInputAssistEnabled(element) {
-                element.setAttribute('autocomplete', 'email');
-                element.setAttribute('autocorrect', 'on');
-                element.setAttribute('autocapitalize', 'sentences');
-                element.setAttribute('spellcheck', 'true');
-                element.spellcheck = true;
-              }
-            })()
-            """.trimIndent(),
-          ).value,
-        ),
-      )
-
-      waitForJavaScript(
-        panel.webView,
-        """
-          (function() {
-            return [
-              inputAssistState(document.getElementById('existing')),
-              inputAssistState(document.getElementById('dynamic')),
-              inputAssistState(document.getElementById('shadow-host').shadowRoot.getElementById('shadow'))
-            ].join(';');
-
-            function inputAssistState(element) {
-              const attributeNames = ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'];
-              return attributeNames.map(name => element.getAttribute(name)).join('|') + '|' + String(element.spellcheck);
-            }
-          })()
-        """.trimIndent(),
-        "off|off|off|false|false;off|off|off|false|false;off|off|off|false|false",
-        "Dynamic and shadow-root form control input assist attributes were not disabled",
-      )
-
-      val eventResult = javaScriptResultContent(
+    assertEquals(
+      "created",
+      javaScriptResultContent(
         panel.webView.evaluateJavaScript(
           /*language=JavaScript*/
           """
           (function() {
-            const existing = document.getElementById('existing');
-            const dynamic = document.getElementById('dynamic');
-            const shadowInput = document.getElementById('shadow-host').shadowRoot.getElementById('shadow');
-            for (const element of [existing, dynamic, shadowInput]) {
-              setInputAssistEnabled(element);
-            }
+            const dynamic = document.createElement('input');
+            dynamic.id = 'dynamic';
+            setInputAssistEnabled(dynamic);
+            document.body.appendChild(dynamic);
 
-            const eventLog = [];
-            document.addEventListener('focusin', function() { eventLog.push('focusin'); }, { once: true });
-            document.addEventListener('beforeinput', function() { eventLog.push('beforeinput'); }, { once: true });
-            document.addEventListener('input', function() { eventLog.push('input'); }, { once: true });
+            const host = document.createElement('div');
+            host.id = 'shadow-host';
+            document.body.appendChild(host);
 
-            const focusEvent = new Event('focusin', { bubbles: true, composed: true });
-            const beforeInputEvent = new Event('beforeinput', { bubbles: true, composed: true, cancelable: true });
-            const inputEvent = new Event('input', { bubbles: true, composed: true });
-            shadowInput.dispatchEvent(focusEvent);
-            shadowInput.dispatchEvent(beforeInputEvent);
-            shadowInput.dispatchEvent(inputEvent);
+            const shadow = host.attachShadow({ mode: 'open' });
+            const shadowInput = document.createElement('input');
+            shadowInput.id = 'shadow';
+            setInputAssistEnabled(shadowInput);
+            shadow.appendChild(shadowInput);
 
-            window['__inputAssistEventState'] = eventLog.join(',') + '|' + String(beforeInputEvent.defaultPrevented) + '|' + String(inputEvent.defaultPrevented);
-            return window['__inputAssistEventState'];
+            return 'created';
 
             function setInputAssistEnabled(element) {
               element.setAttribute('autocomplete', 'email');
@@ -406,74 +286,125 @@ internal class WebViewRuntimeSmokeTest {
           })()
           """.trimIndent(),
         ).value,
-      )
-      assertEquals("focusin,beforeinput,input|false|false", eventResult)
+      ),
+    )
 
-      waitForJavaScript(
-        panel.webView,
+    waitForJavaScript(
+      panel.webView,
+      """
+        (function() {
+          return [
+            inputAssistState(document.getElementById('existing')),
+            inputAssistState(document.getElementById('dynamic')),
+            inputAssistState(document.getElementById('shadow-host').shadowRoot.getElementById('shadow'))
+          ].join(';');
+
+          function inputAssistState(element) {
+            const attributeNames = ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'];
+            return attributeNames.map(name => element.getAttribute(name)).join('|') + '|' + String(element.spellcheck);
+          }
+        })()
+      """.trimIndent(),
+      "off|off|off|false|false;off|off|off|false|false;off|off|off|false|false",
+      "Dynamic and shadow-root form control input assist attributes were not disabled",
+    )
+
+    val eventResult = javaScriptResultContent(
+      panel.webView.evaluateJavaScript(
+        /*language=JavaScript*/
         """
-          (function() {
-            return [
-              inputAssistState(document.getElementById('existing')),
-              inputAssistState(document.getElementById('dynamic')),
-              inputAssistState(document.getElementById('shadow-host').shadowRoot.getElementById('shadow')),
-              window['__inputAssistEventState']
-            ].join(';');
+        (function() {
+          const existing = document.getElementById('existing');
+          const dynamic = document.getElementById('dynamic');
+          const shadowInput = document.getElementById('shadow-host').shadowRoot.getElementById('shadow');
+          for (const element of [existing, dynamic, shadowInput]) {
+            setInputAssistEnabled(element);
+          }
 
-            function inputAssistState(element) {
-              const attributeNames = ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'];
-              return attributeNames.map(name => element.getAttribute(name)).join('|') + '|' + String(element.spellcheck);
-            }
-          })()
+          const eventLog = [];
+          document.addEventListener('focusin', function() { eventLog.push('focusin'); }, { once: true });
+          document.addEventListener('beforeinput', function() { eventLog.push('beforeinput'); }, { once: true });
+          document.addEventListener('input', function() { eventLog.push('input'); }, { once: true });
+
+          const focusEvent = new Event('focusin', { bubbles: true, composed: true });
+          const beforeInputEvent = new Event('beforeinput', { bubbles: true, composed: true, cancelable: true });
+          const inputEvent = new Event('input', { bubbles: true, composed: true });
+          shadowInput.dispatchEvent(focusEvent);
+          shadowInput.dispatchEvent(beforeInputEvent);
+          shadowInput.dispatchEvent(inputEvent);
+
+          window['__inputAssistEventState'] = eventLog.join(',') + '|' + String(beforeInputEvent.defaultPrevented) + '|' + String(inputEvent.defaultPrevented);
+          return window['__inputAssistEventState'];
+
+          function setInputAssistEnabled(element) {
+            element.setAttribute('autocomplete', 'email');
+            element.setAttribute('autocorrect', 'on');
+            element.setAttribute('autocapitalize', 'sentences');
+            element.setAttribute('spellcheck', 'true');
+            element.spellcheck = true;
+          }
+        })()
         """.trimIndent(),
-        "off|off|off|false|false;off|off|off|false|false;off|off|off|false|false;focusin,beforeinput,input|false|false",
-        "Event-driven input assist hardening did not restore the disabled state",
-      )
-    }
-    finally {
-      panel.close()
-    }
+      ).value,
+    )
+    assertEquals("focusin,beforeinput,input|false|false", eventResult)
+
+    waitForJavaScript(
+      panel.webView,
+      """
+        (function() {
+          return [
+            inputAssistState(document.getElementById('existing')),
+            inputAssistState(document.getElementById('dynamic')),
+            inputAssistState(document.getElementById('shadow-host').shadowRoot.getElementById('shadow')),
+            window['__inputAssistEventState']
+          ].join(';');
+
+          function inputAssistState(element) {
+            const attributeNames = ['autocomplete', 'autocorrect', 'autocapitalize', 'spellcheck'];
+            return attributeNames.map(name => element.getAttribute(name)).join('|') + '|' + String(element.spellcheck);
+          }
+        })()
+      """.trimIndent(),
+      "off|off|off|false|false;off|off|off|false|false;off|off|off|false|false;focusin,beforeinput,input|false|false",
+      "Event-driven input assist hardening did not restore the disabled state",
+    )
   }
 
   @Test
   fun evaluateJavaScript_returnsResultForNestedHost(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
-    try {
-      withContext(Dispatchers.EDT) {
-        frame!!.contentPane.removeAll()
-        frame!!.contentPane.add(JPanel(BorderLayout()).apply {
+    withContext(Dispatchers.EDT) {
+      frame!!.contentPane.removeAll()
+      frame!!.contentPane.add(JPanel(BorderLayout()).apply {
+        add(JPanel().apply {
+          preferredSize = Dimension(10, 24)
+        }, BorderLayout.NORTH)
+        add(JPanel(BorderLayout()).apply {
           add(JPanel().apply {
-            preferredSize = Dimension(10, 24)
-          }, BorderLayout.NORTH)
+            preferredSize = Dimension(16, 10)
+          }, BorderLayout.WEST)
           add(JPanel(BorderLayout()).apply {
-            add(JPanel().apply {
-              preferredSize = Dimension(16, 10)
-            }, BorderLayout.WEST)
-            add(JPanel(BorderLayout()).apply {
-              add(panel.component, BorderLayout.CENTER)
-            }, BorderLayout.CENTER)
-            add(JPanel().apply {
-              preferredSize = Dimension(12, 10)
-            }, BorderLayout.EAST)
+            add(panel.component, BorderLayout.CENTER)
           }, BorderLayout.CENTER)
           add(JPanel().apply {
-            preferredSize = Dimension(10, 28)
-          }, BorderLayout.SOUTH)
+            preferredSize = Dimension(12, 10)
+          }, BorderLayout.EAST)
         }, BorderLayout.CENTER)
-        frame!!.revalidate()
-      }
-
-      panel.webView.loadHtml(/*language=HTML*/ "<html><body>nested</body></html>")
-
-      waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'nested'", "true", "Nested host page did not load")
+        add(JPanel().apply {
+          preferredSize = Dimension(10, 28)
+        }, BorderLayout.SOUTH)
+      }, BorderLayout.CENTER)
+      frame!!.revalidate()
     }
-    finally {
-      panel.close()
-    }
+
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>nested</body></html>")
+
+    waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'nested'", "true", "Nested host page did not load")
   }
 
   @Test
-  fun createAndClose_100times_noLeak(): Unit = runBlocking {
+  fun createAndCancel_100times_noLeak(): Unit = runBlocking {
     withTimeout(2.minutes) {
       repeat(100) { index ->
         @Suppress("RAW_SCOPE_CREATION") // Test: each iteration owns a short-lived WebView scope.
@@ -484,8 +415,7 @@ internal class WebViewRuntimeSmokeTest {
           delay(100.milliseconds)
         }
         finally {
-          panel.close()
-          localScope.cancel()
+          localScope.coroutineContext.job.cancelAndJoin()
           withContext(Dispatchers.EDT) {
             frame!!.contentPane.removeAll()
             frame!!.revalidate()

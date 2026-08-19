@@ -259,8 +259,6 @@ class WebViewFocusInteropRobotTest {
 
   private fun webViewEngineCreationOptions(): WebViewEngineCreationOptions {
     return WebViewEngineCreationOptions(
-      strictPreference = true,
-      jcefNativeBundlePath = null,
       debugName = null,
     )
   }

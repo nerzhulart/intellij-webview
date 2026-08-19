@@ -97,7 +97,7 @@ suspend fun createMyView(scope: CoroutineScope): WebViewPanel {
 }
 ```
 
-Add `panel.component` to the Swing hierarchy on EDT. Cancel or complete the owner scope to dispose the WebView. Do not create a competing manual cleanup path around `WebViewPanel.close()`.
+Add `panel.component` to the Swing hierarchy on EDT. Cancel or complete the owner scope to dispose the WebView. `WebViewPanel` deliberately has no `close()` method: the supplied scope is its only lifetime owner.
 
 Use the panel as the feature entry point:
 

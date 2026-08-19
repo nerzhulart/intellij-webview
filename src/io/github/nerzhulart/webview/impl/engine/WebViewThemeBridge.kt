@@ -7,13 +7,14 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.colors.EditorColorsListener
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.ui.JBColor
+import com.intellij.util.asDisposable
+import com.intellij.util.ui.JBFont
+import com.intellij.util.ui.JBUI
 import io.github.nerzhulart.webview.api.WebViewApiId
 import io.github.nerzhulart.webview.api.WebViewCallable
 import io.github.nerzhulart.webview.api.WebViewImplementable
 import io.github.nerzhulart.webview.api.WebViewInterop
-import io.github.nerzhulart.webview.api.WebViewMessageRegistration
-import com.intellij.util.ui.JBFont
-import com.intellij.util.ui.JBUI
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.Serializable
 import javax.swing.UIManager
 import kotlin.math.ceil
@@ -23,10 +24,10 @@ internal fun String?.withWebViewTheme(): String {
   return if (isNullOrEmpty()) themeQuery else "$this&$themeQuery"
 }
 
-internal fun WebViewInterop.registerThemeHandler(): WebViewMessageRegistration {
+internal fun WebViewInterop.installThemeBridge(scope: CoroutineScope) {
   val themeEvents = callable(WebViewThemeHostEvents.ID)
-  val connection = ApplicationManager.getApplication().messageBus.connect()
-  val themeRequestRegistration = implement(WebViewThemePageEvents.ID, object : WebViewThemePageEvents {
+  val connection = ApplicationManager.getApplication().messageBus.connect(scope.asDisposable())
+  implement(WebViewThemePageEvents.ID, object : WebViewThemePageEvents {
     override fun themeRequest() {
       sendThemeChanged(themeEvents)
     }
@@ -40,16 +41,6 @@ internal fun WebViewInterop.registerThemeHandler(): WebViewMessageRegistration {
   connection.subscribe(EditorColorsManager.TOPIC, EditorColorsListener { _ ->
     sendThemeChanged(themeEvents)
   })
-  return object : WebViewMessageRegistration {
-    @Volatile private var closed = false
-
-    override fun close() {
-      if (closed) return
-      closed = true
-      themeRequestRegistration.close()
-      connection.disconnect()
-    }
-  }
 }
 
 private fun sendThemeChanged(themeEvents: WebViewThemeHostEvents) {

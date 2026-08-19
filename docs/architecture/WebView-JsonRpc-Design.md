@@ -37,7 +37,7 @@ The bridge uses the reserved notification:
 $/cancelRequest
 ```
 
-Its payload contains the request ID and an optional message. The bus cancels the matching incoming handler job. Closing the bus cancels all active incoming calls and detaches transport processing.
+Its payload contains the request ID and an optional message. The bus cancels the matching incoming handler job. Closing the internal bus cancels all active incoming calls and detaches transport processing.
 
 ## Error Codes
 
@@ -55,7 +55,7 @@ Unexpected handler failures are converted to an internal error and logged. Notif
 
 Incoming and outgoing frame channels have a capacity of 128. Native callbacks cannot suspend, so inbound overflow is logged and dropped. Outgoing notifications apply coroutine back-pressure.
 
-The owner scope controls the complete lifecycle. Closing a WebView stops frame production, cancels handlers, closes the bus, and then closes the engine.
+The owner scope controls the complete lifecycle. Cancelling it stops frame production, cancels handlers, and closes the internal bus and engine.
 
 ## Reserved Methods
 
@@ -67,7 +67,7 @@ Maintain coverage for:
 
 - request/response success and typed serialization failures;
 - method-not-found and handler errors;
-- remote cancellation and close-time cancellation;
+- remote cancellation and scope-cancellation cleanup;
 - duplicate method registration;
 - unknown response IDs;
 - notification failure isolation;

@@ -1,12 +1,15 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package io.github.nerzhulart.webview.impl.engine
 
+import com.intellij.util.concurrency.annotations.RequiresEdt
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
-import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.WebViewEditShortcutPolicy
+import io.github.nerzhulart.webview.impl.WebViewFocusEntrySink
+import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
+import kotlinx.coroutines.CoroutineScope
 import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.awt.Component
@@ -25,10 +28,19 @@ import javax.swing.JComponent
 interface WebViewEngine {
   val isHeavyweight: Boolean
 
-  /**
-   * Cached component of the webview
-   */
+  /** Backend-owned Swing component, such as the JCEF browser component. Native engines return `null`. */
   val component: JComponent?
+
+  /** Creates the Swing host used for both lightweight and heavyweight engines. */
+  @ApiStatus.Internal
+  @RequiresEdt
+  fun createHostComponent(
+    scope: CoroutineScope,
+    focusEntrySink: WebViewFocusEntrySink,
+  ): SwingWebViewHostPanel {
+    return SwingWebViewHostPanel(scope, this, focusEntrySink)
+  }
+
   suspend fun loadFile(file: Path)
 
   /**
@@ -44,6 +56,7 @@ interface WebViewEngine {
    */
   suspend fun evaluateJavaScript(@Language("JavaScript") script: String): String?
 
+  /** Closes the backend resource. The owning WebView scope is the public lifecycle API. */
   suspend fun close()
   suspend fun transferToJs(rawJson: String)
   fun setFromJsHandler(handler: WebViewJsMessageReceiver)

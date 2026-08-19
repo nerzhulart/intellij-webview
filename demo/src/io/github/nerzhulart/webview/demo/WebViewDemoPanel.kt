@@ -5,7 +5,6 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.ui.components.JBLabel
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
-import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
 import com.intellij.util.ui.JBUI
@@ -44,8 +43,6 @@ internal class WebViewDemoPanel(
 
   }
 
-  @Volatile private var panel: WebViewPanel? = null
-
   val component: JComponent = JPanel(BorderLayout()).apply {
     preferredSize = demoPreferredSize()
     minimumSize = demoMinimumSize()
@@ -53,12 +50,6 @@ internal class WebViewDemoPanel(
 
   init {
     loadSampleFromResources()
-  }
-
-  fun dispose() {
-    scope.launch {
-      panel?.close()
-    }
   }
 
   private fun loadSampleFromResources() {
@@ -81,7 +72,6 @@ internal class WebViewDemoPanel(
               component.repaint()
             }
         }
-        panel = createdPanel
         val bus = createdPanel.interop.messageBus
         DemoBoardProducer(scope, bus).start()
       }

@@ -3,6 +3,7 @@ package io.github.nerzhulart.webview
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.extensions.ExtensionPoint
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.Disposer
@@ -10,7 +11,6 @@ import com.intellij.openapi.util.registry.Registry
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.testFramework.junit5.TestDisposable
 import com.intellij.ui.jcef.JBCefApp
-import io.github.nerzhulart.webview.impl.engine.WebView
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
@@ -19,9 +19,11 @@ import io.github.nerzhulart.webview.impl.jcef.JcefEngineProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.cef.CefApp
 import org.junit.jupiter.api.AfterAll
@@ -49,15 +51,15 @@ internal class JcefWebViewRuntimeSelectionTest {
 
       @Suppress("RAW_SCOPE_CREATION") // Test: no parent scope available without product code.
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-      var webView: WebView? = null
       try {
-        webView = WebViewRuntime.getInstance().createWebView(scope)
+        val webView = withContext(Dispatchers.EDT) {
+          WebViewRuntime.getInstance().createWebView(scope)
+        }
 
         assertEquals(WebViewEngineId.JCEF, webView.runtimeInfo.engineId)
       }
       finally {
-        webView?.close()
-        scope.cancel()
+        scope.coroutineContext.job.cancelAndJoin()
       }
     }
   }

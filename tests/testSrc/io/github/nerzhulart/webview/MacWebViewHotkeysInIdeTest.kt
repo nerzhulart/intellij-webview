@@ -25,9 +25,10 @@ import io.github.nerzhulart.webview.impl.mac.MacWkWebViewEngineProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.intellij.lang.annotations.Language
@@ -138,10 +139,9 @@ internal class MacWebViewHotkeysInIdeTest {
     }
     finally {
       runCatching { webViewHost?.let { clearWebViewFocus(it) } }
-      runCatching { panel?.close() }
       runCatching { disposeFrame(frame) }
       runtime.providers = savedProviders
-      scope.cancel()
+      scope.coroutineContext.job.cancelAndJoin()
     }
   }
 

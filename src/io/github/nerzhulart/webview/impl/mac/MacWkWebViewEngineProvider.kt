@@ -16,7 +16,7 @@ import org.jetbrains.annotations.ApiStatus
 internal class MacWkWebViewEngineProvider : WebViewEngineProvider {
   override val id: WebViewEngineId = WebViewEngineId.SYSTEM_MACOS
   override val displayName: String = "WebKit"
-  override val capabilities = WebViewEngineCapabilities(assetServing = true, messagePassing = true, swingEmbedding = true, interactiveInput = true)
+  override val capabilities = WebViewEngineCapabilities(assetServing = true, messagePassing = true, interactiveInput = true)
 
   override fun selectionPriority(preference: WebViewEngineKind): Int? {
     return when (preference) {

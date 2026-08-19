@@ -1,20 +1,36 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package io.github.nerzhulart.webview.impl.engine
 
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.registry.RegistryManager
+import com.intellij.platform.util.coroutines.childScope
 import com.intellij.util.concurrency.annotations.RequiresEdt
+import io.github.nerzhulart.webview.api.WebViewAssetPath
+import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
+import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
+import io.github.nerzhulart.webview.impl.registerConsole
+import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
-import java.awt.BorderLayout
-import java.util.*
-import javax.swing.JPanel
+import java.util.MissingResourceException
 
 private val LOG = logger<WebViewRuntime>()
 
@@ -29,6 +45,7 @@ class WebViewRuntime {
       providersOverride = value
     }
 
+  @RequiresEdt
   suspend fun createWebView(
     scope: CoroutineScope,
     options: WebViewCreationOptions = WebViewCreationOptions(),
@@ -46,14 +63,13 @@ class WebViewRuntime {
         "webview.runtime.createWebView.provider",
         "provider=${provider.id}, preference=$preference, debugName=${options.debugName.orEmpty()}",
       ) {
-        provider.createWebView(
-          webViewScope = scope,
+        createWebViewSession(
+          parentScope = scope,
+          provider = provider,
           options = WebViewEngineCreationOptions(
-            strictPreference = true,
-            jcefNativeBundlePath = null,
             debugName = options.debugName,
-            consoleLogCategory = options.consoleLogCategory,
           ),
+          consoleLogCategory = options.consoleLogCategory,
         )
       }
     }
@@ -64,65 +80,129 @@ class WebViewRuntime {
     scope: CoroutineScope,
     options: WebViewPanelOptions,
   ): WebViewPanel {
-    var webView: WebView? = null
     return LOG.traceWebViewPerf(
       "webview.panel.create.total",
       "viewId=${options.assetRoot.viewId}, debugName=${options.debugName.orEmpty()}",
     ) {
+      val preference = resolveEnginePreference(WebViewEngineKind.System)
+      val requirements = WebViewEngineRequirements(
+        assetServing = true,
+        messagePassing = true,
+      )
+      val provider = selectProvider(
+        preference = preference,
+        requirements = requirements,
+      )
+      val webView = LOG.traceWebViewPerf(
+        "webview.panel.session.create",
+        panelDiagnosticDetails(options, preference, provider.id),
+      ) {
+        createWebViewSession(
+          parentScope = scope,
+          provider = provider,
+          options = WebViewEngineCreationOptions(debugName = options.debugName),
+          consoleLogCategory = options.consoleLogCategory,
+          initialPage = InitialWebViewPage(options.assetRoot, options.indexPath, options.query),
+        )
+      }
+      WebViewPanel(webView, options.assetRoot, options.indexPath, options.query)
+    }
+  }
+
+  @RequiresEdt
+  private suspend fun createWebViewSession(
+    parentScope: CoroutineScope,
+    provider: WebViewEngineProvider,
+    options: WebViewEngineCreationOptions,
+    consoleLogCategory: String,
+    initialPage: InitialWebViewPage? = null,
+  ): WebViewSession {
+    parentScope.ensureActive()
+    val debugName = options.debugName ?: provider.displayName
+    val viewScope = parentScope.childScope("WebView: $debugName")
+    val ready = CompletableDeferred<WebViewSession>(viewScope.coroutineContext.job)
+
+    viewScope.launch(
+      context = CoroutineName("WebView lifetime: $debugName"),
+      start = CoroutineStart.UNDISPATCHED,
+    ) {
       try {
-        val preference = resolveEnginePreference(WebViewEngineKind.System)
-        val requirements = WebViewEngineRequirements(
-          assetServing = true,
-          messagePassing = true,
-          swingEmbedding = true,
-        )
-        val provider = selectProvider(
-          preference = preference,
-          requirements = requirements,
-        )
-        val createdWebView = LOG.traceWebViewPerf(
-          "webview.panel.provider.createWebView",
-          panelDiagnosticDetails(options, preference, provider.id),
+        val engine = LOG.traceWebViewPerf(
+          "webview.engine.create",
+          "provider=${provider.id}, debugName=${options.debugName.orEmpty()}",
         ) {
-          provider.createWebView(
-            webViewScope = scope,
-            options = WebViewEngineCreationOptions(
-              strictPreference = true,
-              jcefNativeBundlePath = null,
-              debugName = options.debugName,
-              consoleLogCategory = options.consoleLogCategory,
-            ),
+          provider.createEngine(
+            viewScope,
+            options.withDocumentStartScript(WebViewConsoleCapture.DOCUMENT_START_SCRIPT),
           )
         }
-        val webViewInstance = createdWebView
-        webView = webViewInstance
-        val hostComponent = LOG.traceWebViewPerf(
-          "webview.panel.hostComponent.create",
-          panelDiagnosticDetails(options, preference, provider.id),
-        ) {
-          createdWebView.createHostComponent()
+        try {
+          val bus = WebViewMessageBusImpl(viewScope, engine)
+          try {
+            val runtimeInfo = WebViewRuntimeInfo(provider.id, provider.capabilities, provider.displayName)
+            val consoleCapture = bus.registerConsole(consoleLogCategory)
+            bus.registerRuntimeInfoHandler(runtimeInfo)
+            bus.interop.installThemeBridge(viewScope)
+
+            val host = withContext(Dispatchers.EDT) {
+              LOG.traceWebViewPerf(
+                "webview.host.create",
+                "provider=${provider.id}, debugName=${options.debugName.orEmpty()}",
+              ) {
+                engine.createHostComponent(viewScope, bus.interop.createWebViewFocusEntrySink())
+              }
+            }
+            try {
+              bus.interop.registerWebViewFocusExitHandler(host)
+              val session = WebViewSession(
+                engine = engine,
+                consoleCapture = consoleCapture,
+                component = host,
+                interop = bus.interop,
+                runtimeInfo = runtimeInfo,
+                debugName = options.debugName,
+              )
+              ready.complete(session)
+              awaitCancellation()
+            }
+            finally {
+              withContext(NonCancellable + Dispatchers.EDT) {
+                runCatching { host.close() }
+                  .onFailure { LOG.warn("Failed to close WebView Swing host: $debugName", it) }
+              }
+            }
+          }
+          finally {
+            runCatching { bus.close() }
+              .onFailure { LOG.warn("Failed to close WebView message bus: $debugName", it) }
+          }
         }
-        val panelComponent = JPanel(BorderLayout()).apply {
-          add(hostComponent, BorderLayout.CENTER)
+        finally {
+          withContext(NonCancellable) {
+            runCatching { engine.close() }
+              .onFailure { LOG.warn("Failed to close WebView engine: $debugName", it) }
+          }
         }
-        val panel = WebViewPanel(webViewInstance, panelComponent) { webView ->
-          webView.loadAsset(options.assetRoot, options.indexPath, options.query)
-        }
-        LOG.traceWebViewPerf(
-          "webview.panel.firstReload",
-          panelDiagnosticDetails(options, preference, provider.id),
-        ) {
-          panel.reload()
-        }
-        panel
       }
-      catch (t: Throwable) {
-        webView?.let { createdWebView ->
-          runCatching { createdWebView.close() }
-            .onFailure { closeFailure -> t.addSuppressed(closeFailure) }
-        }
-        throw t
+      catch (failure: Throwable) {
+        if (!ready.completeExceptionally(failure)) throw failure
       }
+    }
+
+    return try {
+      val session = ready.await()
+      viewScope.ensureActive()
+      initialPage?.let { page ->
+        session.loadAsset(page.root, page.entry, page.query)
+      }
+      session
+    }
+    catch (failure: Throwable) {
+      viewScope.cancel("WebView creation failed", failure)
+      withContext(NonCancellable) {
+        viewScope.coroutineContext.job.join()
+      }
+      throw failure
     }
   }
 
@@ -289,3 +369,9 @@ class WebViewRuntime {
     fun getInstance(): WebViewRuntime = service()
   }
 }
+
+private data class InitialWebViewPage(
+  val root: WebViewAssetRoot,
+  val entry: WebViewAssetPath,
+  val query: String?,
+)

@@ -23,7 +23,6 @@ data class WebViewRuntimeInfo(
 data class WebViewEngineRequirements(
   val assetServing: Boolean = false,
   val messagePassing: Boolean = false,
-  val swingEmbedding: Boolean = false,
   val interactiveInput: Boolean = false,
 )
 
@@ -31,13 +30,12 @@ data class WebViewEngineRequirements(
 data class WebViewEngineCapabilities(
   val assetServing: Boolean,
   val messagePassing: Boolean,
-  val swingEmbedding: Boolean,
   val interactiveInput: Boolean,
 ) {
+  // TODO: unused?
   fun satisfies(requirements: WebViewEngineRequirements): Boolean {
     return (!requirements.assetServing || assetServing) &&
            (!requirements.messagePassing || messagePassing) &&
-           (!requirements.swingEmbedding || swingEmbedding) &&
            (!requirements.interactiveInput || interactiveInput)
   }
 
@@ -45,7 +43,6 @@ data class WebViewEngineCapabilities(
     return buildList {
       if (requirements.assetServing && !assetServing) add("assetServing")
       if (requirements.messagePassing && !messagePassing) add("messagePassing")
-      if (requirements.swingEmbedding && !swingEmbedding) add("swingEmbedding")
       if (requirements.interactiveInput && !interactiveInput) add("interactiveInput")
     }
   }

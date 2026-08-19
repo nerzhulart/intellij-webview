@@ -6,11 +6,12 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFocusManager
-import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
 import com.intellij.util.concurrency.annotations.RequiresEdt
 import com.intellij.util.ui.EDT
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
+import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
 import org.jetbrains.annotations.ApiStatus
 import java.awt.AWTEvent
 import java.awt.BorderLayout
@@ -37,7 +38,6 @@ import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import java.awt.image.DataBufferInt
 import java.beans.PropertyChangeListener
-import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JRootPane
 import javax.swing.RootPaneContainer
@@ -46,7 +46,7 @@ import javax.swing.SwingUtilities
 private val LOG = logger<SwingWebViewHostPanel>()
 
 /**
- * Swing host panel that manages the lifecycle of a native [WebViewEngine].
+ * Swing host panel for a [WebViewEngine].
  *
  * The native WebView is attached in [addNotify] when the panel joins a displayable Swing
  * hierarchy, and detached in [removeNotify] when the panel is removed. The first native show
@@ -58,9 +58,9 @@ private val LOG = logger<SwingWebViewHostPanel>()
  * to the owning native UI thread.
  */
 @ApiStatus.Internal
-internal class SwingWebViewHostPanel(
-  val scope: CoroutineScope,
-  val engine: WebViewEngine,
+class SwingWebViewHostPanel internal constructor(
+  private val scope: CoroutineScope,
+  private val engine: WebViewEngine,
   private val focusEntrySink: WebViewFocusEntrySink? = null,
 ) : JPanel(BorderLayout()), KeyboardAwareFocusOwner {
 
@@ -154,9 +154,6 @@ internal class SwingWebViewHostPanel(
     }
   }
 
-  val component: JComponent
-    get() = this
-
   override fun skipKeyEventDispatcher(event: KeyEvent): Boolean {
     val policy = engine.editShortcutPolicy
     if (policy == WebViewEditShortcutPolicy.NONE || !focusInsideHost) return false
@@ -245,6 +242,8 @@ internal class SwingWebViewHostPanel(
   @RequiresEdt
   override fun addNotify() {
     super.addNotify()
+    // TODO: bad pattern?
+    if (!scope.isActive) return
     installListeners()
     ensureNativePeerAttached()
     syncNativePeerFromSwingEvent(allowReveal = false)
@@ -302,6 +301,8 @@ internal class SwingWebViewHostPanel(
   @RequiresEdt
   private fun ensureNativePeerAttached(): Boolean {
     if (engineAttached) return true
+    // TODO: bad pattern
+    if (!scope.isActive) return false
     if (!isDisplayable) return false
     engineAttached = engine.attach(this)
     if (engineAttached) {
@@ -347,13 +348,13 @@ internal class SwingWebViewHostPanel(
     return isDisplayable && isShowing && width > 0 && height > 0 && engine.hasNonEmptyNativeBounds(this)
   }
 
-  fun requestWebViewFocus() {
+  internal fun requestWebViewFocus() {
     logFocus("request.webViewFocus", focusDiagnostics())
     requestSwingFocusForNativeWebViewFocusIfNeeded()
     engine.requestFocus()
   }
 
-  fun clearWebViewFocus() {
+  internal fun clearWebViewFocus() {
     logFocus("clear.webViewFocus", focusDiagnostics())
     engine.clearFocus()
   }
@@ -485,6 +486,19 @@ internal class SwingWebViewHostPanel(
   internal fun clearSnapshotImage() {
     snapshotImage = null
     repaint()
+  }
+
+  @RequiresEdt
+  internal fun close() {
+    unregisterHeavyweight()
+    if (engineAttached) {
+      engine.detach()
+      engineAttached = false
+    }
+    uninstallListeners()
+    removeFocusListener(webViewFocusListener)
+    engine.component?.removeFocusListener(webViewFocusListener)
+    clearSnapshotImage()
   }
 
   private fun installListeners() {

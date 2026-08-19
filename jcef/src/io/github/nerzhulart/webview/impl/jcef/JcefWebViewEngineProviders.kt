@@ -30,7 +30,7 @@ internal class JcefEngineProvider : WebViewEngineProvider {
   }
 }
 
-private val JCEF_CAPABILITIES = WebViewEngineCapabilities(assetServing = true, messagePassing = true, swingEmbedding = true, interactiveInput = true)
+private val JCEF_CAPABILITIES = WebViewEngineCapabilities(assetServing = true, messagePassing = true, interactiveInput = true)
 private const val JCEF_EXPLICIT_PRIORITY = 10
 private const val LINUX_DEFAULT_PRIORITY = 0
 private const val SYSTEM_FALLBACK_PRIORITY = 100
