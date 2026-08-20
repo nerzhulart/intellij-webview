@@ -100,12 +100,12 @@ internal class WinWebViewOverlayBoundsTest {
       }
       host = hostPanel
     }
-    assertTrue(bridge.visibilitySnapshot().none { it.visible }, bridge.visibilitySnapshot().toString())
     runInEdtAndWait {
       bridge.callbacks.onCreated(bridge.createdHandles.single())
     }
     assertEquals(Bounds(0, 0, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
-    assertVisibilityApplied(Visibility(1L, true))
+    // Placement is expressed by geometry alone; the controller visibility is never toggled.
+    assertTrue(bridge.visibilitySnapshot().isEmpty(), bridge.visibilitySnapshot().toString())
   }
 
   private fun createOverlayFixture(): OverlayFixture {
@@ -147,19 +147,6 @@ internal class WinWebViewOverlayBoundsTest {
     val fullBounds = expectedBounds(host)
     val bounds = bridge.boundsSnapshot()
     assertEquals(fullBounds, bounds.lastOrNull()?.bounds, bounds.toString())
-  }
-
-  private fun assertVisibilityApplied(visibility: Visibility) {
-    val visibilitySnapshot: List<Visibility> = runBlocking {
-      val deadline = System.currentTimeMillis() + 1_000
-      var snapshot = bridge.visibilitySnapshot()
-      while (snapshot.lastOrNull() != visibility && System.currentTimeMillis() < deadline) {
-        delay(10)
-        snapshot = bridge.visibilitySnapshot()
-      }
-      snapshot
-    }
-    assertEquals(visibility, visibilitySnapshot.lastOrNull(), visibilitySnapshot.toString())
   }
 
   private data class OverlayFixture(
@@ -207,7 +194,14 @@ internal class WinWebViewOverlayBoundsTest {
 
     fun visibilitySnapshot(): List<Visibility> = visibility.toList()
 
-    override fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    override fun create(
+      parentHwnd: Long,
+      generation: Long,
+      userDataDir: String,
+      documentStartScript: String,
+      backgroundColor: Int,
+      callbacks: WinWebView2Bridge.Callbacks,
+    ): Long {
       this.callbacks = callbacks
       return nextHandle++.also { createdHandles.add(it) }
     }
@@ -216,18 +210,22 @@ internal class WinWebViewOverlayBoundsTest {
       callbacks.onDestroyed(handle)
     }
 
-    override fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) {
-    }
-
-    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean = true
-
-    override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
+    /** The native reconcile expresses placement as geometry only, so [visibility] stays empty. */
+    override fun setHostState(
+      handle: Long,
+      parentHwnd: Long,
+      x: Int,
+      y: Int,
+      width: Int,
+      height: Int,
+      scale: Double,
+      visible: Boolean,
+      generation: Long,
+    ) {
       bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
     }
 
-    override fun setVisible(handle: Long, visible: Boolean) {
-      visibility.add(Visibility(handle, visible))
-    }
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean = true
 
     override fun focus(handle: Long) {
     }

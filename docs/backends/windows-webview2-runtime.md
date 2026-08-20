@@ -18,7 +18,8 @@ The provider is available when the plugin-local native DLL can be loaded and its
 - `WebView2Dispatcher` owns one dedicated STA thread and a blocking Win32 message loop.
 - Rust owns the shared WebView2 environment, controller, browser instance, child HWND, native handlers, and script callbacks.
 - Kotlin owns lifecycle state, asset resolution, RPC integration, host geometry, and shortcut routing.
-- Hot-path bounds, visibility, focus, attachment, and navigation updates are coalesced before dispatch.
+- Placement is one immutable `HostState` snapshot (parent, bounds, scale, visibility) sent through a single native command and applied by a single `reconcile`; focus and navigation updates are coalesced separately.
+- The controller lives on the AWT `Canvas` HWND, is reparented only into the limbo window when the peer dies, and never has its `IsVisible` toggled - see [Windows Reparent Flash Measurement](windows-webview2-reparent-flash.md).
 
 The remaining focus/thread hardening work is tracked in [Windows WebView2 Threading Follow-up](windows-webview2-off-edt-plan.md).
 

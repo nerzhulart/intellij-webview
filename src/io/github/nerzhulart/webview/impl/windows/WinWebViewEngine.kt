@@ -48,8 +48,10 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.SwingUtilities
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import kotlin.time.measureTimedValue
@@ -65,10 +67,37 @@ internal class WinWebViewEngine(
   private val webViewDispatcher: CoroutineDispatcher = ImmediateWebViewDispatcher,
   private val devToolsCpuProfilingEnabled: () -> Boolean = { Registry.get(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY).asBoolean() },
   private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
+  private val componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
 
   private val canvas = object : Canvas() {
+    init {
+      // The AWT peer erases with the component background; the default near-white brush is a
+      // major part of the perceived flash while the native controller has no frame to present.
+      background = java.awt.Color(HOST_BACKGROUND_RGB)
+    }
+
+    override fun addNotify() {
+      // AWT creates the peer with whatever bounds the component carries over from its previous
+      // parent, and the peer is a child of the frame HWND, so it appears at (0, 0) of the client
+      // area in full size until Swing lays it out - a white rectangle over the whole UI for about
+      // a hundred milliseconds. A peer born empty has nothing to show, and the layout that follows
+      // gives it its real bounds.
+      val beforePeerCreation = bounds
+      setBounds(0, 0, 0, 0)
+      super.addNotify()
+      reattachControllerAfterPeerCreation()
+      revalidate()
+      // Being added to an already valid container produces no layout pass, and then nobody would
+      // ever give the canvas its size back.
+      SwingUtilities.invokeLater {
+        if (isDisplayable && (width == 0 || height == 0) && !beforePeerCreation.isEmpty) {
+          bounds = beforePeerCreation
+        }
+      }
+    }
+
     override fun removeNotify() {
       parkControllerBeforePeerDisposal(this)
       super.removeNotify()
@@ -96,12 +125,19 @@ internal class WinWebViewEngine(
     val error: String?,
   )
 
-  private data class PendingBounds(
+  /**
+   * The whole Swing-side placement in one immutable snapshot. `parentHwnd == 0` means the AWT peer
+   * is gone; `visible == false` means Swing does not show the host, which the native side expresses
+   * as geometry only - the controller visibility is never toggled.
+   */
+  internal data class HostState(
+    val parentHwnd: Long,
     val x: Int,
     val y: Int,
     val width: Int,
     val height: Int,
     val scale: Double,
+    val visible: Boolean,
   )
 
   private val state = AtomicReference(State.New)
@@ -140,31 +176,38 @@ internal class WinWebViewEngine(
   @Volatile
   private var lastLoad: PendingLoad? = null
 
-  private val pendingBounds = AtomicReference<PendingBounds?>(null)
-  private val boundsScheduled = AtomicBoolean(false)
-
-  @Volatile
-  private var lastBounds: PendingBounds? = null
-
-  private val visibilityScheduled = AtomicBoolean(false)
   private val pendingFocusOp = AtomicReference<FocusOp?>(null)
   private val focusScheduled = AtomicBoolean(false)
-  private val pendingAttachParent = AtomicLong(0)
-  private val pendingAttachGeneration = AtomicLong(0)
-  private val attachScheduled = AtomicBoolean(false)
-  private val hostGeneration = AtomicLong(0)
+
+  /** The only placement channel: the latest requested snapshot, its coalescer and what native has. */
+  private val pendingState = AtomicReference<HostState?>(null)
+  private val syncScheduled = AtomicBoolean(false)
 
   @Volatile
-  private var currentParentHwnd: Long = 0
+  private var lastApplied: HostState? = null
+
+  private val hostGeneration = AtomicLong(0)
+
+  /** Reveal gate: the parent whose surface already holds a frame, plus the raw Swing snapshot. */
+  @Volatile
+  private var revealedParent: Long = 0
+
+  @Volatile
+  private var lastObservedState: HostState? = null
+
+  @Volatile
+  private var revealBlockedSince: TimeMark? = null
+
+  private val revealRecheckScheduled = AtomicBoolean(false)
+
+  private val currentParentHwnd: Long
+    get() = lastApplied?.parentHwnd ?: 0
 
   @Volatile
   private var shortcutTarget: Component? = null
 
   @Volatile
   private var focusGainedHandler: () -> Unit = {}
-
-  @Volatile
-  private var hidden = false
 
   private var consecutiveRenderUnresponsiveCount = 0
 
@@ -291,40 +334,20 @@ internal class WinWebViewEngine(
     inboundMessageHandler = handler::transferFromJs
   }
 
-  internal fun attachToParent(parentHwnd: Long) {
-    val generation = hostGeneration.incrementAndGet()
-    attachToParent(parentHwnd, generation)
-  }
-
-  private fun attachToParent(parentHwnd: Long, generation: Long) {
-    currentParentHwnd = parentHwnd
-    pendingAttachParent.set(parentHwnd)
-    pendingAttachGeneration.set(generation)
-    if (state.compareAndSet(State.New, State.Creating)) {
+  /**
+   * The single placement request. Everything downstream is derived from [desired]: the native side
+   * is told the whole state and reconciles it, so the caller never sequences attach/bounds/visibility.
+   */
+  internal fun requestHostState(desired: HostState) {
+    pendingState.set(desired)
+    if (desired.parentHwnd != 0L && state.compareAndSet(State.New, State.Creating)) {
       invokeOnWebView { performCreate() }
       return
     }
     val currentState = state.get()
     if (currentState == State.Creating || currentState == State.Active) {
-      scheduleAttachApply()
+      scheduleSync()
     }
-  }
-
-  internal fun attachToParent(parentHwnd: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
-    pendingBounds.set(PendingBounds(x, y, width, height, scale))
-    attachToParent(parentHwnd)
-  }
-
-  internal fun setBounds(x: Int, y: Int, width: Int, height: Int, scale: Double) {
-    pendingBounds.set(PendingBounds(x, y, width, height, scale))
-    if (state.get() == State.Closed) return
-    scheduleBoundsApply()
-  }
-
-  internal fun setHidden(hidden: Boolean) {
-    this.hidden = hidden
-    if (state.get() == State.Closed) return
-    scheduleVisibilityApply()
   }
 
   override fun requestFocus() {
@@ -506,7 +529,7 @@ internal class WinWebViewEngine(
   }
 
   private fun applyPendingState(handle: Long) {
-    applyAttachmentState(handle)
+    pendingState.get()?.let { applyHostState(handle, it) }
     when (val load = pendingLoad.getAndSet(null)) {
       is PendingLoad.Url -> applyLoad(handle, load)
       is PendingLoad.Html -> applyLoad(handle, load)
@@ -514,25 +537,29 @@ internal class WinWebViewEngine(
     }
   }
 
-  private fun applyAttachmentState(handle: Long) {
-    pendingBounds.getAndSet(null)?.let {
-      lastBounds = it
-      applyBounds(handle, it)
-    }
-    applyVisibility(handle)
-  }
-
   private fun performCreate() {
-    val parent = pendingAttachParent.getAndSet(0)
-    val generation = pendingAttachGeneration.getAndSet(0)
-    if (parent == 0L || state.get() == State.Closed) return
+    val desired = pendingState.get() ?: return
+    if (desired.parentHwnd == 0L || state.get() == State.Closed) return
     try {
       LOG.webViewLifecycle("win-webview2-create", "initializing WebView2${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
+      val generation = hostGeneration.incrementAndGet()
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", diagnosticDetails()) {
-        bridge.create(parent, generation, userDataDir().toString(), documentStartScript, callbacks)
+        bridge.create(desired.parentHwnd, generation, userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
       }
-      applyAttachmentState(nativeHandle)
+      // The controller is born on this parent, so only the geometry part of the snapshot is left.
+      lastApplied = desired
+      bridge.setHostState(
+        nativeHandle,
+        desired.parentHwnd,
+        desired.x,
+        desired.y,
+        desired.width,
+        desired.height,
+        desired.scale,
+        desired.visible,
+        generation,
+      )
     }
     catch (t: Throwable) {
       state.set(State.Closed)
@@ -544,48 +571,43 @@ internal class WinWebViewEngine(
     }
   }
 
-  private fun scheduleAttachApply() {
-    if (!attachScheduled.compareAndSet(false, true)) return
+  private fun scheduleSync() {
+    if (!syncScheduled.compareAndSet(false, true)) return
     invokeOnWebView {
-      attachScheduled.set(false)
+      syncScheduled.set(false)
       val handle = nativeHandle
       if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      val parent = pendingAttachParent.getAndSet(0)
-      val generation = pendingAttachGeneration.getAndSet(0)
-      if (parent == 0L) return@invokeOnWebView
-      bridge.attachToParent(handle, parent, generation)
-      applyAttachmentState(handle)
+      val desired = pendingState.get() ?: return@invokeOnWebView
+      applyHostState(handle, desired)
     }
   }
 
-  private fun applyBounds(handle: Long, bounds: PendingBounds) {
-    bridge.setBounds(handle, bounds.x, bounds.y, bounds.width, bounds.height, bounds.scale)
-  }
-
-  private fun scheduleBoundsApply() {
-    if (!boundsScheduled.compareAndSet(false, true)) return
-    invokeOnWebView {
-      boundsScheduled.set(false)
-      val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      val bounds = pendingBounds.getAndSet(null) ?: return@invokeOnWebView
-      lastBounds = bounds
-      applyBounds(handle, bounds)
+  /**
+   * The only place native placement is touched. The parent is re-set exclusively when it really
+   * changed, and visibility is expressed through geometry - `put_IsVisible` is never called.
+   */
+  private fun applyHostState(handle: Long, desired: HostState) {
+    val previous = lastApplied
+    if (previous == desired) return
+    // A new parent needs a new generation so that a park racing with this attach loses.
+    val generation = if (previous == null || previous.parentHwnd != desired.parentHwnd) {
+      hostGeneration.incrementAndGet()
     }
-  }
-
-  private fun scheduleVisibilityApply() {
-    if (!visibilityScheduled.compareAndSet(false, true)) return
-    invokeOnWebView {
-      visibilityScheduled.set(false)
-      val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      applyVisibility(handle)
+    else {
+      hostGeneration.get()
     }
-  }
-
-  private fun applyVisibility(handle: Long) {
-    bridge.setVisible(handle, !hidden && state.get() == State.Active)
+    lastApplied = desired
+    bridge.setHostState(
+      handle,
+      desired.parentHwnd,
+      desired.x,
+      desired.y,
+      desired.width,
+      desired.height,
+      desired.scale,
+      desired.visible,
+      generation,
+    )
   }
 
   private fun scheduleFocusApply() {
@@ -688,7 +710,9 @@ internal class WinWebViewEngine(
     cancelPendingEvaluations()
     resetHandleReady("WebView2 is recovering after $event")
     pendingLoad.set(lastLoad)
-    lastBounds?.let { pendingBounds.set(it) }
+    // The replacement controller is born on the same parent, so only its geometry has to be replayed.
+    val placement = lastApplied
+    lastApplied = null
     consecutiveRenderUnresponsiveCount = 0
 
     if (oldHandle != 0L) {
@@ -700,9 +724,22 @@ internal class WinWebViewEngine(
       LOG.webViewLifecycle("win-webview2-recovery", "recreating after $event${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", "recovery=true, ${diagnosticDetails()}") {
-        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, callbacks)
+        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
       }
-      bridge.setVisible(nativeHandle, !hidden)
+      lastApplied = placement
+      placement?.let {
+        bridge.setHostState(
+          nativeHandle,
+          it.parentHwnd,
+          it.x,
+          it.y,
+          it.width,
+          it.height,
+          it.scale,
+          it.visible,
+          hostGeneration.get(),
+        )
+      }
     }
     catch (t: Throwable) {
       failPermanently(event, message, data, t)
@@ -1008,10 +1045,6 @@ internal class WinWebViewEngine(
    * Peer section
    */
 
-  private var attached = false
-  private var hostHidden = true
-  private var lastAppliedFrame: AppliedFrame? = null
-
   override fun attach(host: Component): Boolean {
     val hostPanel = host as SwingWebViewHostPanel
     return LOG.traceWebViewPerf(
@@ -1020,105 +1053,101 @@ internal class WinWebViewEngine(
     ) {
       setShortcutTarget(host)
       setFocusGainedHandler { hostPanel.nativeWebViewFocusGained() }
-      attached = true
-      hostHidden = true
-      lastAppliedFrame = null
-      setHidden(true)
-      when (updateFrame(host)) {
-        FrameUpdateResult.Applied -> Unit
-        FrameUpdateResult.Deferred -> setHidden(true)
-        FrameUpdateResult.Failed -> {
-          attached = false
-          setShortcutTarget(null)
-          setFocusGainedHandler(null)
-          return@traceWebViewPerf false
-        }
-      }
+      syncHostState(host)
       true
     }
   }
 
   override fun detach() {
-    if (!attached) return
-    setHidden(true)
+    if (shortcutTarget == null) return
+    // No hide here: the Canvas peer disposal already takes the content off screen, and an
+    // explicit visibility transition is exactly what flashes the whole frame on the next reveal.
     setShortcutTarget(null)
     setFocusGainedHandler(null)
-    attached = false
-    hostHidden = true
-    currentParentHwnd = 0
-    lastAppliedFrame = null
+    pendingState.set(null)
+    lastApplied = null
+    resetRevealGate()
   }
 
-  override fun scheduleFrameUpdate(host: Component) {
-    if (!attached) return
-    updateFrame(host)
+  override fun syncHostState(host: Component) {
+    if (shortcutTarget == null) return
+    val desired = gateRevealAfterReattach(readHostState(host))
+    val timedUpdate = measureTimedValue { requestHostState(desired) }
+    LOG.traceWebViewPerf("win-webview2.host.syncHostState", timedUpdate.duration, hostStateDiagnosticDetails(desired))
   }
 
-  private fun updateFrame(host: Component): FrameUpdateResult {
-    val timedUpdate = measureTimedValue {
-      val parentHwnd = WindowsHwndUtil.resolveComponentHwnd(canvas)
-      if (parentHwnd == null) {
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Failed, "reason=no-canvas-hwnd")
-      }
-      val bounds = SwingWebViewHostPanel.NativeBounds(0, 0, canvas.width, canvas.height)
-      val scale = WindowsHwndUtil.scale(canvas)
-      val frame = AppliedFrame(bounds, scale)
-      if (!isReadyForNativeFrame(bounds)) {
-        lastAppliedFrame = null
-        setHidden(true)
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Deferred, frameDiagnosticDetails(bounds, scale))
-      }
-
-      if (parentHwnd != currentParentHwnd) {
-        val generation = hostGeneration.incrementAndGet()
-        currentParentHwnd = parentHwnd
-        lastAppliedFrame = frame
-        LOG.traceWebViewPerf(
-          "win-webview2.host.updateFrame.attachToParent",
-          frameDiagnosticDetails(bounds, scale),
-        ) {
-          pendingBounds.set(PendingBounds(0, 0, bounds.width, bounds.height, scale))
-          attachToParent(parentHwnd, generation)
-        }
-        updateNativeVisibility()
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Applied, frameDiagnosticDetails(bounds, scale))
-      }
-      val frameChanged = frame != lastAppliedFrame
-      lastAppliedFrame = frame
-      if (frameChanged) {
-        setBounds(bounds.x, bounds.y, bounds.width, bounds.height, scale)
-      }
-      updateNativeVisibility()
-      FrameUpdate(FrameUpdateResult.Applied, "frameChanged=$frameChanged, ${frameDiagnosticDetails(bounds, scale)}")
+  /**
+   * A controller returning from limbo has no frame for the new size yet, and the freshly created
+   * AWT peer is still at its pre-layout position - showing it right away is exactly the flash.
+   * So the first snapshot on a new parent goes out hidden (same size, pushed under the client area,
+   * which is enough for Chromium to lay out and present), and the content is revealed on a later
+   * sync, once the geometry has repeated itself and the surface had time to get a frame.
+   */
+  internal fun gateRevealAfterReattach(observed: HostState): HostState {
+    val previous = lastObservedState
+    lastObservedState = observed
+    if (observed.parentHwnd == 0L) {
+      resetRevealGate()
+      return observed
     }
-    val update = timedUpdate.value
-    LOG.traceWebViewPerf("win-webview2.host.updateFrame", timedUpdate.duration, "result=${update.result}, ${update.details}")
-    return update.result
-  }
+    // The surface stays alive under the same parent, so plain Swing hide/show needs no gating.
+    if (observed.parentHwnd == revealedParent || !observed.visible) return observed
 
-  private fun frameDiagnosticDetails(bounds: SwingWebViewHostPanel.NativeBounds, scale: Double): String {
-    return "bounds=${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}, scale=$scale"
-  }
-
-  private fun updateNativeVisibility() {
-    setHidden(hostHidden)
-  }
-
-  private fun isReadyForNativeFrame(bounds: SwingWebViewHostPanel.NativeBounds): Boolean {
-    return bounds.width > 0 && bounds.height > 0
-  }
-
-  override fun updateVisibility(host: Component, hidden: Boolean) {
-    if (!attached) return
-    hostHidden = hidden
-    if (hidden) {
-      setHidden(true)
-      return
+    val blockedSince = revealBlockedSince ?: TimeSource.Monotonic.markNow().also { revealBlockedSince = it }
+    val settled = previous != null &&
+                  previous.parentHwnd == observed.parentHwnd &&
+                  previous.copy(visible = observed.visible) == observed &&
+                  blockedSince.elapsedNow() >= REVEAL_SETTLE_DELAY
+    if (!settled && blockedSince.elapsedNow() < REVEAL_MAX_WAIT) {
+      scheduleRevealRecheck()
+      return observed.copy(visible = false)
     }
 
-    if (updateFrame(host) != FrameUpdateResult.Applied) {
-      setHidden(true)
+    revealedParent = observed.parentHwnd
+    revealBlockedSince = null
+    return observed
+  }
+
+  /** Swing may have no more events to send, so the gate re-reads the host itself. */
+  private fun scheduleRevealRecheck() {
+    if (!revealRecheckScheduled.compareAndSet(false, true)) return
+    scope.launch {
+      delay(REVEAL_SETTLE_DELAY)
+      SwingUtilities.invokeLater {
+        revealRecheckScheduled.set(false)
+        shortcutTarget?.let { syncHostState(it) }
+      }
     }
+  }
+
+  private fun resetRevealGate() {
+    revealedParent = 0
+    lastObservedState = null
+    revealBlockedSince = null
+  }
+
+  /**
+   * Reads the whole Swing-side placement in one pass. A dead peer reads as `parentHwnd == 0`, and a
+   * host Swing does not show - or one with an empty rectangle - simply reads as `visible = false`.
+   */
+  private fun readHostState(host: Component): HostState {
+    val width = canvas.width
+    val height = canvas.height
+    return HostState(
+      parentHwnd = componentHwndResolver(canvas) ?: 0L,
+      x = 0,
+      y = 0,
+      width = width,
+      height = height,
+      scale = WindowsHwndUtil.scale(canvas),
+      visible = host.isShowing && canvas.isShowing && width > 0 && height > 0,
+    )
+  }
+
+  private fun hostStateDiagnosticDetails(hostState: HostState): String {
+    return "parent=0x${java.lang.Long.toHexString(hostState.parentHwnd)}, " +
+           "bounds=${hostState.x},${hostState.y} ${hostState.width}x${hostState.height}, " +
+           "scale=${hostState.scale}, visible=${hostState.visible}"
   }
 
   override fun clearFocusForSwingFocusTransfer() {
@@ -1136,7 +1165,6 @@ internal class WinWebViewEngine(
     if (handle == 0L || generation == 0L || state.get() == State.Closed) return
     val hostHwnd = WindowsHwndUtil.resolveComponentHwnd(component) ?: return
     val parkingHwnd = WindowsHwndUtil.resolveWindowHwnd(component) ?: return
-    hidden = true
     val parked = runCatching {
       bridge.parkBeforePeerDispose(handle, hostHwnd, parkingHwnd, generation)
     }.onFailure {
@@ -1145,27 +1173,24 @@ internal class WinWebViewEngine(
     if (!parked) {
       LOG.warn("WebView2 Canvas disposal barrier did not complete${diagnosticContext()}")
     }
-    if (currentParentHwnd == hostHwnd) currentParentHwnd = 0
+    // The controller now hangs in the limbo window, so nothing of the old placement is applied,
+    // and its surface is frameless again - the next attach has to be gated before it is revealed.
+    if (currentParentHwnd == hostHwnd) lastApplied = null
+    resetRevealGate()
   }
 
-  private data class AppliedFrame(
-    val bounds: SwingWebViewHostPanel.NativeBounds,
-    val scale: Double,
-  )
-
-  private data class FrameUpdate(
-    val result: FrameUpdateResult,
-    val details: String,
-  )
-
-  private enum class FrameUpdateResult {
-    Applied,
-    Deferred,
-    Failed,
+  private fun reattachControllerAfterPeerCreation() {
+    val host = shortcutTarget ?: return
+    if (state.get() == State.Closed) return
+    syncHostState(host)
   }
 
 
   private companion object {
+    /** Shared by the Canvas peer brush and the controller default background, so that a frame
+     * without page content is indistinguishable from the host behind it. */
+    private const val HOST_BACKGROUND_RGB = 0x1E1F22
+    private const val HOST_BACKGROUND_ARGB = 0xFF000000.toInt() or HOST_BACKGROUND_RGB
     private const val NATIVE_DIAGNOSTIC_WARN = 3
     private const val NATIVE_DIAGNOSTIC_ERROR = 4
     private const val MAX_RECOVERY_ATTEMPTS = 2
@@ -1179,6 +1204,12 @@ internal class WinWebViewEngine(
     private const val DEVTOOLS_CPU_PROFILE_STOP_TIMEOUT_MILLIS = 3_000L
     private const val DEVTOOLS_CPU_PROFILE_POST_NAVIGATION_DELAY_MILLIS = 2_000L
     private const val WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY = "io.github.nerzhulart.webview.windows.asset.custom.scheme.enabled"
+
+    /** How long a reattached controller stays off screen: layout has to settle and a frame to arrive. */
+    private val REVEAL_SETTLE_DELAY = 120.milliseconds
+
+    /** A host that never stops moving is still shown eventually rather than staying invisible. */
+    private val REVEAL_MAX_WAIT = 600.milliseconds
   }
 }
 

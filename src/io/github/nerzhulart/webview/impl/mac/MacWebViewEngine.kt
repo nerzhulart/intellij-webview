@@ -522,23 +522,12 @@ internal class MacWebViewEngine(
     }
   }
 
-  override fun scheduleFrameUpdate(host: Component) {
+  override fun syncHostState(host: Component) {
     if (!attachmentRequested) return
-    val layout = resolveLayout(host) ?: return
-    resizeUpdates.queue(layout)
-  }
-
-  override fun hasNonEmptyNativeBounds(host: Component): Boolean {
-    return resolveLayout(host)?.hasVisibleBounds == true
-  }
-
-  override fun updateVisibility(host: Component, hidden: Boolean) {
-    if (!attachmentRequested) return
-    hostHidden = hidden
-
-    if (!hidden) {
-      scheduleFrameUpdate(host)
-    }
+    // Geometry and visibility are one snapshot: an empty layout already reads as hidden in
+    // updateNativeVisibility, so the only extra bit to carry is whether Swing shows the host.
+    hostHidden = !host.isShowing
+    resolveLayout(host)?.let { resizeUpdates.queue(it) }
 
     scope.launch(MacMainThreadDispatcher) {
       updateNativeVisibility()

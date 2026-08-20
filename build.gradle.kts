@@ -111,6 +111,29 @@ tasks {
     systemProperty("idea.dev.project.root", testIdeaRoot.get().asFile.absolutePath)
     systemProperty("java.awt.headless", "false")
     systemProperty("idea.log.trace.categories", "#io.github.nerzhulart.webview")
+    // Forward the visual smoke scenario knobs from the Gradle CLI into the test JVM.
+    listOf("webview.smoke.reattach.pauseMs", "webview.smoke.reattach.cycles").forEach { key ->
+      providers.systemProperty(key).orNull?.let { systemProperty(key, it) }
+    }
+    // Flicker diagnostics: trace paint/placement window messages in the native bridge.
+    providers.systemProperty("webview.win.paint.trace").orNull?.let {
+      environment("WEBVIEW_WIN_PAINT_TRACE", it)
+    }
+  }
+
+  register<JavaExec>("runWebViewSampleApp") {
+    group = "webview"
+    description = "Runs the standalone WebView sample app used for manual flicker checks."
+    dependsOn(prepareTestNativeLibraries)
+    mainClass.set("io.github.nerzhulart.webview.LightweightStandaloneSampleApp")
+    classpath = sourceSets["test"].runtimeClasspath
+    systemProperty("idea.dev.project.root", testIdeaRoot.get().asFile.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    systemProperty("idea.log.trace.categories", "#io.github.nerzhulart.webview")
+    // Flicker diagnostics: trace paint/placement window messages in the native bridge.
+    providers.systemProperty("webview.win.paint.trace").orNull?.let {
+      environment("WEBVIEW_WIN_PAINT_TRACE", it)
+    }
   }
 
   register("buildAllWebViewAssets") {

@@ -11,6 +11,7 @@ import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME_HOST
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_HTTPS_HOST
+import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.webViewAssetCustomSchemeUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
@@ -25,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -32,11 +34,13 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.awt.Canvas
+import java.awt.Component
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.EnumSet
 import java.util.concurrent.CopyOnWriteArrayList
+import javax.swing.JFrame
 import kotlin.coroutines.CoroutineContext
 
 internal class WinWebViewEngineTest {
@@ -88,7 +92,7 @@ internal class WinWebViewEngineTest {
 
     val logged = collectWarningsAndErrors {
       runInEdtAndWait {
-        engine.setHidden(true)
+        engine.syncHostState(42L, visible = false)
       }
       runBlocking { engine.loadHtml("<html>last</html>", null) }
       runInEdtAndWait {
@@ -103,7 +107,7 @@ internal class WinWebViewEngineTest {
       assertEquals(listOf(1L), bridge.destroyedHandles)
       assertTrue(bridge.htmlLoads.any { it.handle == 2L && it.html == "<html>last</html>" }, bridge.htmlLoads.toString())
       assertTrue(bridge.bounds.any { it.handle == 2L && it.bounds == Bounds(10, 20, 300, 200, 1.5) }, bridge.bounds.toString())
-      assertTrue(bridge.visibility.any { it.handle == 2L && !it.visible }, bridge.visibility.toString())
+      assertEquals(emptyList<Visibility>(), bridge.visibility, "controller visibility must never be toggled")
     }
     finally {
       closeEngine(engine, scope)
@@ -123,7 +127,7 @@ internal class WinWebViewEngineTest {
     )
     try {
       runInEdtAndWait {
-        engine.attachToParent(100L, 10, 20, 300, 200, 1.5)
+        engine.syncHostState(100L)
       }
 
       assertEquals(listOf("first\n;\nsecond"), bridge.documentStartScripts)
@@ -195,7 +199,7 @@ internal class WinWebViewEngineTest {
     val dispatcher = QueuingDispatcher()
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
     runInEdtAndWait {
-      engine.attachToParent(100L, 10, 20, 300, 200, 1.5)
+      engine.syncHostState(100L)
     }
     dispatcher.drain()
     runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
@@ -243,7 +247,7 @@ internal class WinWebViewEngineTest {
     val scope = testScope()
     val dispatcher = QueuingDispatcher()
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
-    runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+    runInEdtAndWait { engine.syncHostState(100L) }
     dispatcher.drain()
     runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.single()) }
 
@@ -268,7 +272,7 @@ internal class WinWebViewEngineTest {
     val scope = testScope()
     val dispatcher = QueuingDispatcher()
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
-    runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+    runInEdtAndWait { engine.syncHostState(100L) }
     dispatcher.drain()
     val handle = bridge.createdHandles.single()
 
@@ -289,7 +293,7 @@ internal class WinWebViewEngineTest {
     val scope = testScope()
     val dispatcher = QueuingDispatcher()
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
-    runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+    runInEdtAndWait { engine.syncHostState(100L) }
     dispatcher.drain()
 
     val closeJob = scope.launch(start = CoroutineStart.UNDISPATCHED) { engine.close() }
@@ -327,23 +331,23 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
-  fun setBoundsSpamCoalescesIntoSingleApply() {
+  fun hostStateSpamCoalescesIntoSingleApply() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
     val dispatcher = QueuingDispatcher()
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
     try {
-      runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+      runInEdtAndWait { engine.syncHostState(100L) }
       dispatcher.drain()
       runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
 
       bridge.bounds.clear()
       runInEdtAndWait {
         repeat(10) { i ->
-          engine.setBounds(i * 5, i * 5, 100 + i, 100 + i, 1.0)
+          engine.syncHostState(100L, i * 5, i * 5, 100 + i, 100 + i, 1.0)
         }
       }
-      assertEquals(1, dispatcher.pendingCount(), "expected setBounds to coalesce into a single queued task")
+      assertEquals(1, dispatcher.pendingCount(), "expected host state sync to coalesce into a single queued task")
       dispatcher.drain()
       assertEquals(1, bridge.bounds.size)
       assertEquals(Bounds(45, 45, 109, 109, 1.0), bridge.bounds[0].bounds)
@@ -362,8 +366,8 @@ internal class WinWebViewEngineTest {
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = dispatcher)
     try {
       runInEdtAndWait {
-        engine.attachToParent(100L, 10, 20, 300, 200, 1.5)
-        engine.attachToParent(200L, 30, 40, 500, 400, 2.0)
+        engine.syncHostState(100L)
+        engine.syncHostState(200L, 30, 40, 500, 400, 2.0)
       }
       dispatcher.drain()
       runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
@@ -411,22 +415,179 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
-  fun createAppliesInitialBoundsBeforeFirstVisibilityAndKeepsHiddenUntilCreated() {
+  fun createAppliesInitialBoundsAndNeverTogglesVisibility() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
     val engine = createTestEngine(scope, bridge, debugName = "test", webViewDispatcher = SyncDispatcher)
     try {
-      runInEdtAndWait { engine.attachToParent(100L, 10, 20, 300, 200, 1.5) }
+      runInEdtAndWait { engine.syncHostState(100L) }
       runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.single()) }
 
       assertEquals(
-        listOf("create:100", "bounds:1:10:20:300:200:1.5", "visible:1:false", "visible:1:true"),
+        listOf("create:100", "bounds:1:10:20:300:200:1.5"),
         bridge.callOrder,
+        "the controller is born on its parent, so only geometry is applied afterwards",
       )
     }
     finally {
       runBlocking { engine.close() }
       scope.cancel()
+    }
+  }
+
+  @Test
+  fun repeatedIdenticalHostStateProducesASingleNativeCall() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    try {
+      bridge.callOrder.clear()
+      runInEdtAndWait { repeat(5) { engine.syncHostState(100L) } }
+
+      assertEquals(emptyList<String>(), bridge.callOrder, "an unchanged snapshot must not reach the native side")
+
+      runInEdtAndWait { engine.syncHostState(100L, width = 640) }
+      assertEquals(listOf("bounds:1:10:20:640:200:1.5"), bridge.callOrder)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun visibilityChangeKeepsTheParentAndNeverTogglesControllerVisibility() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    try {
+      bridge.attachParents.clear()
+      bridge.visibility.clear()
+      runInEdtAndWait {
+        engine.syncHostState(100L, visible = false)
+        engine.syncHostState(100L, visible = true)
+      }
+
+      assertEquals(emptyList<Long>(), bridge.attachParents, "visibility must not reparent the controller")
+      assertEquals(emptyList<Visibility>(), bridge.visibility, "put_IsVisible must never be called")
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun deadPeerDoesNotSendVisibility() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    try {
+      bridge.visibility.clear()
+      runInEdtAndWait {
+        engine.detach()
+        engine.syncHostState(0L, visible = false)
+      }
+
+      assertEquals(emptyList<Visibility>(), bridge.visibility)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun displayableButNotShowingHostAttachesWithoutTogglingVisibility() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge, componentHwndResolver = { 200L })
+    val host = SwingWebViewHostPanel(scope, engine)
+    try {
+      bridge.attachParents.clear()
+      bridge.visibility.clear()
+      runInEdtAndWait {
+        host.setSize(300, 200)
+        host.doLayout()
+        engine.component.apply {
+          setSize(300, 200)
+          doLayout()
+        }
+        assertFalse(host.isShowing)
+        engine.attach(host)
+      }
+
+      // "Not ready to show" is just visible=false in the snapshot: the controller still hangs on the
+      // live canvas HWND, and its visibility is never toggled.
+      assertEquals(listOf(200L), bridge.attachParents)
+      assertEquals(emptyList<Visibility>(), bridge.visibility)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun recreatedCanvasPeerReattachesParkedController() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    var canvasHwnd = 200L
+    val engine = createActiveEngine(scope, bridge, componentHwndResolver = { canvasHwnd })
+    var frame: JFrame? = null
+    lateinit var canvas: Canvas
+    try {
+      runInEdtAndWait {
+        val host = SwingWebViewHostPanel(scope, engine)
+        frame = JFrame("WebView2 Canvas peer recreation test").apply {
+          contentPane.add(host)
+          setSize(500, 400)
+          isVisible = true
+          validate()
+        }
+        canvas = engine.component.components.single() as Canvas
+        bridge.attachParents.clear()
+
+        canvas.removeNotify()
+        canvasHwnd = 300L
+        canvas.addNotify()
+      }
+
+      assertEquals(listOf(300L), bridge.attachParents)
+    }
+    finally {
+      runInEdtAndWait {
+        frame?.dispose()
+      }
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun reattachedControllerStaysHiddenUntilLayoutSettles() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    try {
+      val onNewPeer = WinWebViewEngine.HostState(300L, 0, 0, 640, 480, 1.0, true)
+
+      assertFalse(
+        engine.gateRevealAfterReattach(onNewPeer).visible,
+        "a controller back from limbo has no frame yet, so the first snapshot on a new parent stays off screen",
+      )
+
+      Thread.sleep(300)
+      assertTrue(
+        engine.gateRevealAfterReattach(onNewPeer).visible,
+        "the geometry repeated itself and the surface had time to present, so the content is revealed",
+      )
+
+      assertTrue(
+        engine.gateRevealAfterReattach(onNewPeer.copy(width = 800)).visible,
+        "a resize under a live peer is not re-gated",
+      )
+      // A plain Swing hide/show keeps the peer and its frame alive, so the gate must not delay it.
+      assertFalse(engine.gateRevealAfterReattach(onNewPeer.copy(visible = false)).visible)
+      assertTrue(engine.gateRevealAfterReattach(onNewPeer).visible)
+    }
+    finally {
+      closeEngine(engine, scope)
     }
   }
 
@@ -530,7 +691,7 @@ internal class WinWebViewEngineTest {
     val scope = testScope()
     val engine = createActiveEngine(scope, bridge)
     try {
-      runInEdtAndWait { engine.setHidden(true) }
+      runInEdtAndWait { engine.syncHostState(100L, visible = false) }
       runBlocking { engine.transferToJs("{\"jsonrpc\":\"2.0\",\"method\":\"markdown.preview/contentChanged\"}") }
 
       assertEquals(
@@ -571,6 +732,7 @@ internal class WinWebViewEngineTest {
     parentHwnd: Long = 100L,
     devToolsCpuProfilingEnabled: Boolean = false,
     customSchemeAssetLoadingEnabled: Boolean = true,
+    componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
   ): WinWebViewEngine {
     val engine = createTestEngine(
       scope,
@@ -579,12 +741,26 @@ internal class WinWebViewEngineTest {
       webViewDispatcher = SyncDispatcher,
       devToolsCpuProfilingEnabled = { devToolsCpuProfilingEnabled },
       customSchemeAssetLoadingEnabled = { customSchemeAssetLoadingEnabled },
+      componentHwndResolver = componentHwndResolver,
     )
     runInEdtAndWait {
-      engine.attachToParent(parentHwnd, 10, 20, 300, 200, 1.5)
+      engine.syncHostState(parentHwnd)
       bridge.callbacks.onCreated(bridge.createdHandles.last())
     }
     return engine
+  }
+
+  /** Drives the engine through its single placement contract without a real Swing hierarchy. */
+  private fun WinWebViewEngine.syncHostState(
+    parentHwnd: Long,
+    x: Int = 10,
+    y: Int = 20,
+    width: Int = 300,
+    height: Int = 200,
+    scale: Double = 1.5,
+    visible: Boolean = true,
+  ) {
+    requestHostState(WinWebViewEngine.HostState(parentHwnd, x, y, width, height, scale, visible))
   }
 
   // TODO: use scope of runBlocking in all tests
@@ -650,6 +826,7 @@ internal class WinWebViewEngineTest {
     webViewDispatcher: CoroutineDispatcher = SyncDispatcher,
     devToolsCpuProfilingEnabled: () -> Boolean = { false },
     customSchemeAssetLoadingEnabled: () -> Boolean = { true },
+    componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
   ): WinWebViewEngine {
     return WinWebViewEngine(
       scope,
@@ -659,6 +836,7 @@ internal class WinWebViewEngineTest {
       webViewDispatcher = webViewDispatcher,
       devToolsCpuProfilingEnabled = devToolsCpuProfilingEnabled,
       customSchemeAssetLoadingEnabled = customSchemeAssetLoadingEnabled,
+      componentHwndResolver = componentHwndResolver,
     )
   }
 
@@ -738,6 +916,7 @@ internal class WinWebViewEngineTest {
     val createdHandles = mutableListOf<Long>()
     val createParentHwnds = mutableListOf<Long>()
     val attachParents = mutableListOf<Long>()
+    private val appliedParents = mutableMapOf<Long, Long>()
     val destroyedHandles = mutableListOf<Long>()
     val bounds = mutableListOf<BoundsRecord>()
     val visibility = mutableListOf<Visibility>()
@@ -747,6 +926,7 @@ internal class WinWebViewEngineTest {
     val devToolsCalls = mutableListOf<DevToolsCall>()
     val assetCompletions = CopyOnWriteArrayList<AssetCompletion>()
     val documentStartScripts = mutableListOf<String>()
+    val backgroundColors = mutableListOf<Int>()
     val focusedHandles = mutableListOf<Long>()
     val clearFocusedHandles = mutableListOf<Long>()
     val callOrder = mutableListOf<String>()
@@ -758,12 +938,24 @@ internal class WinWebViewEngineTest {
     var pendingProfilerStopCallId: Long? = null
     private var nextHandle = 1L
 
-    override fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    override fun create(
+      parentHwnd: Long,
+      generation: Long,
+      userDataDir: String,
+      documentStartScript: String,
+      backgroundColor: Int,
+      callbacks: WinWebView2Bridge.Callbacks,
+    ): Long {
       this.callbacks = callbacks
+      backgroundColors.add(backgroundColor)
       documentStartScripts.add(documentStartScript)
       createParentHwnds.add(parentHwnd)
       callOrder.add("create:$parentHwnd")
-      return nextHandle++.also { createdHandles.add(it) }
+      // The controller is born on this parent, so the native reconcile sees no parent change.
+      return nextHandle++.also {
+        createdHandles.add(it)
+        appliedParents[it] = parentHwnd
+      }
     }
 
     override fun destroy(handle: Long) {
@@ -773,20 +965,31 @@ internal class WinWebViewEngineTest {
       if (!deferDestroyCompletion) callbacks.onDestroyed(handle)
     }
 
-    override fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) {
-      attachParents.add(parentHwnd)
-    }
-
-    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean = true
-
-    override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
+    /**
+     * Mirrors the native reconcile: the parent is re-applied only when it really changed, and the
+     * controller visibility is never touched - [visibility] stays empty by construction.
+     */
+    override fun setHostState(
+      handle: Long,
+      parentHwnd: Long,
+      x: Int,
+      y: Int,
+      width: Int,
+      height: Int,
+      scale: Double,
+      visible: Boolean,
+      generation: Long,
+    ) {
+      if (appliedParents.put(handle, parentHwnd) != parentHwnd) {
+        attachParents.add(parentHwnd)
+      }
       bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
       callOrder.add("bounds:$handle:$x:$y:$width:$height:$scale")
     }
 
-    override fun setVisible(handle: Long, visible: Boolean) {
-      visibility.add(Visibility(handle, visible))
-      callOrder.add("visible:$handle:$visible")
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean {
+      appliedParents.remove(handle)
+      return true
     }
 
     override fun focus(handle: Long) {

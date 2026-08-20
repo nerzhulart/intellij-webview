@@ -24,7 +24,10 @@ use windows::{
     core::{w, Interface, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::*,
-        System::{Com::*, Threading::GetCurrentThreadId},
+        Graphics::Gdi::{
+            CreateSolidBrush, DeleteObject, FillRect, GetUpdateRect, HBRUSH, HDC,
+        },
+        System::{Com::*, LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
                 GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
@@ -43,7 +46,7 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v12";
+const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v14";
 const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
 const PARK_BARRIER_MARKER: usize = 0x5742_5632;
 const PARK_BARRIER_TIMEOUT_MILLIS: u32 = 2_000;
@@ -85,14 +88,23 @@ enum NativeCommand {
         generation: jlong,
         user_data_dir: String,
         document_start_script: String,
+        background_color: u32,
         callbacks: Arc<JavaCallbacks>,
     },
     Destroy {
         handle: jlong,
     },
-    Attach {
+    /// The whole Swing-side placement in one command. The native side reconciles it: the parent is
+    /// re-set only when it really changed, and visibility is expressed as geometry.
+    SetHostState {
         handle: jlong,
         host_hwnd: jlong,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        scale: f64,
+        visible: bool,
         generation: jlong,
     },
     Park {
@@ -101,16 +113,6 @@ enum NativeCommand {
         parking_hwnd: jlong,
         generation: jlong,
         completion: Arc<AtomicU8>,
-    },
-    SetBounds {
-        handle: jlong,
-        width: i32,
-        height: i32,
-        scale: f64,
-    },
-    SetVisible {
-        handle: jlong,
-        visible: bool,
     },
     Focus {
         handle: jlong,
@@ -158,10 +160,8 @@ impl NativeCommand {
         match self {
             Self::Create { handle, .. }
             | Self::Destroy { handle }
-            | Self::Attach { handle, .. }
+            | Self::SetHostState { handle, .. }
             | Self::Park { handle, .. }
-            | Self::SetBounds { handle, .. }
-            | Self::SetVisible { handle, .. }
             | Self::Focus { handle }
             | Self::ClearFocus { handle }
             | Self::LoadUrl { handle, .. }
@@ -348,6 +348,9 @@ unsafe extern "system" fn webview_get_message_hook(
     let result = unsafe { CallNextHookEx(None, code, wparam, lparam) };
     if code >= 0 && lparam.0 != 0 {
         let message = unsafe { &mut *(lparam.0 as *mut MSG) };
+        if wparam.0 == PM_REMOVE.0 as usize {
+            trace_window_message(message.hwnd, message.message, message.wParam.0, "posted");
+        }
         if message.message == WM_AWT_WEBVIEW_COMMAND && message.hwnd.0.is_null() {
             message.message = WM_NULL;
             drain_owner_commands(unsafe { GetCurrentThreadId() });
@@ -363,6 +366,7 @@ unsafe extern "system" fn webview_call_wnd_proc_hook(
 ) -> LRESULT {
     if code >= 0 && lparam.0 != 0 {
         let call = unsafe { &*(lparam.0 as *const CWPSTRUCT) };
+        trace_window_message(call.hwnd, call.message, call.wParam.0, "sent");
         if call.message == WM_NULL && call.wParam.0 == PARK_BARRIER_MARKER {
             drain_owner_commands(unsafe { GetCurrentThreadId() });
         }
@@ -373,6 +377,171 @@ unsafe extern "system" fn webview_call_wnd_proc_hook(
         }
     }
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Flicker diagnostics: with WEBVIEW_WIN_PAINT_TRACE=1, logs paint/placement/show messages for
+/// windows whose top-level matches a live WebView host hierarchy.
+fn paint_trace_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("WEBVIEW_WIN_PAINT_TRACE")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    })
+}
+
+fn trace_window_message(hwnd: HWND, message: u32, wparam: usize, source: &str) {
+    if !paint_trace_enabled() || hwnd.0.is_null() {
+        return;
+    }
+    let name = match message {
+        WM_PAINT => "WM_PAINT",
+        WM_ERASEBKGND => "WM_ERASEBKGND",
+        WM_NCPAINT => "WM_NCPAINT",
+        WM_SHOWWINDOW => "WM_SHOWWINDOW",
+        WM_WINDOWPOSCHANGED => "WM_WINDOWPOSCHANGED",
+        WM_CREATE => "WM_CREATE",
+        WM_NCDESTROY => "WM_NCDESTROY",
+        _ => return,
+    };
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let (related, reporter) = NATIVE_VIEWS.with(|views| {
+        let views = views.borrow();
+        let related = views.values().any(|native| {
+            native.try_borrow().is_ok_and(|view| {
+                [view.hwnd, view.parked_target, view.parent].iter().any(|w| {
+                    !w.0.is_null()
+                        && (*w == hwnd || unsafe { GetAncestor(*w, GA_ROOT) } == root)
+                })
+            })
+        });
+        (related, views.values().next().cloned())
+    });
+    if !related {
+        return;
+    }
+    let Some(reporter) = reporter else {
+        return;
+    };
+    let mut update = RECT::default();
+    let has_update = unsafe { GetUpdateRect(hwnd, Some(&mut update), false) }.as_bool();
+    emit_diagnostic(
+        &reporter,
+        DIAGNOSTIC_TRACE,
+        "paint.trace",
+        format!("{source} {name}"),
+        diagnostic_data(vec![
+            ("hwnd", (hwnd.0 as usize as u64).to_string()),
+            ("isRoot", (root == hwnd).to_string()),
+            (
+                "update",
+                if has_update {
+                    format!(
+                        "{},{} {}x{}",
+                        update.left,
+                        update.top,
+                        update.right - update.left,
+                        update.bottom - update.top
+                    )
+                } else {
+                    "none".to_string()
+                },
+            ),
+            ("wparam", wparam.to_string()),
+        ]),
+    );
+}
+
+fn format_rect(r: RECT) -> String {
+    format!(
+        "{},{} {}x{}",
+        r.left,
+        r.top,
+        (r.right - r.left).max(0),
+        (r.bottom - r.top).max(0)
+    )
+}
+
+fn trace_window_geometry(tag: &str, native: &NativeHandle, extra: Option<&str>) {
+    let view = match native.try_borrow() {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let host_window = view.host_window;
+    if host_window.0.is_null() {
+        return;
+    }
+
+    let canvas_hwnd = view.hwnd;
+    let controller = view.controller.as_ref();
+
+    let mut host_rect = RECT::default();
+    let _ = unsafe { GetWindowRect(host_window, &mut host_rect) };
+    let host_visible = unsafe { IsWindowVisible(host_window) }.as_bool();
+    let host_parent = unsafe { GetParent(host_window) }.unwrap_or_default();
+
+    let (canvas_rect_str, frame_rect_str, frame_hwnd) = if !canvas_hwnd.0.is_null() {
+        let mut vr = RECT::default();
+        let _ = unsafe { GetWindowRect(canvas_hwnd, &mut vr) };
+        let mut cr = RECT::default();
+        let _ = unsafe { GetClientRect(canvas_hwnd, &mut cr) };
+        let visible = unsafe { IsWindowVisible(canvas_hwnd) }.as_bool();
+        let parent = unsafe { GetParent(canvas_hwnd) }.unwrap_or_default();
+        let mut fr = RECT::default();
+        let _ = unsafe { GetWindowRect(parent, &mut fr) };
+        (
+            format!("{}:{}:{}", format_rect(vr), format_rect(cr), visible),
+            format_rect(fr),
+            parent,
+        )
+    } else {
+        (
+            "none:none:false".to_string(),
+            "none".to_string(),
+            HWND::default(),
+        )
+    };
+
+    let widget_desc = describe_first_child(host_window);
+
+    let controller_bounds = if let Some(c) = controller {
+        let mut bounds = RECT::default();
+        if unsafe { c.Bounds(&mut bounds) }.is_ok() {
+            format_rect(bounds)
+        } else {
+            "error".to_string()
+        }
+    } else {
+        "none".to_string()
+    };
+
+    let mut message = format!(
+        "geom.{} host={}:{}:{} parent={} canvas={}:{} frame={}:{} widget={} controllerBounds={}",
+        tag,
+        host_window.0 as usize,
+        format_rect(host_rect),
+        host_visible,
+        host_parent.0 as usize,
+        canvas_hwnd.0 as usize,
+        canvas_rect_str,
+        frame_hwnd.0 as usize,
+        frame_rect_str,
+        widget_desc,
+        controller_bounds
+    );
+
+    if let Some(extra) = extra {
+        message.push(' ');
+        message.push_str(extra);
+    }
+
+    emit_diagnostic(
+        native,
+        DIAGNOSTIC_TRACE,
+        "geom.trace",
+        message,
+        "".to_string(),
+    );
 }
 
 fn drain_owner_commands(owner_tid: u32) {
@@ -834,14 +1003,27 @@ struct NativeWebView {
     got_focus_token: Option<EventRegistrationToken>,
     callbacks: Arc<JavaCallbacks>,
     destroyed: bool,
+    /// Whether Swing shows the host. Expressed through geometry only: the controller's own
+    /// IsVisible is never toggled because that transition rebuilds the top-level composition
+    /// and flashes the whole frame.
     visible: bool,
+    /// Host background as ARGB, applied to the controller so that a frame without page content
+    /// looks exactly like the Canvas behind it.
+    background_color: u32,
+    /// Bridge-owned window the controller is created in and never leaves. Only this plain window
+    /// travels between the Canvas peer and the limbo, with SetParent/SetWindowPos - calls WebView2
+    /// knows nothing about. `put_ParentWindow` moves the Chromium widget itself, which forces its
+    /// DirectComposition target to be rebuilt, and that rebuild is the visible flash.
+    host_window: HWND,
+    /// Size last pushed to the controller, so a plain move never turns into a browser resize.
+    applied_size: (i32, i32),
     x: i32,
     y: i32,
     width: i32,
     height: i32,
     scale: f64,
     host_generation: jlong,
-    parked_root: HWND,
+    parked_target: HWND,
 }
 
 struct DestroyResources {
@@ -874,8 +1056,16 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
         view.add_script_handlers.clear();
         view.execute_script_handlers.clear();
         view.dev_tools_handlers.clear();
-        // The host HWND belongs to AWT's Canvas peer and must never be destroyed here.
+        // The Canvas HWND belongs to AWT's peer and must never be destroyed here; the bridge-owned
+        // window is ours to tear down (it may already be gone with a destroyed ancestor).
         view.hwnd = HWND::default();
+        let host_window = view.host_window;
+        view.host_window = HWND::default();
+        if !host_window.0.is_null() {
+            unsafe {
+                let _ = DestroyWindow(host_window);
+            }
+        }
         resources
     };
 
@@ -922,6 +1112,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     generation: jlong,
     user_data_dir: JString<'_>,
     document_start_script: JString<'_>,
+    background_color: jint,
     callbacks: JObject<'_>,
 ) -> jlong {
     let result = (|| {
@@ -938,6 +1129,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
             generation,
             user_data_dir,
             document_start_script,
+            background_color: background_color as u32,
             callbacks,
         }) {
             remove_route(handle);
@@ -969,18 +1161,31 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
 }
 
 #[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_attachToParentNative(
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setHostStateNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
     parent_hwnd: jlong,
+    x: jint,
+    y: jint,
+    width: jint,
+    height: jint,
+    scale: jdouble,
+    visible: jboolean,
     generation: jlong,
 ) {
     enqueue_or_throw(
         &mut env,
-        NativeCommand::Attach {
+        NativeCommand::SetHostState {
             handle,
             host_hwnd: parent_hwnd,
+            x,
+            y,
+            width,
+            height,
+            scale,
+            visible: visible != 0,
             generation,
         },
     );
@@ -1025,44 +1230,6 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
         let _ = completion.compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
         0
     }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setBoundsNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-    _x: jint,
-    _y: jint,
-    width: jint,
-    height: jint,
-    scale: jdouble,
-) {
-    enqueue_or_throw(
-        &mut env,
-        NativeCommand::SetBounds {
-            handle,
-            width,
-            height,
-            scale,
-        },
-    );
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setVisibleNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-    visible: jboolean,
-) {
-    enqueue_or_throw(
-        &mut env,
-        NativeCommand::SetVisible {
-            handle,
-            visible: visible != 0,
-        },
-    );
 }
 
 #[no_mangle]
@@ -1235,7 +1402,7 @@ fn enqueue_or_throw(env: &mut JNIEnv<'_>, command: NativeCommand) {
     }
 }
 
-fn resolve_parking_root(parking: HWND) -> BridgeResult<HWND> {
+fn resolve_parking_target(parking: HWND) -> BridgeResult<HWND> {
     if parking.0.is_null() {
         return Err("WebView2 parking HWND is null".to_string());
     }
@@ -1245,17 +1412,217 @@ fn resolve_parking_root(parking: HWND) -> BridgeResult<HWND> {
         return Err("WebView2 parking HWND is not owned by AWT-Windows".to_string());
     }
 
-    // Floating AWT windows can be disposed before their content is docked elsewhere.
-    // Their root owner remains alive and still gives parked controllers a bounded lifetime:
-    // explicit engine destruction normally wins, and WM_NCDESTROY of the root is the fallback.
+    // GA_ROOTOWNER, not GA_ROOT: for an ordinary frame the two are the same window, so parking
+    // stays inside one composition tree; for a floating dialog it resolves to the owning frame,
+    // which outlives the dialog. Parking under a window that is about to be disposed would
+    // destroy the controller together with it.
     let root_owner = unsafe { GetAncestor(parking, GA_ROOTOWNER) };
     if root_owner.0.is_null()
         || unsafe { GetWindowThreadProcessId(root_owner, None) } != current_tid
     {
-        Ok(parking)
-    } else {
-        Ok(root_owner)
+        return Err("Cannot resolve an AWT root for WebView2 parking".to_string());
     }
+
+    ensure_limbo_window(root_owner)
+}
+
+const LIMBO_WINDOW_CLASS: PCWSTR = w!("IJWebView2Limbo");
+/// Keeps the parked widget away from the visible client area even for the frames where the parent
+/// clip has not been applied yet.
+const LIMBO_WINDOW_OFFSET: i32 = -32_000;
+
+unsafe extern "system" fn limbo_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let name = match message {
+        WM_WINDOWPOSCHANGED => "WM_WINDOWPOSCHANGED",
+        WM_SIZE => "WM_SIZE",
+        WM_MOVE => "WM_MOVE",
+        WM_SHOWWINDOW => "WM_SHOWWINDOW",
+        WM_ERASEBKGND => "WM_ERASEBKGND",
+        WM_PAINT => "WM_PAINT",
+        _ => "",
+    };
+    if !name.is_empty() && paint_trace_enabled() {
+        let native = NATIVE_VIEWS.with(|views| {
+            views
+                .borrow()
+                .values()
+                .find(|native| {
+                    native.try_borrow().is_ok_and(|view| {
+                        view.host_window == hwnd
+                            || view.parked_target == hwnd
+                            || view.parent == hwnd
+                    })
+                })
+                .cloned()
+        });
+        if let Some(native) = native {
+            trace_window_geometry(&format!("wndproc.{}", name), &native, None);
+        }
+    }
+
+    if message == WM_ERASEBKGND {
+        // A window that erases nothing shows whatever happens to be in its buffer, which right
+        // after a reparent is an empty near-white surface - that is the flash. Erasing with the
+        // host color makes the gap indistinguishable from the Canvas behind it. The limbo window
+        // stores no color and simply swallows the message.
+        let color = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+        if color != 0 {
+            let mut client = RECT::default();
+            if unsafe { GetClientRect(hwnd, &mut client) }.is_ok() {
+                let brush = unsafe { CreateSolidBrush(COLORREF((color as u32) & 0x00FF_FFFF)) };
+                if !brush.is_invalid() {
+                    unsafe {
+                        FillRect(HDC(wparam.0 as *mut c_void), &client, brush);
+                        let _ = DeleteObject(brush.into());
+                    }
+                }
+            }
+        }
+        return LRESULT(1);
+    }
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+fn ensure_limbo_window_class() -> BridgeResult<()> {
+    static REGISTERED: OnceLock<BridgeResult<()>> = OnceLock::new();
+    REGISTERED
+        .get_or_init(|| {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(limbo_window_proc),
+                hInstance: unsafe { GetModuleHandleW(None) }
+                    .map_err(format_windows_error)?
+                    .into(),
+                hbrBackground: HBRUSH::default(),
+                lpszClassName: LIMBO_WINDOW_CLASS,
+                ..Default::default()
+            };
+            if unsafe { RegisterClassW(&class) } == 0 {
+                return Err("Failed to register the WebView2 limbo window class".to_string());
+            }
+            Ok(())
+        })
+        .clone()
+}
+
+thread_local! {
+    /// One limbo window per top-level root, reused for the lifetime of that root.
+    static LIMBO_WINDOWS: RefCell<HashMap<isize, HWND>> = RefCell::new(HashMap::new());
+}
+
+/// Creates the bridge-owned window that hosts the controller for its whole lifetime. It is created
+/// visible and stays visible forever: every hide is a plain move, so Chromium never receives
+/// WM_SHOWWINDOW and never takes its widget out of the composition tree.
+fn create_bridge_host_window(parent: HWND, background_color: u32) -> BridgeResult<HWND> {
+    ensure_limbo_window_class()?;
+    let mut client = RECT::default();
+    let (width, height) = unsafe {
+        match GetClientRect(parent, &mut client) {
+            Ok(()) => (
+                (client.right - client.left).max(1),
+                (client.bottom - client.top).max(1),
+            ),
+            Err(_) => (1, 1),
+        }
+    };
+    unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            LIMBO_WINDOW_CLASS,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            0,
+            0,
+            width,
+            height,
+            Some(parent),
+            None,
+            None,
+            None,
+        )
+        .map_err(format_windows_error)
+        .inspect(|hwnd| {
+            // COLORREF is BGR; the stored value doubles as the "this window erases itself" flag.
+            let colorref = ((background_color & 0xFF) << 16)
+                | (background_color & 0xFF00)
+                | ((background_color >> 16) & 0xFF);
+            SetWindowLongPtrW(*hwnd, GWLP_USERDATA, colorref as isize);
+        })
+    }
+}
+
+/// Returns the parking window for `root`: a `WS_VISIBLE`, zero-sized child of it. Keeping it
+/// visible means `IsWindowVisible` of the parked controller stays `true`, so the page never goes
+/// hidden and no visibility transition ever happens; the content is off screen simply because the
+/// parent has an empty client area.
+fn ensure_limbo_window(root: HWND) -> BridgeResult<HWND> {
+    let key = root.0 as isize;
+    if let Some(existing) = LIMBO_WINDOWS.with(|windows| windows.borrow().get(&key).copied()) {
+        if unsafe { IsWindow(Some(existing)) }.as_bool() {
+            return Ok(existing);
+        }
+        LIMBO_WINDOWS.with(|windows| {
+            windows.borrow_mut().remove(&key);
+        });
+    }
+
+    ensure_limbo_window_class()?;
+    // Far outside the client area, not at (0, 0): the parked controller keeps its real size, and
+    // for a frame or two after the reparent its widget is presented before the parent clip is
+    // re-applied. At the origin that shows up as a white ghost in the top-left of the frame.
+    let limbo = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            LIMBO_WINDOW_CLASS,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            LIMBO_WINDOW_OFFSET,
+            LIMBO_WINDOW_OFFSET,
+            0,
+            0,
+            Some(root),
+            None,
+            None,
+            None,
+        )
+        .map_err(format_windows_error)?
+    };
+    LIMBO_WINDOWS.with(|windows| {
+        windows.borrow_mut().insert(key, limbo);
+    });
+    Ok(limbo)
+}
+
+/// Describes the first child of the host window (the Chromium widget) for diagnostics:
+/// `hwnd:class:visible:x,y WxH`.
+fn describe_first_child(hwnd: HWND) -> String {
+    if hwnd.0.is_null() {
+        return "none".to_string();
+    }
+    let child = unsafe { GetWindow(hwnd, GW_CHILD) }.unwrap_or_default();
+    if child.0.is_null() {
+        return "none".to_string();
+    }
+    let mut class_buffer = [0u16; 64];
+    let length = unsafe { GetClassNameW(child, &mut class_buffer) }.max(0) as usize;
+    let class = String::from_utf16_lossy(&class_buffer[..length]);
+    let visible = unsafe { IsWindowVisible(child) }.as_bool();
+    let mut rect = RECT::default();
+    let _ = unsafe { GetWindowRect(child, &mut rect) };
+    format!(
+        "{}:{}:{}:{},{} {}x{}",
+        child.0 as usize as u64,
+        class,
+        visible,
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top
+    )
 }
 
 fn execute_native_command(command: NativeCommand) {
@@ -1267,6 +1634,7 @@ fn execute_native_command(command: NativeCommand) {
             generation,
             user_data_dir,
             document_start_script,
+            background_color,
             callbacks,
         } => {
             let result = create_native_on_owner(
@@ -1275,6 +1643,7 @@ fn execute_native_command(command: NativeCommand) {
                 generation,
                 user_data_dir,
                 document_start_script,
+                background_color,
                 callbacks.clone(),
             );
             if let Err(message) = &result {
@@ -1285,40 +1654,44 @@ fn execute_native_command(command: NativeCommand) {
             result
         }
         NativeCommand::Destroy { handle } => destroy_native_on_owner(handle),
-        NativeCommand::Attach {
+        NativeCommand::SetHostState {
             handle,
             host_hwnd,
+            x,
+            y,
+            width,
+            height,
+            scale,
+            visible,
             generation,
         } => with_native(handle, |native| {
             let host = HWND(host_hwnd as *mut c_void);
-            if unsafe { GetWindowThreadProcessId(host, None) } != unsafe { GetCurrentThreadId() } {
+            if !host.0.is_null()
+                && unsafe { GetWindowThreadProcessId(host, None) }
+                    != unsafe { GetCurrentThreadId() }
+            {
                 return Err("Canvas HWND is not owned by AWT-Windows".to_string());
             }
-            let controller = {
-                let mut view = native
-                    .try_borrow_mut()
-                    .map_err(|_| "WebView2 state is busy while attaching Canvas".to_string())?;
+            {
+                let mut view = native.try_borrow_mut().map_err(|_| {
+                    "WebView2 state is busy while applying host state".to_string()
+                })?;
                 if generation < view.host_generation {
                     return Ok(());
                 }
-                view.parent = host;
-                view.hwnd = host;
                 view.host_generation = generation;
-                view.parked_root = HWND::default();
-                view.visible = false;
-                view.controller.clone()
-            };
-            if let Some(controller) = controller {
-                unsafe {
-                    controller
-                        .SetIsVisible(false)
-                        .map_err(format_windows_error)?;
-                    controller
-                        .SetParentWindow(host)
-                        .map_err(format_windows_error)?;
+                view.x = x;
+                view.y = y;
+                view.width = width.max(0);
+                view.height = height.max(0);
+                view.scale = if scale > 0.0 { scale } else { 1.0 };
+                view.visible = visible;
+                if !host.0.is_null() {
+                    view.hwnd = host;
+                    view.parked_target = HWND::default();
                 }
             }
-            apply_native_bounds(&native)
+            reconcile(&native)
         }),
         NativeCommand::Park {
             handle,
@@ -1335,83 +1708,73 @@ fn execute_native_command(command: NativeCommand) {
             }
             let result = with_native(handle, |native| {
                 let parking = HWND(parking_hwnd as *mut c_void);
-                let parking_root = resolve_parking_root(parking)?;
-                let controller = {
-                    let mut view = native
-                        .try_borrow_mut()
+                let parking_target = resolve_parking_target(parking)?;
+                let host_window = {
+                    let view = native
+                        .try_borrow()
                         .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
                     if view.host_generation != generation
                         || view.hwnd.0 as isize as jlong != host_hwnd
                     {
                         return Ok(());
                     }
-                    view.visible = false;
-                    view.parent = parking_root;
-                    view.hwnd = HWND::default();
-                    view.parked_root = parking_root;
-                    view.controller.clone()
+                    view.host_window
                 };
-                if let Some(controller) = controller {
+                // The dying Canvas HWND takes its children with it, so the bridge window has to
+                // move out before WM_NCDESTROY. Only this plain window travels - WebView2 sees
+                // nothing at all, and no ShowWindow is involved, so Chromium never hides its
+                // widget and the page keeps rendering into an off-screen parent.
+                if !host_window.0.is_null() {
                     unsafe {
-                        controller
-                            .SetIsVisible(false)
-                            .map_err(format_windows_error)?;
-                        controller
-                            .SetParentWindow(parking_root)
-                            .map_err(format_windows_error)?;
+                        SetParent(host_window, Some(parking_target)).map_err(|error| {
+                            format!(
+                                "WebView2 park SetParent(limbo) failed: {}",
+                                format_windows_error(error)
+                            )
+                        })?;
+                        trace_window_geometry("park", &native, None);
                     }
                 }
+                {
+                    let mut view = native
+                        .try_borrow_mut()
+                        .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
+                    view.parent = parking_target;
+                    view.hwnd = HWND::default();
+                    view.parked_target = parking_target;
+                }
+                emit_diagnostic(
+                    &native,
+                    DIAGNOSTIC_TRACE,
+                    "host.state",
+                    "WebView2 controller parked in the limbo window".to_string(),
+                    diagnostic_data(vec![
+                        ("phase", "parked".to_string()),
+                        ("hostHwnd", host_hwnd.to_string()),
+                        (
+                            "parkingRequestHwnd",
+                            (parking.0 as usize as u64).to_string(),
+                        ),
+                        (
+                            "parkingHwnd",
+                            (parking_target.0 as usize as u64).to_string(),
+                        ),
+                        (
+                            "parkingVisible",
+                            unsafe { IsWindowVisible(parking_target) }
+                                .as_bool()
+                                .to_string(),
+                        ),
+                        ("generation", generation.to_string()),
+                        ("hostWindow", (host_window.0 as usize as u64).to_string()),
+                        ("widget", describe_first_child(host_window)),
+                    ]),
+                );
                 Ok(())
             });
             completion.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release);
             result
         }
-        NativeCommand::SetBounds {
-            handle,
-            width,
-            height,
-            scale,
-        } => with_native(handle, |native| {
-            {
-                let mut view = native
-                    .try_borrow_mut()
-                    .map_err(|_| "WebView2 state is busy while resizing Canvas".to_string())?;
-                view.x = 0;
-                view.y = 0;
-                view.width = width.max(0);
-                view.height = height.max(0);
-                view.scale = if scale > 0.0 { scale } else { 1.0 };
-            }
-            apply_native_bounds(&native)
-        }),
-        NativeCommand::SetVisible { handle, visible } => with_native(handle, |native| {
-            let controller = {
-                let mut view = native
-                    .try_borrow_mut()
-                    .map_err(|_| "WebView2 state is busy while changing visibility".to_string())?;
-                view.visible = visible;
-                view.controller.clone()
-            };
-            if let Some(controller) = controller {
-                unsafe {
-                    controller
-                        .SetIsVisible(visible)
-                        .map_err(format_windows_error)?;
-                }
-                let effective_visibility = native
-                    .try_borrow()
-                    .map(|view| view.visible)
-                    .unwrap_or(false);
-                if effective_visibility != visible {
-                    unsafe {
-                        controller
-                            .SetIsVisible(effective_visibility)
-                            .map_err(format_windows_error)?;
-                    }
-                }
-            }
-            Ok(())
-        }),
         NativeCommand::Focus { handle } => with_native(handle, |native| {
             let (hwnd, controller) = {
                 let view = native
@@ -1545,7 +1908,7 @@ fn destroy_views_parked_on(hwnd: HWND) {
                 native
                     .try_borrow()
                     .ok()
-                    .and_then(|view| (view.parked_root == hwnd).then_some(*handle))
+                    .and_then(|view| (view.parked_target == hwnd).then_some(*handle))
             })
             .collect::<Vec<_>>()
     });
@@ -1710,12 +2073,14 @@ fn transfer_to_js(native: &NativeHandle, raw_json: String) -> BridgeResult<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_native_on_owner(
     handle: jlong,
     parent_hwnd: jlong,
     generation: jlong,
     user_data_dir: String,
     document_start_script: String,
+    background_color: u32,
     callbacks: Arc<JavaCallbacks>,
 ) -> BridgeResult<()> {
     unsafe {
@@ -1724,6 +2089,7 @@ fn create_native_on_owner(
 
     let parent = HWND(parent_hwnd as *mut c_void);
     let hwnd = parent;
+    let host_window = create_bridge_host_window(parent, background_color)?;
     let document_start_scripts = if document_start_script.is_empty() {
         Vec::new()
     } else {
@@ -1755,13 +2121,16 @@ fn create_native_on_owner(
         callbacks,
         destroyed: false,
         visible: false,
+        background_color,
+        host_window,
+        applied_size: (0, 0),
         x: 0,
         y: 0,
         width: 0,
         height: 0,
         scale: 1.0,
         host_generation: generation,
-        parked_root: HWND::default(),
+        parked_target: HWND::default(),
     }));
 
     NATIVE_VIEWS.with(|views| {
@@ -1805,7 +2174,11 @@ fn start_shared_environment_creation(
     let options = ICoreWebView2EnvironmentOptions::from(options);
     unsafe {
         if let Err(error) =
-            options.SetAdditionalBrowserArguments(w!("--disable-features=ElasticOverscroll"))
+            // CalculateNativeWinOcclusion must be off: a hidden host is clipped away by geometry,
+            // and the occlusion tracker would otherwise throttle it until rAF stops entirely.
+            options.SetAdditionalBrowserArguments(w!(
+                "--disable-features=ElasticOverscroll,CalculateNativeWinOcclusion"
+            ))
         {
             SHARED_ENVIRONMENT_MANAGER.with(|manager| {
                 manager.borrow_mut().clear_start_failure(generation);
@@ -1935,7 +2308,9 @@ fn begin_create_controller(
     if !register_shared_environment_active_view(generation, native.clone()) {
         return Ok(());
     }
-    let hwnd = native.borrow().hwnd;
+    // The controller is created inside the bridge-owned window and never leaves it. Swing still
+    // owns geometry, focus, z-order and DPI through the Canvas the bridge window is parented to.
+    let hwnd = native.borrow().host_window;
     emit_diagnostic(
         &native,
         DIAGNOSTIC_TRACE,
@@ -2069,17 +2444,6 @@ fn finish_create(
     generation: u64,
 ) -> BridgeResult<()> {
     let finish_started_at = Instant::now();
-    let current_parent = native.borrow().parent;
-    unsafe {
-        controller
-            .SetIsVisible(false)
-            .map_err(format_windows_error)?;
-        if !current_parent.0.is_null() {
-            controller
-                .SetParentWindow(current_parent)
-                .map_err(format_windows_error)?;
-        }
-    }
     let webview = measure_perf(
         &native,
         "perf.webview2.finish.core-webview2",
@@ -2136,6 +2500,11 @@ fn finish_create(
         || attach_got_focus_handler(&controller, native.clone()),
     )?;
 
+    // Without this the controller paints its own near-white default before the first frame of the
+    // page reaches the screen, which is the white flash seen on reattach. The Canvas peer is
+    // already erased with the same color, so the transition becomes invisible.
+    apply_default_background_color(&native, &controller);
+
     measure_perf(
         &native,
         "perf.webview2.finish.diagnostics",
@@ -2169,7 +2538,7 @@ fn finish_create(
         (view.callbacks.clone(), view.handle)
     };
 
-    apply_controller_host_state(&native, &controller)?;
+    apply_controller_host_state(&native)?;
 
     callbacks.on_created(handle);
     emit_perf_diagnostic(
@@ -2182,6 +2551,40 @@ fn finish_create(
         ],
     );
     Ok(())
+}
+
+/// Paints the controller with the host background instead of the WebView2 default, so a frame
+/// without page content is indistinguishable from the Canvas behind it.
+fn apply_default_background_color(native: &NativeHandle, controller: &ICoreWebView2Controller) {
+    let color = match native.try_borrow() {
+        Ok(view) => view.background_color,
+        Err(_) => return,
+    };
+    let Ok(controller2) = controller.cast::<ICoreWebView2Controller2>() else {
+        emit_diagnostic(
+            native,
+            DIAGNOSTIC_WARN,
+            "controller.background.unsupported",
+            "ICoreWebView2Controller2 is unavailable, keeping the default background".to_string(),
+            String::new(),
+        );
+        return;
+    };
+    let value = COREWEBVIEW2_COLOR {
+        A: ((color >> 24) & 0xFF) as u8,
+        R: ((color >> 16) & 0xFF) as u8,
+        G: ((color >> 8) & 0xFF) as u8,
+        B: (color & 0xFF) as u8,
+    };
+    if let Err(error) = unsafe { controller2.SetDefaultBackgroundColor(value) } {
+        emit_diagnostic(
+            native,
+            DIAGNOSTIC_WARN,
+            "controller.background.failed",
+            format_windows_error(error),
+            String::new(),
+        );
+    }
 }
 
 fn configure_webview_application_settings(webview: &ICoreWebView2) -> BridgeResult<()> {
@@ -3376,6 +3779,91 @@ fn remove_add_script_handler(native: &NativeHandle, handler_id: u64) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestWindow(HWND);
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DestroyWindow(self.0);
+            }
+        }
+    }
+
+    /// The owned-window case (a floating dialog parking under its owner) cannot be modeled here -
+    /// a synthetic window does not get AWT's ownership - and is covered by
+    /// `WebViewRuntimeSmokeTest.facade_survives_move_from_disposed_floating_window`.
+    #[test]
+    fn parking_target_is_visible_zero_sized_child_of_root() {
+        let root = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("webview-test-root"),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create test root")
+        });
+        unsafe {
+            let _ = ShowWindow(root.0, SW_SHOW);
+        }
+        let canvas = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("webview-test-canvas"),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                320,
+                240,
+                Some(root.0),
+                None,
+                None,
+                None,
+            )
+            .expect("create test Canvas")
+        });
+
+        let first = resolve_parking_target(canvas.0).expect("resolve first parking target");
+        let second = resolve_parking_target(canvas.0).expect("resolve repeated parking target");
+
+        assert_eq!(first, second, "the limbo window must be reused per root");
+        assert_ne!(
+            first, root.0,
+            "parking must target the limbo window, not the root itself"
+        );
+        assert_eq!(
+            unsafe { GetAncestor(first, GA_ROOT) },
+            root.0,
+            "the limbo window must stay under the same top-level window"
+        );
+        assert!(
+            unsafe { IsWindowVisible(first) }.as_bool(),
+            "a hidden limbo would drop IsWindowVisible of the parked controller and freeze the page"
+        );
+
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(first, &mut rect) }.expect("read limbo client rect");
+        assert_eq!(
+            (rect.right - rect.left, rect.bottom - rect.top),
+            (0, 0),
+            "the limbo window clips the parked controller away by having an empty client area"
+        );
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct ControllerHostState {
     parent: HWND,
@@ -3406,39 +3894,11 @@ fn controller_host_state(native: &NativeHandle) -> BridgeResult<ControllerHostSt
     })
 }
 
-fn apply_controller_host_state(
-    native: &NativeHandle,
-    controller: &ICoreWebView2Controller,
-) -> BridgeResult<()> {
+/// Applies the host state right after controller creation, retrying while Swing keeps changing it.
+fn apply_controller_host_state(native: &NativeHandle) -> BridgeResult<()> {
     for _ in 0..CONTROLLER_HOST_STATE_APPLY_ATTEMPTS {
         let state = controller_host_state(native)?;
-        unsafe {
-            controller
-                .SetIsVisible(false)
-                .map_err(format_windows_error)?;
-            if !state.parent.0.is_null() {
-                controller
-                    .SetParentWindow(state.parent)
-                    .map_err(format_windows_error)?;
-            }
-        }
-        apply_bounds_values(
-            state.hwnd,
-            Some(controller),
-            state.x,
-            state.y,
-            state.width,
-            state.height,
-            state.scale,
-        )?;
-        if controller_host_state(native)? != state {
-            continue;
-        }
-        unsafe {
-            controller
-                .SetIsVisible(state.visible)
-                .map_err(format_windows_error)?;
-        }
+        reconcile(native)?;
         if controller_host_state(native)? == state {
             return Ok(());
         }
@@ -3446,34 +3906,28 @@ fn apply_controller_host_state(
     Err("WebView2 host state changed repeatedly while finishing controller creation".to_string())
 }
 
-fn apply_native_bounds(native: &NativeHandle) -> BridgeResult<()> {
-    let (hwnd, controller, x, y, width, height, scale) = {
+/// The single reconcile: brings the bridge window to the desired [`NativeWebView`] state.
+///
+/// Placement is expressed entirely with `SetParent`/`SetWindowPos` on the bridge-owned window.
+/// `put_ParentWindow` and `put_IsVisible` are never called after creation, and `put_Bounds` only
+/// on a real resize - the Chromium widget itself never moves and never changes size.
+fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
+    trace_window_geometry("reconcile.before", native, None);
+    let (hwnd, host_window, controller, visible, width, height, applied_size) = {
         let view = native
             .try_borrow()
             .map_err(|_| "WebView2 state is busy while reading Canvas bounds".to_string())?;
         (
             view.hwnd,
+            view.host_window,
             view.controller.clone(),
-            view.x,
-            view.y,
+            view.visible,
             view.width,
             view.height,
-            view.scale,
+            view.applied_size,
         )
     };
-    apply_bounds_values(hwnd, controller.as_ref(), x, y, width, height, scale)
-}
-
-fn apply_bounds_values(
-    hwnd: HWND,
-    controller: Option<&ICoreWebView2Controller>,
-    _x: i32,
-    _y: i32,
-    width: i32,
-    height: i32,
-    _scale: f64,
-) -> BridgeResult<()> {
-    if hwnd.0.is_null() {
+    if hwnd.0.is_null() || host_window.0.is_null() {
         return Ok(());
     }
 
@@ -3488,21 +3942,57 @@ fn apply_bounds_values(
         }
     };
 
+    // The bridge window follows the Canvas; hiding pushes it below the client area instead of
+    // resizing it, so the browser keeps its composition surface and its size never changes.
+    let top = if visible { 0 } else { height.max(1) };
     unsafe {
-        if let Some(controller) = controller {
+        if GetParent(host_window).unwrap_or_default() != hwnd {
+            SetParent(host_window, Some(hwnd)).map_err(format_windows_error)?;
+        }
+        SetWindowPos(
+            host_window,
+            None,
+            0,
+            top,
+            width.max(1),
+            height.max(1),
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+        )
+        .map_err(format_windows_error)?;
+    }
+
+    let Some(controller) = controller else {
+        return Ok(());
+    };
+    // The controller fills the bridge window, so it only ever hears about real resizes.
+    let size = (width.max(1), height.max(1));
+    if size != applied_size {
+        if let Ok(mut view) = native.try_borrow_mut() {
+            view.applied_size = size;
+        }
+        unsafe {
             controller
                 .SetBounds(RECT {
                     left: 0,
                     top: 0,
-                    right: width,
-                    bottom: height,
+                    right: size.0,
+                    bottom: size.1,
                 })
-                .map_err(format_windows_error)?;
-            controller
-                .NotifyParentWindowPositionChanged()
                 .map_err(format_windows_error)?;
         }
     }
+    unsafe {
+        controller
+            .NotifyParentWindowPositionChanged()
+            .map_err(format_windows_error)?;
+    }
+
+    let extra = format!(
+        "top={} width={} height={} visible={}",
+        top, width, height, visible
+    );
+    trace_window_geometry("reconcile.after", native, Some(&extra));
+
     Ok(())
 }
 

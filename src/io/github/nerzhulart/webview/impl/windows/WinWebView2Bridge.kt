@@ -20,7 +20,7 @@ private class WinWebView2BridgePluginAnchor
 
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v12"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v14"
 
   init {
     if (SystemInfo.isWindows) {
@@ -32,13 +32,30 @@ internal object WinWebView2Bridge {
   private external fun abiVersionNative(): String
 
   @JvmStatic
-  private external fun createNative(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long
+  private external fun createNative(
+    parentHwnd: Long,
+    generation: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    backgroundColor: Int,
+    callbacks: Callbacks,
+  ): Long
 
   @JvmStatic
   private external fun destroyNative(handle: Long)
 
   @JvmStatic
-  private external fun attachToParentNative(handle: Long, parentHwnd: Long, generation: Long)
+  private external fun setHostStateNative(
+    handle: Long,
+    parentHwnd: Long,
+    x: Int,
+    y: Int,
+    width: Int,
+    height: Int,
+    scale: Double,
+    visible: Boolean,
+    generation: Long,
+  )
 
   @JvmStatic
   private external fun parkBeforePeerDisposeNative(
@@ -47,12 +64,6 @@ internal object WinWebView2Bridge {
     parkingHwnd: Long,
     generation: Long,
   ): Boolean
-
-  @JvmStatic
-  private external fun setBoundsNative(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double)
-
-  @JvmStatic
-  private external fun setVisibleNative(handle: Long, visible: Boolean)
 
   @JvmStatic
   private external fun focusNative(handle: Long)
@@ -81,15 +92,20 @@ internal object WinWebView2Bridge {
   @JvmStatic
   private external fun completeAssetRequestNative(handle: Long, requestId: Long, response: AssetResponse?)
 
-  fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: Callbacks): Long =
-    createNative(parentHwnd, generation, userDataDir, documentStartScript, callbacks)
+  fun create(
+    parentHwnd: Long,
+    generation: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    backgroundColor: Int,
+    callbacks: Callbacks,
+  ): Long = createNative(parentHwnd, generation, userDataDir, documentStartScript, backgroundColor, callbacks)
 
   fun destroy(handle: Long) = destroyNative(handle)
-  fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) = attachToParentNative(handle, parentHwnd, generation)
+  fun setHostState(handle: Long, parentHwnd: Long, x: Int, y: Int, width: Int, height: Int, scale: Double, visible: Boolean, generation: Long) =
+    setHostStateNative(handle, parentHwnd, x, y, width, height, scale, visible, generation)
   fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean =
     parkBeforePeerDisposeNative(handle, hostHwnd, parkingHwnd, generation)
-  fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) = setBoundsNative(handle, x, y, width, height, scale)
-  fun setVisible(handle: Long, visible: Boolean) = setVisibleNative(handle, visible)
   fun focus(handle: Long) = focusNative(handle)
   fun clearFocus(handle: Long) = clearFocusNative(handle)
   fun loadUrl(handle: Long, url: String) = loadUrlNative(handle, url)
@@ -159,12 +175,19 @@ internal object WinWebView2Bridge {
 
 @ApiStatus.Internal
 internal interface WinWebView2BridgeApi {
-  fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long
+  fun create(
+    parentHwnd: Long,
+    generation: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    backgroundColor: Int,
+    callbacks: WinWebView2Bridge.Callbacks,
+  ): Long
+
   fun destroy(handle: Long)
-  fun attachToParent(handle: Long, parentHwnd: Long, generation: Long)
+  /** The single placement command: the native side reconciles the whole state at once. */
+  fun setHostState(handle: Long, parentHwnd: Long, x: Int, y: Int, width: Int, height: Int, scale: Double, visible: Boolean, generation: Long)
   fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean
-  fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double)
-  fun setVisible(handle: Long, visible: Boolean)
   fun focus(handle: Long)
   fun clearFocus(handle: Long)
   fun loadUrl(handle: Long, url: String)
@@ -178,17 +201,30 @@ internal interface WinWebView2BridgeApi {
 
 @ApiStatus.Internal
 internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
-  override fun create(parentHwnd: Long, generation: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long =
-    WinWebView2Bridge.create(parentHwnd, generation, userDataDir, documentStartScript, callbacks)
+  override fun create(
+    parentHwnd: Long,
+    generation: Long,
+    userDataDir: String,
+    documentStartScript: String,
+    backgroundColor: Int,
+    callbacks: WinWebView2Bridge.Callbacks,
+  ): Long = WinWebView2Bridge.create(parentHwnd, generation, userDataDir, documentStartScript, backgroundColor, callbacks)
 
   override fun destroy(handle: Long) = WinWebView2Bridge.destroy(handle)
-  override fun attachToParent(handle: Long, parentHwnd: Long, generation: Long) = WinWebView2Bridge.attachToParent(handle, parentHwnd, generation)
+  override fun setHostState(
+    handle: Long,
+    parentHwnd: Long,
+    x: Int,
+    y: Int,
+    width: Int,
+    height: Int,
+    scale: Double,
+    visible: Boolean,
+    generation: Long,
+  ) = WinWebView2Bridge.setHostState(handle, parentHwnd, x, y, width, height, scale, visible, generation)
+
   override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean =
     WinWebView2Bridge.parkBeforePeerDispose(handle, hostHwnd, parkingHwnd, generation)
-  override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) =
-    WinWebView2Bridge.setBounds(handle, x, y, width, height, scale)
-
-  override fun setVisible(handle: Long, visible: Boolean) = WinWebView2Bridge.setVisible(handle, visible)
   override fun focus(handle: Long) = WinWebView2Bridge.focus(handle)
   override fun clearFocus(handle: Long) = WinWebView2Bridge.clearFocus(handle)
   override fun loadUrl(handle: Long, url: String) = WinWebView2Bridge.loadUrl(handle, url)

@@ -233,10 +233,10 @@ class SwingWebViewHostPanel internal constructor(
   }
 
   private val resizeListener = object : ComponentAdapter() {
-    override fun componentResized(e: ComponentEvent) = nativeHostBoundsChanged()
-    override fun componentMoved(e: ComponentEvent) = nativeHostBoundsChanged()
-    override fun componentShown(e: ComponentEvent) = updateVisibility(false)
-    override fun componentHidden(e: ComponentEvent) = updateVisibility(true)
+    override fun componentResized(e: ComponentEvent) = syncNative()
+    override fun componentMoved(e: ComponentEvent) = syncNative()
+    override fun componentShown(e: ComponentEvent) = syncNative()
+    override fun componentHidden(e: ComponentEvent) = syncNative()
   }
 
   @RequiresEdt
@@ -245,8 +245,7 @@ class SwingWebViewHostPanel internal constructor(
     // TODO: bad pattern?
     if (!scope.isActive) return
     installListeners()
-    ensureNativePeerAttached()
-    syncNativePeerFromSwingEvent(allowReveal = false)
+    syncNative()
     syncWebViewFocusWithSwingFocusOwner()
   }
 
@@ -265,7 +264,7 @@ class SwingWebViewHostPanel internal constructor(
   @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
   override fun reshape(x: Int, y: Int, w: Int, h: Int) {
     super.reshape(x, y, w, h)
-    nativeHostBoundsChanged()
+    syncNative()
   }
 
   @RequiresEdt
@@ -275,27 +274,15 @@ class SwingWebViewHostPanel internal constructor(
     g.drawImage(image, 0, 0, width, height, null)
   }
 
+  /**
+   * The only synchronization entry point. Every Swing event that can change placement or visibility
+   * lands here; the panel decides nothing, the engine reads the whole state off this component.
+   */
   @RequiresEdt
-  private fun scheduleFrameUpdate() {
-    if (ensureNativePeerAttached()) {
-      engine.scheduleFrameUpdate(this)
-    }
-  }
-
-  @RequiresEdt
-  private fun updateVisibility(hidden: Boolean) {
-    if (hidden) {
-      engine.updateVisibility(this, true)
-      notifyHeavyweightChanged()
-    }
-    else {
-      syncNativePeerFromSwingEvent(allowReveal = true)
-    }
-  }
-
-  @RequiresEdt
-  private fun nativeHostBoundsChanged() {
-    syncNativePeerFromSwingEvent(allowReveal = true)
+  private fun syncNative() {
+    if (!ensureNativePeerAttached()) return
+    engine.syncHostState(this)
+    notifyHeavyweightChanged()
   }
 
   @RequiresEdt
@@ -309,20 +296,6 @@ class SwingWebViewHostPanel internal constructor(
       ensureHeavyweightRegistered()
     }
     return engineAttached
-  }
-
-  @RequiresEdt
-  private fun syncNativePeerFromSwingEvent(allowReveal: Boolean) {
-    if (!ensureNativePeerAttached()) return
-
-    scheduleFrameUpdate()
-    notifyHeavyweightChanged()
-    if (!allowReveal || !isReadyForNativeDisplay(engine)) {
-      engine.updateVisibility(this, true)
-      return
-    }
-
-    engine.updateVisibility(this, false)
   }
 
   @RequiresEdt
@@ -342,10 +315,6 @@ class SwingWebViewHostPanel internal constructor(
     heavyweightRegistration?.let {
       WebViewHeavyweightHostRegistry.componentChanged(this)
     }
-  }
-
-  private fun isReadyForNativeDisplay(engine: WebViewEngine): Boolean {
-    return isDisplayable && isShowing && width > 0 && height > 0 && engine.hasNonEmptyNativeBounds(this)
   }
 
   internal fun requestWebViewFocus() {
@@ -416,7 +385,7 @@ class SwingWebViewHostPanel internal constructor(
 
   internal fun syncNativePeerWithSwingState() {
     runOnEdt {
-      syncNativePeerFromSwingEvent(allowReveal = true)
+      syncNative()
     }
   }
 
@@ -506,14 +475,14 @@ class SwingWebViewHostPanel internal constructor(
     addComponentListener(resizeListener)
     val listener = HierarchyListener { e ->
       if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
-        updateVisibility(!isShowing)
+        syncNative()
       }
     }
     hierarchyListener = listener
     addHierarchyListener(listener)
     val boundsListener = object : HierarchyBoundsAdapter() {
-      override fun ancestorMoved(e: HierarchyEvent) = nativeHostBoundsChanged()
-      override fun ancestorResized(e: HierarchyEvent) = nativeHostBoundsChanged()
+      override fun ancestorMoved(e: HierarchyEvent) = syncNative()
+      override fun ancestorResized(e: HierarchyEvent) = syncNative()
     }
     hierarchyBoundsListener = boundsListener
     addHierarchyBoundsListener(boundsListener)
@@ -567,8 +536,8 @@ class SwingWebViewHostPanel internal constructor(
 
   private fun installAncestorContainerListeners() {
     val listener = object : ContainerAdapter() {
-      override fun componentAdded(e: ContainerEvent) = nativeHostBoundsChanged()
-      override fun componentRemoved(e: ContainerEvent) = nativeHostBoundsChanged()
+      override fun componentAdded(e: ContainerEvent) = syncNative()
+      override fun componentRemoved(e: ContainerEvent) = syncNative()
     }
     ancestorContainerListener = listener
     generateSequence(this as Component?) { it.parent }
