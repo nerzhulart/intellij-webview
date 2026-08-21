@@ -86,7 +86,10 @@ Two ordering traps live in the same place:
   `add(...)`. In a live IDE the resizes that follow hide it; in a fixed-size test frame the host stays
   `0x0` forever, which is how `WebViewFocusInteropRobotTest` caught it.
   `WinWebViewEngineTest.canvasLaidOutAfterItsPeerWasCreatedReachesTheController` is the cheap guard:
-  it fails the moment the deferred layout pass is gone.
+  it fails the moment the layout pass moves back into `addNotify`. It waits for the Canvas to be laid
+  out instead of pumping the EDT once - the pass is posted with a plain `SwingUtilities.invokeLater`,
+  and `runInEdtAndWait` overtakes it once an IntelliJ Application exists in the test JVM, which is why
+  the first version of the guard was green locally and red on every CI runner.
 - `Canvas.reshape` must skip the snapshot while the component is not displayable. The `setBounds` of
   point 1 runs before `super.addNotify()`, so there is no HWND yet, and a snapshot without one reads
   as "the peer is gone" - it would park a controller that never left the holder window.

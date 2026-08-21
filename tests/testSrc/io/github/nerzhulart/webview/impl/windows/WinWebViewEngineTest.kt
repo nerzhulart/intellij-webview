@@ -31,7 +31,11 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.condition.DisabledIfSystemProperty
+import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.awt.BorderLayout
 import java.awt.Canvas
@@ -44,6 +48,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.JFrame
 import javax.swing.JLabel
 import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration.Companion.seconds
 
 internal class WinWebViewEngineTest {
 
@@ -535,6 +540,8 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
+  @EnabledOnOs(OS.WINDOWS)
+  @DisabledIfSystemProperty(named = "java.awt.headless", matches = "true")
   fun recreatedCanvasPeerReattachesParkedController() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
@@ -570,6 +577,8 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
+  @EnabledOnOs(OS.WINDOWS)
+  @DisabledIfSystemProperty(named = "java.awt.headless", matches = "true")
   fun canvasLaidOutAfterItsPeerWasCreatedReachesTheController() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
@@ -577,6 +586,7 @@ internal class WinWebViewEngineTest {
     var frame: JFrame? = null
     lateinit var canvas: Canvas
     try {
+      // TODO: migrate to suspend
       runInEdtAndWait {
         frame = JFrame("WebView2 late layout test").apply {
           contentPane.layout = BorderLayout()
@@ -589,13 +599,12 @@ internal class WinWebViewEngineTest {
         bridge.visibility.clear()
         // `Container.addImpl` calls `Canvas.addNotify` before BorderLayout is told about CENTER, so
         // the layout that gives the host - and with it the Canvas - a size can only run afterwards.
-        frame!!.contentPane.add(SwingWebViewHostPanel(scope, engine), BorderLayout.CENTER)
+        frame.contentPane.add(SwingWebViewHostPanel(scope, engine), BorderLayout.CENTER)
         canvas = engine.component.components.single() as Canvas
       }
-      // The layout pass is requested from `addNotify` for exactly this moment.
-      runInEdtAndWait {}
+      // TODO: migrate to suspend
+      awaitOnEdt({ canvas.width > 0 && canvas.height > 0 }) { "the Canvas was never laid out: ${canvas.bounds}" }
 
-      assertTrue(canvas.width > 0 && canvas.height > 0, "the Canvas was never laid out: ${canvas.bounds}")
       assertEquals(Bounds(canvas.width, canvas.height), bridge.bounds.last().bounds, bridge.bounds.toString())
       assertEquals(Visibility(1L, true), bridge.visibility.last(), bridge.visibility.toString())
     }
@@ -835,6 +844,27 @@ internal class WinWebViewEngineTest {
         val next = synchronized(queue) { queue.removeFirstOrNull() } ?: return
         next.run()
       }
+    }
+  }
+
+  /**
+   * The layout pass that sizes the Canvas is requested from `Canvas.addNotify` with a plain
+   * `SwingUtilities.invokeLater`, and how many EDT events later it runs is not fixed: once an
+   * IntelliJ Application exists in the test JVM, `runInEdtAndWait` dispatches through a priority
+   * queue that overtakes it, so a single round-trip is not enough - that is what turned the guard
+   * red on every CI runner while it stayed green locally.
+   *
+   * The wait does not soften the guard: a layout pass started from inside `addNotify` leaves the
+   * tree valid, after which nothing lays the host out at all and this still fails on timeout.
+   */
+  private fun awaitOnEdt(condition: () -> Boolean, onTimeout: () -> String) {
+    val deadline = System.nanoTime() + 10.seconds.inWholeNanoseconds
+    while (true) {
+      var satisfied = false
+      runInEdtAndWait { satisfied = condition() }
+      if (satisfied) return
+      if (System.nanoTime() >= deadline) fail<Unit>(onTimeout())
+      Thread.sleep(10)
     }
   }
 
