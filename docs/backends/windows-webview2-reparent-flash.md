@@ -10,9 +10,9 @@ Earlier handoffs concluded that `put_ParentWindow` and `put_IsVisible` rebuild t
 presentation and flash the whole frame. That was measured with confounders (parking under a
 different top-level via `GA_ROOTOWNER`, plus live visibility transitions).
 
-Both confounders are gone now, and the flash is unchanged:
+Both confounders were gone at the time of that measurement, and the flash was unchanged:
 
-- the controller is created once and `put_IsVisible` is never called;
+- the controller is created once and `put_IsVisible` was never called;
 - parking goes into a `WS_VISIBLE`, zero-sized holder window under the same root owner;
 - a configuration was measured where **WebView2 receives no call at all after creation**: the
   controller lived inside a bridge-owned window, and only that plain window travelled between the
@@ -60,18 +60,36 @@ later - that is the white rectangle over the whole window, and the browser is me
 
 ## The fix
 
-Two independent things, both needed:
+Three independent things, all needed:
 
 1. **The peer is born empty.** `WinWebViewEngine`'s `Canvas.addNotify` sets the bounds to `0x0` before
    `super.addNotify()` and restores them on the next EDT event, when the containers are laid out and
    the relative bounds map to the right place. A window with no area cannot show anything.
-2. **The content is revealed after the layout settles.** `WinWebViewEngine.gateRevealAfterReattach`
-   holds the first snapshot on a new parent at `visible = false`, which the native `reconcile`
-   expresses as "same size, pushed under the client area": the window is back in the composition tree
-   and Chromium lays out and presents into it, but nothing of it is on screen. It is revealed on a
-   later sync, once the geometry repeated itself and `REVEAL_SETTLE_DELAY` passed;
-   `scheduleRevealRecheck` re-reads the host itself, because Swing is not obliged to send another
-   event. A plain hide/show under a live peer is not gated - the surface still holds its frame.
+2. **The content is revealed after the layout settles.** A host with no area reads as
+   `visible = false` in `WinWebViewEngine.readHostState`, so the reattached controller is hidden
+   through `put_IsVisible` until the layout that gives the Canvas its real size. The native
+   `reconcile` orders the calls "hide, reparent, resize, show", so the page is never presented at a
+   size or position the host no longer has, and the reveal happens exactly once. There is no timer:
+   the layout event is the gate.
+3. **The Canvas reports its own geometry.** The controller is a child window of the `Canvas`, so the
+   `Canvas` rectangle - not the one of `SwingWebViewHostPanel` - is what the page is clipped to, and
+   the layout pass that finally sizes it produces no event the host panel listens to. `Canvas.reshape`
+   therefore synchronizes the snapshot itself; without it the last thing the native side ever hears is
+   the empty snapshot from `addNotify`.
+
+Two ordering traps live in the same place:
+
+- The layout pass of point 1 must be requested from the next EDT event, never from `addNotify`.
+  `Container.addImpl` calls `addNotify` **before** it hands the constraint to the layout manager, so a
+  `revalidate()` from there lays the container out as if the host had no place in it - and, worse, it
+  leaves the whole tree valid, which swallows the `revalidate()` the caller does right after
+  `add(...)`. In a live IDE the resizes that follow hide it; in a fixed-size test frame the host stays
+  `0x0` forever, which is how `WebViewFocusInteropRobotTest` caught it.
+  `WinWebViewEngineTest.canvasLaidOutAfterItsPeerWasCreatedReachesTheController` is the cheap guard:
+  it fails the moment the deferred layout pass is gone.
+- `Canvas.reshape` must skip the snapshot while the component is not displayable. The `setBounds` of
+  point 1 runs before `super.addNotify()`, so there is no HWND yet, and a snapshot without one reads
+  as "the peer is gone" - it would park a controller that never left the holder window.
 
 Measured on the full WebView scenario afterwards: `maxChangedFraction=0.01`,
 `maxBrightFraction=0.03`, no flash frames saved, and the page keeps its `requestAnimationFrame`
@@ -83,18 +101,20 @@ rhythm across every cycle.
   dark background moves a lot of pixels without being visible, so "how much changed" alone reported a
   green `0.01` while the white slab was still there.
 - `WebViewGeometryProbe` reports the placement **the page itself observes** - viewport size, on-screen
-  position, `visibilityState` and animation-frame gaps - which is how the reveal gate was verified
-  (`screen=(834,850)` while gated, `screen=(834,189)` about 120 ms later, size never changing).
+  position, `visibilityState` and animation-frame gaps. With honest visibility a hidden host reports
+  `visibilityState=hidden` and stops receiving animation frames, which is the point: that is what
+  lets Chromium freeze the renderer of a tool window nobody looks at.
 - The native side traces `placement.reconcile` and `placement.park` - the Canvas rectangles, the
   frame, and the bounds WebView2 itself reports - behind `WEBVIEW_WIN_PAINT_TRACE=1`.
 
 ## What is still open
 
-1. There is still a short dark region while the gate is closed. `SwingWebViewHostPanel` has the
-   machinery for covering it - `snapshotImage`, `paintComponent`, `setSnapshotImage`,
-   `clearSnapshotImage` - but `setSnapshotImage` has no callers.
+1. Between the reattach and the first frame of the shown controller there is still a short dark
+   region. `SwingWebViewHostPanel` has the machinery for covering it - `snapshotImage`,
+   `paintComponent`, `setSnapshotImage`, `clearSnapshotImage` - but `setSnapshotImage` has no
+   callers.
 2. Undocking a tool window into another top-level moves the controller between composition trees;
-   that transition is not covered by the gate.
+   that transition is only covered by the same hide/show ordering, not by anything specific.
 3. Windowless hosting (`ICoreWebView2CompositionController`) does **not** solve the gap by itself:
    it is "no rendered frame yet", not "HWND moved".
 

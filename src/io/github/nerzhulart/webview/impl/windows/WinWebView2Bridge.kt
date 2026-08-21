@@ -160,7 +160,8 @@ internal object WinWebView2Bridge {
    * @param parentHwnd current Canvas HWND, `0` once the peer is gone.
    * @param width Swing-side width in device pixels, a fallback for the real client rect.
    * @param height Swing-side height in device pixels, a fallback for the real client rect.
-   * @param visible `false` hides the controller by geometry alone, without touching `IsVisible`.
+   * @param visible `false` hides the controller through `put_IsVisible`, so the page stops
+   *   rendering while nobody looks at it.
    * @param generation attachment counter this snapshot belongs to.
    */
   fun setHostState(handle: Long, parentHwnd: Long, width: Int, height: Int, visible: Boolean, generation: Long) =
@@ -484,9 +485,9 @@ internal interface WinWebView2BridgeApi {
    * @param width Swing-side width in device pixels; only a fallback, because the reconcile prefers
    *   the real client rect of [parentHwnd].
    * @param height Swing-side height in device pixels, a fallback in the same sense as [width].
-   * @param visible `false` is expressed as geometry alone - the controller keeps its size and is
-   *   pushed below the client area, because toggling `IsVisible` rebuilds the composition and
-   *   flashes the frame.
+   * @param visible `false` is applied as `put_IsVisible(false)`: the widget goes hidden, Chromium
+   *   stops rendering the page and its renderer becomes a candidate for freezing. The reveal is
+   *   ordered after the geometry, so the page is never presented at a size the host no longer has.
    * @param generation the attachment this snapshot describes; an older one is dropped in favour of
    *   the applied one.
    */
@@ -498,8 +499,8 @@ internal interface WinWebView2BridgeApi {
    * everything else here it blocks: the bridge sends a bounded barrier to its own holder window,
    * whose `wndproc` runs the queued park on AWT-Windows before the Canvas can get `WM_NCDESTROY`.
    *
-   * The controller lands in the holder - a zero-sized visible child of the same top-level - so the
-   * page keeps rendering instead of going hidden.
+   * The controller is hidden through `put_IsVisible` and lands in the holder - a zero-sized child
+   * of the same top-level - so a host nobody can see costs nothing to keep alive.
    *
    * @param handle view to park.
    * @param hostHwnd the Canvas HWND about to die; its top-level root decides which holder is used.

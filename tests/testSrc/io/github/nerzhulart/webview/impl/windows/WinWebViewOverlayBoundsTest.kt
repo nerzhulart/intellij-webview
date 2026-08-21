@@ -104,8 +104,8 @@ internal class WinWebViewOverlayBoundsTest {
       bridge.callbacks.onCreated(bridge.createdHandles.single())
     }
     assertEquals(Bounds(300, 200), bridge.boundsSnapshot().lastOrNull()?.bounds)
-    // Placement is expressed by geometry alone; the controller visibility is never toggled.
-    assertTrue(bridge.visibilitySnapshot().isEmpty(), bridge.visibilitySnapshot().toString())
+    // Hiding is for a host Swing does not show, so a startup inside a visible frame ends up shown.
+    assertTrue(bridge.isShown(), bridge.visibilitySnapshot().toString())
   }
 
   private fun createOverlayFixture(): OverlayFixture {
@@ -186,6 +186,9 @@ internal class WinWebViewOverlayBoundsTest {
 
     fun visibilitySnapshot(): List<Visibility> = visibility.toList()
 
+    /** A freshly created controller is visible, exactly like the native one. */
+    fun isShown(): Boolean = visibility.lastOrNull()?.visible ?: true
+
     override fun create(
       parentHwnd: Long,
       generation: Long,
@@ -202,7 +205,7 @@ internal class WinWebViewOverlayBoundsTest {
       callbacks.onDestroyed(handle)
     }
 
-    /** The native reconcile expresses placement as geometry only, so [visibility] stays empty. */
+    /** Mirrors the native reconcile: visibility reaches the controller only when it really changed. */
     override fun setHostState(
       handle: Long,
       parentHwnd: Long,
@@ -212,6 +215,10 @@ internal class WinWebViewOverlayBoundsTest {
       generation: Long,
     ) {
       bounds.add(BoundsRecord(handle, Bounds(width, height)))
+      val shown = visible && parentHwnd != 0L
+      if (shown != isShown()) {
+        visibility.add(Visibility(handle, shown))
+      }
     }
 
     override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, generation: Long): Boolean = true

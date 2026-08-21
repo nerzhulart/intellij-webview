@@ -883,9 +883,8 @@ struct NativeWebView {
     got_focus_token: Option<EventRegistrationToken>,
     callbacks: Arc<JavaCallbacks>,
     destroyed: bool,
-    /// Whether Swing shows the host. Expressed through geometry only: the controller's own
-    /// IsVisible is never toggled because that transition rebuilds the top-level composition
-    /// and flashes the whole frame.
+    /// Whether Swing shows the host. Pushed to the controller as `put_IsVisible`, so a host nobody
+    /// looks at stops rendering and Chromium is free to freeze its renderer.
     visible: bool,
     /// Host background as ARGB, applied to the controller so that a frame without page content
     /// looks exactly like the Canvas behind it.
@@ -894,6 +893,8 @@ struct NativeWebView {
     applied_parent: HWND,
     /// Bounds last pushed to the controller, so a repeated snapshot never becomes a resize.
     applied_bounds: RECT,
+    /// Visibility last pushed to the controller. A freshly created controller is visible.
+    applied_visible: bool,
     width: i32,
     height: i32,
     host_generation: jlong,
@@ -1345,10 +1346,10 @@ fn resolve_holder_window(canvas: HWND) -> BridgeResult<HWND> {
     ensure_holder_window(root_owner)
 }
 
-/// Returns the holder window for `root`: a `WS_VISIBLE`, zero-sized child of it. Keeping it visible
-/// means `IsWindowVisible` of the parked controller stays `true`, so the page never goes hidden and
-/// no visibility transition ever happens; the content is off screen simply because the parent has
-/// an empty client area.
+/// Returns the holder window for `root`: a `WS_VISIBLE`, zero-sized child of it. The parked
+/// controller is hidden through `put_IsVisible`, and the holder only has to be a live parent that
+/// outlives the Canvas peer - it is kept visible and zero-sized so that a controller which is shown
+/// again before it is re-parented still has nothing to present into.
 fn ensure_holder_window(root: HWND) -> BridgeResult<HWND> {
     let key = root.0 as isize;
     if let Some(existing) = HOLDER_WINDOWS.with(|windows| windows.borrow().get(&key).copied()) {
@@ -1505,12 +1506,18 @@ fn execute_native_command(command: NativeCommand) {
                     view.controller.clone()
                 };
                 // The dying Canvas HWND takes its children with it, so the controller has to move
-                // out before WM_NCDESTROY. The parking window is visible and zero-sized, so no
-                // ShowWindow is involved: Chromium never hides its widget and the page keeps
-                // rendering into an off-screen parent. A controller that does not exist yet is
-                // re-parented by the reconcile that follows its creation.
+                // out before WM_NCDESTROY. Hiding it first is what the park is for: nobody can see
+                // the page any more, so the renderer should stop working for it. A controller that
+                // does not exist yet is hidden and re-parented by the reconcile that follows its
+                // creation.
                 if let Some(controller) = &controller {
                     unsafe {
+                        controller.SetIsVisible(false).map_err(|error| {
+                            format!(
+                                "WebView2 park SetIsVisible(false) failed: {}",
+                                format_windows_error(error)
+                            )
+                        })?;
                         controller
                             .SetParentWindow(parking_target)
                             .map_err(|error| {
@@ -1528,9 +1535,11 @@ fn execute_native_command(command: NativeCommand) {
                         .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
                     view.parent = parking_target;
                     view.hwnd = HWND::default();
+                    view.visible = false;
                     if controller.is_some() {
                         view.applied_parent = parking_target;
                         view.applied_bounds = RECT::default();
+                        view.applied_visible = false;
                     }
                 }
                 emit_diagnostic(
@@ -1904,6 +1913,7 @@ fn create_native_on_owner(
         background_color,
         applied_parent: HWND::default(),
         applied_bounds: RECT::default(),
+        applied_visible: true,
         width: 0,
         height: 0,
         host_generation: generation,
@@ -1953,8 +1963,10 @@ fn start_shared_environment_creation(
     let options = ICoreWebView2EnvironmentOptions::from(options);
     unsafe {
         if let Err(error) =
-            // CalculateNativeWinOcclusion must be off: a hidden host is clipped away by geometry,
-            // and the occlusion tracker would otherwise throttle it until rAF stops entirely.
+            // CalculateNativeWinOcclusion must be off: a host that Swing shows can still be
+            // covered by another heavyweight peer, and the occlusion tracker would throttle it
+            // until rAF stops entirely. Hiding is reported explicitly through put_IsVisible, so
+            // nothing is lost by not guessing it from window geometry.
             options.SetAdditionalBrowserArguments(w!(
                 "--disable-features=ElasticOverscroll,CalculateNativeWinOcclusion"
             ))
@@ -3565,23 +3577,37 @@ fn remove_add_script_handler(native: &NativeHandle, handler_id: u64) {
 }
 
 /// Remembers what the controller was actually told, so the next reconcile can stay silent.
-fn store_applied_placement(native: &NativeHandle, parent: HWND, bounds: RECT) {
+fn store_applied_placement(native: &NativeHandle, parent: HWND, bounds: RECT, visible: bool) {
     if let Ok(mut view) = native.try_borrow_mut() {
         view.applied_parent = parent;
         view.applied_bounds = bounds;
+        view.applied_visible = visible;
     }
 }
 
 /// The single reconcile: brings the controller to the desired [`NativeWebView`] state.
 ///
 /// Placement is the WebView2 API and nothing else: `SetParentWindow` (`put_ParentWindow`) on a real
-/// parent change, `SetBounds` when the parent or the rectangle changed, and
-/// `NotifyParentWindowPositionChanged` after a reparent. Hiding keeps the old trick - same size,
-/// pushed below the client area of the Canvas - so the composition surface survives and
-/// `put_IsVisible` is still never called.
+/// parent change, `SetBounds` when the parent or the rectangle changed,
+/// `NotifyParentWindowPositionChanged` after a reparent, and `SetIsVisible` (`put_IsVisible`) on a
+/// real visibility change. Hiding is honest, which is the only way Chromium ever learns that the
+/// page is off screen and may freeze its renderer.
+///
+/// The order is what keeps the reveal free of intermediate frames: hide before moving, move before
+/// showing, so nothing is ever presented at a size or position the host no longer has.
 fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
     // With no Canvas, `parent` is the holder the view was parked in.
-    let (hwnd, holder, controller, visible, width, height, applied_parent, applied_bounds) = {
+    let (
+        hwnd,
+        holder,
+        controller,
+        visible,
+        width,
+        height,
+        applied_parent,
+        applied_bounds,
+        applied_visible,
+    ) = {
         let view = native
             .try_borrow()
             .map_err(|_| "WebView2 state is busy while reading Canvas bounds".to_string())?;
@@ -3594,45 +3620,71 @@ fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
             view.height,
             view.applied_parent,
             view.applied_bounds,
+            view.applied_visible,
         )
     };
     let Some(controller) = controller else {
         return Ok(());
     };
     if hwnd.0.is_null() {
-        // The controller was created after the park, so the park itself had nothing to move.
-        // Leaving it on the destroyed Canvas HWND would take it down together with the peer.
+        // The controller was created after the park, so the park itself had nothing to move nor to
+        // hide. Leaving it on the destroyed Canvas HWND would take it down together with the peer.
+        if applied_visible {
+            unsafe {
+                controller
+                    .SetIsVisible(false)
+                    .map_err(format_windows_error)?;
+            }
+        }
         if !holder.0.is_null() && applied_parent != holder {
             unsafe {
                 controller
                     .SetParentWindow(holder)
                     .map_err(format_windows_error)?;
             }
-            store_applied_placement(native, holder, RECT::default());
+            store_applied_placement(native, holder, RECT::default(), false);
+        } else if applied_visible {
+            store_applied_placement(native, applied_parent, applied_bounds, false);
         }
         return Ok(());
     }
 
     let mut client = RECT::default();
-    let (width, height) = unsafe {
+    let (client_width, client_height) = unsafe {
         match GetClientRect(hwnd, &mut client) {
-            Ok(()) => (
-                (client.right - client.left).max(1),
-                (client.bottom - client.top).max(1),
-            ),
-            Err(_) => (width.max(1), height.max(1)),
+            Ok(()) => (client.right - client.left, client.bottom - client.top),
+            Err(_) => (width, height),
         }
     };
-    let top = if visible { 0 } else { height };
+    // An AWT peer is born empty and gets its real bounds one layout later. Resizing the page down
+    // to 1x1 in between costs a reflow and a frame, and that size is never what anyone sees, so an
+    // empty host keeps whatever the controller already has.
+    let (width, height) = if client_width > 0 && client_height > 0 {
+        (client_width, client_height)
+    } else if applied_bounds.right > applied_bounds.left
+        && applied_bounds.bottom > applied_bounds.top
+    {
+        (
+            applied_bounds.right - applied_bounds.left,
+            applied_bounds.bottom - applied_bounds.top,
+        )
+    } else {
+        (1, 1)
+    };
     let bounds = RECT {
         left: 0,
-        top,
+        top: 0,
         right: width,
-        bottom: top + height,
+        bottom: height,
     };
 
     let parent_changed = applied_parent != hwnd;
     unsafe {
+        if applied_visible && !visible {
+            controller
+                .SetIsVisible(false)
+                .map_err(format_windows_error)?;
+        }
         if parent_changed {
             controller
                 .SetParentWindow(hwnd)
@@ -3646,8 +3698,11 @@ fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
                 .NotifyParentWindowPositionChanged()
                 .map_err(format_windows_error)?;
         }
+        if visible && !applied_visible {
+            controller.SetIsVisible(true).map_err(format_windows_error)?;
+        }
     }
-    store_applied_placement(native, hwnd, bounds);
+    store_applied_placement(native, hwnd, bounds, visible);
 
     let extra = format!(
         "bounds={} visible={} reparented={}",

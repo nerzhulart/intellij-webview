@@ -25,13 +25,17 @@ The provider is available when the plugin-local native DLL can be loaded and its
   native command and applied by a single `reconcile`; focus and navigation updates are coalesced
   separately.
 - `reconcile` is WebView2 API only: `put_ParentWindow` on a real parent change, `SetBounds` when the
-  parent or the rectangle changed, `NotifyParentWindowPositionChanged` after a reparent. Hiding is
-  not `put_IsVisible` - the controller keeps its size and is pushed below the client area, so the
-  composition surface survives.
+  parent or the rectangle changed, `NotifyParentWindowPositionChanged` after a reparent, and
+  `put_IsVisible` on a real visibility change. The calls are ordered "hide, reparent, resize, show",
+  so a page is never presented at a size the host no longer has, and a host with no client area
+  keeps the bounds the controller already has instead of being resized to 1x1.
+- Hiding is honest: a host Swing does not show reports `visibilityState=hidden` to the page, stops
+  getting animation frames and lets Chromium freeze its renderer. This is why a tool window nobody
+  looks at costs nothing.
 - The controller lives directly in the AWT `Canvas` HWND. When the peer is about to be destroyed it
-  is re-parented into the holder window: one `WS_VISIBLE`, zero-sized child per top-level root,
-  which keeps `IsWindowVisible` true so the page never goes hidden. Its `wndproc` handles just two
-  messages - the park barrier and its own `WM_NCDESTROY`. See
+  is hidden and re-parented into the holder window: one `WS_VISIBLE`, zero-sized child per top-level
+  root, which only has to outlive the peer. Its `wndproc` handles just two messages - the park
+  barrier and its own `WM_NCDESTROY`. See
   [Windows Reparent Flash Measurement](windows-webview2-reparent-flash.md) and
   [Raw Win32 Audit](windows-webview2-raw-winapi-audit.md).
 

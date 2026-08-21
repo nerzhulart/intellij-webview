@@ -51,7 +51,6 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import kotlin.time.measureTimedValue
@@ -88,19 +87,43 @@ internal class WinWebViewEngine(
       setBounds(0, 0, 0, 0)
       super.addNotify()
       reattachControllerAfterPeerCreation()
-      revalidate()
       // Being added to an already valid container produces no layout pass, and then nobody would
-      // ever give the canvas its size back.
+      // ever give the canvas its size back. The pass has to be asked for from the next EDT event,
+      // never from here: `Container.addImpl` calls `addNotify` before it hands the constraint to the
+      // layout manager, so a layout started now runs as if the host had no place in the container -
+      // and it leaves the whole tree valid, which swallows the `revalidate()` the caller does right
+      // after `add(...)`. The host would then stay empty until something resizes it.
       SwingUtilities.invokeLater {
-        if (isDisplayable && (width == 0 || height == 0) && !beforePeerCreation.isEmpty) {
+        if (!isDisplayable) return@invokeLater
+        if ((width == 0 || height == 0) && !beforePeerCreation.isEmpty) {
           bounds = beforePeerCreation
         }
+        revalidate()
       }
     }
 
     override fun removeNotify() {
       parkControllerBeforePeerDisposal(this)
       super.removeNotify()
+    }
+
+    /**
+     * The controller is a child window of this Canvas, so the Canvas rectangle - not the one of the
+     * host panel - is what the page is clipped to. Nothing else reports it: the host panel listens
+     * to itself and to its ancestors, and the layout pass that finally gives the Canvas its size
+     * produces no event any of those listeners would see. Without this hook the last snapshot the
+     * native side ever gets is the empty one from [addNotify].
+     *
+     * `super.reshape` has already resized the peer, so the reconcile that follows reads the final
+     * client rect and reveals the controller once, at the size it will be seen at.
+     */
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun reshape(x: Int, y: Int, w: Int, h: Int) {
+      super.reshape(x, y, w, h)
+      // Before the peer exists there is no HWND to describe, and a snapshot without one reads as
+      // "the peer is gone" - which would park a controller that never left the holder window.
+      if (!isDisplayable) return
+      underlyingComponent?.let { syncHostState(it) }
     }
   }
 
@@ -127,8 +150,8 @@ internal class WinWebViewEngine(
 
   /**
    * The whole Swing-side placement in one immutable snapshot. `parentHwnd == 0` means the AWT peer
-   * is gone; `visible == false` means Swing does not show the host, which the native side expresses
-   * as controller bounds only - `put_IsVisible` is never called.
+   * is gone; `visible == false` means Swing does not show the host, which the native side applies
+   * as `put_IsVisible(false)` so that the page stops rendering while nobody looks at it.
    */
   internal data class HostState(
     val parentHwnd: Long,
@@ -185,23 +208,11 @@ internal class WinWebViewEngine(
 
   private val hostGeneration = AtomicLong(0)
 
-  /** Reveal gate: the parent whose surface already holds a frame, plus the raw Swing snapshot. */
-  @Volatile
-  private var revealedParent: Long = 0
-
-  @Volatile
-  private var lastObservedState: HostState? = null
-
-  @Volatile
-  private var revealBlockedSince: TimeMark? = null
-
-  private val revealRecheckScheduled = AtomicBoolean(false)
-
   private val currentParentHwnd: Long
     get() = lastApplied?.parentHwnd ?: 0
 
   @Volatile
-  private var shortcutTarget: Component? = null
+  private var underlyingComponent: Component? = null
 
   @Volatile
   private var focusGainedHandler: () -> Unit = {}
@@ -277,7 +288,7 @@ internal class WinWebViewEngine(
     }
 
     override fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Boolean {
-      return WinWebViewShortcutInterop.handleAcceleratorKeyPressed(shortcutTarget, keyEventKind, virtualKey, modifiers, keyEventLParam)
+      return WinWebViewShortcutInterop.handleAcceleratorKeyPressed(underlyingComponent, keyEventKind, virtualKey, modifiers, keyEventLParam)
     }
 
     override fun onFocusGained() {
@@ -361,8 +372,8 @@ internal class WinWebViewEngine(
     scheduleFocusApply()
   }
 
-  internal fun setShortcutTarget(target: Component?) {
-    shortcutTarget = target
+  internal fun setUnderlyingComponent(component: Component?) {
+    underlyingComponent = component
   }
 
   internal fun setFocusGainedHandler(handler: (() -> Unit)?) {
@@ -578,7 +589,7 @@ internal class WinWebViewEngine(
 
   /**
    * The only place native placement is touched. The parent is re-set exclusively when it really
-   * changed, and visibility is expressed through geometry - `put_IsVisible` is never called.
+   * changed, and the visibility of the snapshot goes to the controller as it is.
    */
   private fun applyHostState(handle: Long, desired: HostState) {
     val previous = lastApplied
@@ -1039,7 +1050,7 @@ internal class WinWebViewEngine(
       "win-webview2.host.attach",
       "displayable=${host.isDisplayable}, showing=${host.isShowing}, size=${host.width}x${host.height}",
     ) {
-      setShortcutTarget(host)
+      setUnderlyingComponent(host)
       setFocusGainedHandler { hostPanel.nativeWebViewFocusGained() }
       syncHostState(host)
       true
@@ -1047,77 +1058,29 @@ internal class WinWebViewEngine(
   }
 
   override fun detach() {
-    if (shortcutTarget == null) return
-    // No hide here: the Canvas peer disposal already takes the content off screen, and an
-    // explicit visibility transition is exactly what flashes the whole frame on the next reveal.
-    setShortcutTarget(null)
+    if (underlyingComponent == null) return
+    // No hide here: the Canvas peer disposal has already parked the controller, and parking hides
+    // it natively.
+    setUnderlyingComponent(null)
     setFocusGainedHandler(null)
     pendingState.set(null)
     lastApplied = null
-    resetRevealGate()
   }
 
   override fun syncHostState(host: Component) {
-    if (shortcutTarget == null) return
-    val desired = gateRevealAfterReattach(readHostState(host))
+    if (underlyingComponent == null) return
+    val desired = readHostState(host)
     val timedUpdate = measureTimedValue { requestHostState(desired) }
-    LOG.traceWebViewPerf("win-webview2.host.syncHostState", timedUpdate.duration, hostStateDiagnosticDetails(desired))
-  }
-
-  /**
-   * A controller returning from the holder window has no frame for the new size yet, and the
-   * freshly created AWT peer is still at its pre-layout position - showing it right away is
-   * exactly the flash.
-   * So the first snapshot on a new parent goes out hidden (same size, pushed under the client area,
-   * which is enough for Chromium to lay out and present), and the content is revealed on a later
-   * sync, once the geometry has repeated itself and the surface had time to get a frame.
-   */
-  internal fun gateRevealAfterReattach(observed: HostState): HostState {
-    val previous = lastObservedState
-    lastObservedState = observed
-    if (observed.parentHwnd == 0L) {
-      resetRevealGate()
-      return observed
-    }
-    // The surface stays alive under the same parent, so plain Swing hide/show needs no gating.
-    if (observed.parentHwnd == revealedParent || !observed.visible) return observed
-
-    val blockedSince = revealBlockedSince ?: TimeSource.Monotonic.markNow().also { revealBlockedSince = it }
-    val settled = previous != null &&
-                  previous.parentHwnd == observed.parentHwnd &&
-                  previous.copy(visible = observed.visible) == observed &&
-                  blockedSince.elapsedNow() >= REVEAL_SETTLE_DELAY
-    if (!settled && blockedSince.elapsedNow() < REVEAL_MAX_WAIT) {
-      scheduleRevealRecheck()
-      return observed.copy(visible = false)
-    }
-
-    revealedParent = observed.parentHwnd
-    revealBlockedSince = null
-    return observed
-  }
-
-  /** Swing may have no more events to send, so the gate re-reads the host itself. */
-  private fun scheduleRevealRecheck() {
-    if (!revealRecheckScheduled.compareAndSet(false, true)) return
-    scope.launch {
-      delay(REVEAL_SETTLE_DELAY)
-      SwingUtilities.invokeLater {
-        revealRecheckScheduled.set(false)
-        shortcutTarget?.let { syncHostState(it) }
-      }
-    }
-  }
-
-  private fun resetRevealGate() {
-    revealedParent = 0
-    lastObservedState = null
-    revealBlockedSince = null
+    LOG.traceWebViewPerf("win-webview2.host.syncHostState", timedUpdate.duration, hostStateDiagnosticDetails(desired, host))
   }
 
   /**
    * Reads the whole Swing-side placement in one pass. A dead peer reads as `parentHwnd == 0`, and a
    * host Swing does not show - or one with an empty rectangle - simply reads as `visible = false`.
+   *
+   * An AWT peer is created empty and is laid out one EDT event later, so a reattached host reads as
+   * invisible first and is revealed by the layout that gives it its real size. That is the whole
+   * reveal gate: the controller is shown once, already at the size it will be seen at.
    */
   private fun readHostState(host: Component): HostState {
     val width = canvas.width
@@ -1130,9 +1093,10 @@ internal class WinWebViewEngine(
     )
   }
 
-  private fun hostStateDiagnosticDetails(hostState: HostState): String {
+  private fun hostStateDiagnosticDetails(hostState: HostState, host: Component): String {
     return "parent=0x${java.lang.Long.toHexString(hostState.parentHwnd)}, " +
-           "size=${hostState.width}x${hostState.height}, visible=${hostState.visible}"
+           "canvas=${hostState.width}x${hostState.height}, host=${host.width}x${host.height}, " +
+           "visible=${hostState.visible}"
   }
 
   override fun clearFocusForSwingFocusTransfer() {
@@ -1157,14 +1121,13 @@ internal class WinWebViewEngine(
     if (!parked) {
       LOG.warn("WebView2 Canvas disposal barrier did not complete${diagnosticContext()}")
     }
-    // The controller now hangs in the holder window, so nothing of the old placement is applied,
-    // and its surface is frameless again - the next attach has to be gated before it is revealed.
+    // The controller now hangs in the holder window, hidden, so nothing of the old placement is
+    // applied any more and the next attach has to push the whole snapshot again.
     if (currentParentHwnd == hostHwnd) lastApplied = null
-    resetRevealGate()
   }
 
   private fun reattachControllerAfterPeerCreation() {
-    val host = shortcutTarget ?: return
+    val host = underlyingComponent ?: return
     if (state.get() == State.Closed) return
     syncHostState(host)
   }
@@ -1188,12 +1151,6 @@ internal class WinWebViewEngine(
     private const val DEVTOOLS_CPU_PROFILE_STOP_TIMEOUT_MILLIS = 3_000L
     private const val DEVTOOLS_CPU_PROFILE_POST_NAVIGATION_DELAY_MILLIS = 2_000L
     private const val WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY = "io.github.nerzhulart.webview.windows.asset.custom.scheme.enabled"
-
-    /** How long a reattached controller stays off screen: layout has to settle and a frame to arrive. */
-    private val REVEAL_SETTLE_DELAY = 120.milliseconds
-
-    /** A host that never stops moving is still shown eventually rather than staying invisible. */
-    private val REVEAL_MAX_WAIT = 600.milliseconds
   }
 }
 
