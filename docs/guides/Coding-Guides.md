@@ -23,7 +23,8 @@ WebView code crosses distinct owners:
 
 - EDT owns Swing components and `createWebViewPanel(...)` calls.
 - macOS main owns WKWebView and AppKit operations.
-- `WebView2-Thread` owns WebView2 STA and child-HWND operations.
+- AWT-Windows owns every WebView2 controller operation; it already owns the `Canvas` HWND the
+  controller lives in, and there is no separate WebView2 thread.
 - JCEF follows JBCEF's threading contracts.
 
 Never block EDT waiting for native completion. Native callbacks must dispatch before touching Swing. On macOS, AppKit main and EDT may be the same thread or different threads depending on JBR startup; code must work in both cases.

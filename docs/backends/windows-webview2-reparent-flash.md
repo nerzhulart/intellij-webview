@@ -13,13 +13,17 @@ different top-level via `GA_ROOTOWNER`, plus live visibility transitions).
 Both confounders are gone now, and the flash is unchanged:
 
 - the controller is created once and `put_IsVisible` is never called;
-- parking goes into a `WS_VISIBLE`, zero-sized limbo window under the same root owner;
+- parking goes into a `WS_VISIBLE`, zero-sized holder window under the same root owner;
 - a configuration was measured where **WebView2 receives no call at all after creation**: the
-  controller lives inside a bridge-owned window, and only that plain window travels between the
-  Canvas peer and the limbo with `SetParent`/`SetWindowPos`.
+  controller lived inside a bridge-owned window, and only that plain window travelled between the
+  Canvas peer and the parking window with `SetParent`/`SetWindowPos`.
 
 `maxChangedFraction` stayed at `0.78`, and the flash is visible by eye in that configuration too.
 So the reparent API is **not** the cause.
+
+That measurement is what later justified deleting the bridge window and moving placement onto
+`put_ParentWindow` + `SetBounds`; the reasoning and the full verdict list are in
+[Raw Win32 Audit](windows-webview2-raw-winapi-audit.md).
 
 ## What the frames show
 
@@ -33,7 +37,7 @@ rectangles:
 Neither is painted by Swing: `SwingWebViewHostPanel` and the engine wrapper are `isOpaque = false`,
 and the `Canvas` peer plus the controller default background are both set to `#1E1F22`. Both are the
 freshly created AWT `Canvas` peer before anything has painted into it - AWT creates the HWND first
-and lays it out afterwards, and the bridge window simply follows it.
+and lays it out afterwards, and the browser simply rides along inside it.
 
 ## Actual cause: the recreated AWT peer, not WebView2
 
@@ -81,8 +85,8 @@ rhythm across every cycle.
 - `WebViewGeometryProbe` reports the placement **the page itself observes** - viewport size, on-screen
   position, `visibilityState` and animation-frame gaps - which is how the reveal gate was verified
   (`screen=(834,850)` while gated, `screen=(834,189)` about 120 ms later, size never changing).
-- The native side traces `geom.reconcile.before` / `geom.reconcile.after` / `geom.park` with the real
-  screen rectangles of the bridge window, the Canvas, the frame and the Chromium widget.
+- The native side traces `placement.reconcile` and `placement.park` - the Canvas rectangles, the
+  frame, and the bounds WebView2 itself reports - behind `WEBVIEW_WIN_PAINT_TRACE=1`.
 
 ## What is still open
 
@@ -93,3 +97,10 @@ rhythm across every cycle.
    that transition is not covered by the gate.
 3. Windowless hosting (`ICoreWebView2CompositionController`) does **not** solve the gap by itself:
    it is "no rendered frame yet", not "HWND moved".
+
+## Re-measured after the raw Win32 cleanup
+
+Placement has since moved onto `put_ParentWindow` + `SetBounds`
+([Raw Win32 Audit](windows-webview2-raw-winapi-audit.md)) and the measurement was repeated with the
+same parameters: `maxChangedFraction=0.01`, `maxBrightFraction=0.03`, no flash frames saved - the
+numbers above are unchanged, confirming once more that the reparent API is not the cause.

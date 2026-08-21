@@ -22,10 +22,6 @@ internal object WindowsHwndUtil {
     return getHwnd(component)
   }
 
-  fun scale(component: Component): Double {
-    return component.graphicsConfiguration?.defaultTransform?.scaleX?.takeIf { it > 0.0 } ?: 1.0
-  }
-
   private fun getHwnd(component: Component): Long? {
     return try {
       val peerField = Component::class.java.getDeclaredField("peer")

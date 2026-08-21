@@ -128,15 +128,12 @@ internal class WinWebViewEngine(
   /**
    * The whole Swing-side placement in one immutable snapshot. `parentHwnd == 0` means the AWT peer
    * is gone; `visible == false` means Swing does not show the host, which the native side expresses
-   * as geometry only - the controller visibility is never toggled.
+   * as controller bounds only - `put_IsVisible` is never called.
    */
   internal data class HostState(
     val parentHwnd: Long,
-    val x: Int,
-    val y: Int,
     val width: Int,
     val height: Int,
-    val scale: Double,
     val visible: Boolean,
   )
 
@@ -552,11 +549,8 @@ internal class WinWebViewEngine(
       bridge.setHostState(
         nativeHandle,
         desired.parentHwnd,
-        desired.x,
-        desired.y,
         desired.width,
         desired.height,
-        desired.scale,
         desired.visible,
         generation,
       )
@@ -600,11 +594,8 @@ internal class WinWebViewEngine(
     bridge.setHostState(
       handle,
       desired.parentHwnd,
-      desired.x,
-      desired.y,
       desired.width,
       desired.height,
-      desired.scale,
       desired.visible,
       generation,
     )
@@ -731,11 +722,8 @@ internal class WinWebViewEngine(
         bridge.setHostState(
           nativeHandle,
           it.parentHwnd,
-          it.x,
-          it.y,
           it.width,
           it.height,
-          it.scale,
           it.visible,
           hostGeneration.get(),
         )
@@ -1077,8 +1065,9 @@ internal class WinWebViewEngine(
   }
 
   /**
-   * A controller returning from limbo has no frame for the new size yet, and the freshly created
-   * AWT peer is still at its pre-layout position - showing it right away is exactly the flash.
+   * A controller returning from the holder window has no frame for the new size yet, and the
+   * freshly created AWT peer is still at its pre-layout position - showing it right away is
+   * exactly the flash.
    * So the first snapshot on a new parent goes out hidden (same size, pushed under the client area,
    * which is enough for Chromium to lay out and present), and the content is revealed on a later
    * sync, once the geometry has repeated itself and the surface had time to get a frame.
@@ -1135,19 +1124,15 @@ internal class WinWebViewEngine(
     val height = canvas.height
     return HostState(
       parentHwnd = componentHwndResolver(canvas) ?: 0L,
-      x = 0,
-      y = 0,
       width = width,
       height = height,
-      scale = WindowsHwndUtil.scale(canvas),
       visible = host.isShowing && canvas.isShowing && width > 0 && height > 0,
     )
   }
 
   private fun hostStateDiagnosticDetails(hostState: HostState): String {
     return "parent=0x${java.lang.Long.toHexString(hostState.parentHwnd)}, " +
-           "bounds=${hostState.x},${hostState.y} ${hostState.width}x${hostState.height}, " +
-           "scale=${hostState.scale}, visible=${hostState.visible}"
+           "size=${hostState.width}x${hostState.height}, visible=${hostState.visible}"
   }
 
   override fun clearFocusForSwingFocusTransfer() {
@@ -1155,25 +1140,24 @@ internal class WinWebViewEngine(
   }
 
   /**
-   * Runs before JBR synchronously destroys the Canvas peer. The native bridge uses a
-   * bounded WH_CALLWNDPROC barrier to perform this operation on AWT-Windows before
-   * the Canvas HWND can receive WM_NCDESTROY.
+   * Runs before JBR synchronously destroys the Canvas peer. The native bridge sends a bounded
+   * barrier message to its own holder window, so the controller leaves the Canvas on AWT-Windows
+   * before that HWND can receive WM_NCDESTROY.
    */
   private fun parkControllerBeforePeerDisposal(component: Component) {
     val handle = nativeHandle
     val generation = hostGeneration.get()
     if (handle == 0L || generation == 0L || state.get() == State.Closed) return
     val hostHwnd = WindowsHwndUtil.resolveComponentHwnd(component) ?: return
-    val parkingHwnd = WindowsHwndUtil.resolveWindowHwnd(component) ?: return
     val parked = runCatching {
-      bridge.parkBeforePeerDispose(handle, hostHwnd, parkingHwnd, generation)
+      bridge.parkBeforePeerDispose(handle, hostHwnd, generation)
     }.onFailure {
       LOG.warn("Failed to park WebView2 before Canvas peer disposal${diagnosticContext()}", it)
     }.getOrDefault(false)
     if (!parked) {
       LOG.warn("WebView2 Canvas disposal barrier did not complete${diagnosticContext()}")
     }
-    // The controller now hangs in the limbo window, so nothing of the old placement is applied,
+    // The controller now hangs in the holder window, so nothing of the old placement is applied,
     // and its surface is frameless again - the next attach has to be gated before it is revealed.
     if (currentParentHwnd == hostHwnd) lastApplied = null
     resetRevealGate()

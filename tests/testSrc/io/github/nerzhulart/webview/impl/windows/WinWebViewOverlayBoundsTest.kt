@@ -103,7 +103,7 @@ internal class WinWebViewOverlayBoundsTest {
     runInEdtAndWait {
       bridge.callbacks.onCreated(bridge.createdHandles.single())
     }
-    assertEquals(Bounds(0, 0, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
+    assertEquals(Bounds(300, 200), bridge.boundsSnapshot().lastOrNull()?.bounds)
     // Placement is expressed by geometry alone; the controller visibility is never toggled.
     assertTrue(bridge.visibilitySnapshot().isEmpty(), bridge.visibilitySnapshot().toString())
   }
@@ -158,17 +158,9 @@ internal class WinWebViewOverlayBoundsTest {
   private fun expectedBounds(host: SwingWebViewHostPanel): Bounds {
     var result: Bounds? = null
     runInEdtAndWait {
-      result = Bounds(0, 0, host.width, host.height, WindowsHwndUtil.scale(host))
+      result = Bounds(host.width, host.height)
     }
     return result!!
-  }
-
-  private fun expectedScale(host: SwingWebViewHostPanel): Double {
-    var result = 1.0
-    runInEdtAndWait {
-      result = WindowsHwndUtil.scale(host)
-    }
-    return result
   }
 
   private object SyncDispatcher : CoroutineDispatcher() {
@@ -214,18 +206,15 @@ internal class WinWebViewOverlayBoundsTest {
     override fun setHostState(
       handle: Long,
       parentHwnd: Long,
-      x: Int,
-      y: Int,
       width: Int,
       height: Int,
-      scale: Double,
       visible: Boolean,
       generation: Long,
     ) {
-      bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
+      bounds.add(BoundsRecord(handle, Bounds(width, height)))
     }
 
-    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean = true
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, generation: Long): Boolean = true
 
     override fun focus(handle: Long) {
     }
@@ -261,11 +250,8 @@ internal class WinWebViewOverlayBoundsTest {
   )
 
   private data class Bounds(
-    val x: Int,
-    val y: Int,
     val width: Int,
     val height: Int,
-    val scale: Double,
   )
 
   private data class Visibility(

@@ -106,7 +106,7 @@ internal class WinWebViewEngineTest {
       assertEquals(listOf(42L, 42L), bridge.createParentHwnds)
       assertEquals(listOf(1L), bridge.destroyedHandles)
       assertTrue(bridge.htmlLoads.any { it.handle == 2L && it.html == "<html>last</html>" }, bridge.htmlLoads.toString())
-      assertTrue(bridge.bounds.any { it.handle == 2L && it.bounds == Bounds(10, 20, 300, 200, 1.5) }, bridge.bounds.toString())
+      assertTrue(bridge.bounds.any { it.handle == 2L && it.bounds == Bounds(300, 200) }, bridge.bounds.toString())
       assertEquals(emptyList<Visibility>(), bridge.visibility, "controller visibility must never be toggled")
     }
     finally {
@@ -344,13 +344,13 @@ internal class WinWebViewEngineTest {
       bridge.bounds.clear()
       runInEdtAndWait {
         repeat(10) { i ->
-          engine.syncHostState(100L, i * 5, i * 5, 100 + i, 100 + i, 1.0)
+          engine.syncHostState(100L, 100 + i, 100 + i)
         }
       }
       assertEquals(1, dispatcher.pendingCount(), "expected host state sync to coalesce into a single queued task")
       dispatcher.drain()
       assertEquals(1, bridge.bounds.size)
-      assertEquals(Bounds(45, 45, 109, 109, 1.0), bridge.bounds[0].bounds)
+      assertEquals(Bounds(109, 109), bridge.bounds[0].bounds)
     }
     finally {
       closeEngine(engine, dispatcher)
@@ -367,7 +367,7 @@ internal class WinWebViewEngineTest {
     try {
       runInEdtAndWait {
         engine.syncHostState(100L)
-        engine.syncHostState(200L, 30, 40, 500, 400, 2.0)
+        engine.syncHostState(200L, 500, 400)
       }
       dispatcher.drain()
       runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.last()) }
@@ -424,7 +424,7 @@ internal class WinWebViewEngineTest {
       runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.single()) }
 
       assertEquals(
-        listOf("create:100", "bounds:1:10:20:300:200:1.5"),
+        listOf("create:100", "bounds:1:300:200"),
         bridge.callOrder,
         "the controller is born on its parent, so only geometry is applied afterwards",
       )
@@ -447,7 +447,7 @@ internal class WinWebViewEngineTest {
       assertEquals(emptyList<String>(), bridge.callOrder, "an unchanged snapshot must not reach the native side")
 
       runInEdtAndWait { engine.syncHostState(100L, width = 640) }
-      assertEquals(listOf("bounds:1:10:20:640:200:1.5"), bridge.callOrder)
+      assertEquals(listOf("bounds:1:640:200"), bridge.callOrder)
     }
     finally {
       closeEngine(engine, scope)
@@ -565,11 +565,11 @@ internal class WinWebViewEngineTest {
     val scope = testScope()
     val engine = createActiveEngine(scope, bridge)
     try {
-      val onNewPeer = WinWebViewEngine.HostState(300L, 0, 0, 640, 480, 1.0, true)
+      val onNewPeer = WinWebViewEngine.HostState(300L, 640, 480, true)
 
       assertFalse(
         engine.gateRevealAfterReattach(onNewPeer).visible,
-        "a controller back from limbo has no frame yet, so the first snapshot on a new parent stays off screen",
+        "a controller back from the holder window has no frame yet, so the first snapshot on a new parent stays off screen",
       )
 
       Thread.sleep(300)
@@ -753,14 +753,11 @@ internal class WinWebViewEngineTest {
   /** Drives the engine through its single placement contract without a real Swing hierarchy. */
   private fun WinWebViewEngine.syncHostState(
     parentHwnd: Long,
-    x: Int = 10,
-    y: Int = 20,
     width: Int = 300,
     height: Int = 200,
-    scale: Double = 1.5,
     visible: Boolean = true,
   ) {
-    requestHostState(WinWebViewEngine.HostState(parentHwnd, x, y, width, height, scale, visible))
+    requestHostState(WinWebViewEngine.HostState(parentHwnd, width, height, visible))
   }
 
   // TODO: use scope of runBlocking in all tests
@@ -874,11 +871,8 @@ internal class WinWebViewEngineTest {
   )
 
   private data class Bounds(
-    val x: Int,
-    val y: Int,
     val width: Int,
     val height: Int,
-    val scale: Double,
   )
 
   private data class HtmlLoad(
@@ -972,22 +966,19 @@ internal class WinWebViewEngineTest {
     override fun setHostState(
       handle: Long,
       parentHwnd: Long,
-      x: Int,
-      y: Int,
       width: Int,
       height: Int,
-      scale: Double,
       visible: Boolean,
       generation: Long,
     ) {
       if (appliedParents.put(handle, parentHwnd) != parentHwnd) {
         attachParents.add(parentHwnd)
       }
-      bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
-      callOrder.add("bounds:$handle:$x:$y:$width:$height:$scale")
+      bounds.add(BoundsRecord(handle, Bounds(width, height)))
+      callOrder.add("bounds:$handle:$width:$height")
     }
 
-    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, parkingHwnd: Long, generation: Long): Boolean {
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, generation: Long): Boolean {
       appliedParents.remove(handle)
       return true
     }

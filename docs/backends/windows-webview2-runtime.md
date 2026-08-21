@@ -15,11 +15,25 @@ The provider is available when the plugin-local native DLL can be loaded and its
 
 ## Runtime
 
-- `WebView2Dispatcher` owns one dedicated STA thread and a blocking Win32 message loop.
-- Rust owns the shared WebView2 environment, controller, browser instance, child HWND, native handlers, and script callbacks.
+- Everything WebView2 runs on the AWT-Windows thread, which already owns the `Canvas` HWND. A
+  process-wide `WH_GETMESSAGE` hook plus `PostThreadMessageW` carry native commands there; there is
+  no separate WebView2 thread and no second message loop.
+- Rust owns the shared WebView2 environment, controller, browser instance, native handlers, script
+  callbacks, and exactly one window of its own: the zero-sized holder described below.
 - Kotlin owns lifecycle state, asset resolution, RPC integration, host geometry, and shortcut routing.
-- Placement is one immutable `HostState` snapshot (parent, bounds, scale, visibility) sent through a single native command and applied by a single `reconcile`; focus and navigation updates are coalesced separately.
-- The controller lives on the AWT `Canvas` HWND, is reparented only into the limbo window when the peer dies, and never has its `IsVisible` toggled - see [Windows Reparent Flash Measurement](windows-webview2-reparent-flash.md).
+- Placement is one immutable `HostState` snapshot (parent, size, visibility) sent through a single
+  native command and applied by a single `reconcile`; focus and navigation updates are coalesced
+  separately.
+- `reconcile` is WebView2 API only: `put_ParentWindow` on a real parent change, `SetBounds` when the
+  parent or the rectangle changed, `NotifyParentWindowPositionChanged` after a reparent. Hiding is
+  not `put_IsVisible` - the controller keeps its size and is pushed below the client area, so the
+  composition surface survives.
+- The controller lives directly in the AWT `Canvas` HWND. When the peer is about to be destroyed it
+  is re-parented into the holder window: one `WS_VISIBLE`, zero-sized child per top-level root,
+  which keeps `IsWindowVisible` true so the page never goes hidden. Its `wndproc` handles just two
+  messages - the park barrier and its own `WM_NCDESTROY`. See
+  [Windows Reparent Flash Measurement](windows-webview2-reparent-flash.md) and
+  [Raw Win32 Audit](windows-webview2-raw-winapi-audit.md).
 
 The remaining focus/thread hardening work is tracked in [Windows WebView2 Threading Follow-up](windows-webview2-off-edt-plan.md).
 
