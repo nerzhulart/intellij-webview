@@ -1,0 +1,16 @@
+<idea-plugin>
+  <id>io.github.nerzhulart.webview.sample.hello</id>
+  <name>Hello WebView</name>
+  <vendor>nerzhulart</vendor>
+
+  <dependencies>
+    <plugin id="io.github.nerzhulart.webview"/>
+  </dependencies>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <!--suppress SplitModeXmlApiUsage -->
+    <toolWindow id="Hello WebView"
+                factoryClass="io.github.nerzhulart.webview.sample.HelloWebViewToolWindowFactory"
+                anchor="right"/>
+  </extensions>
+</idea-plugin>
