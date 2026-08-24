@@ -53,6 +53,22 @@ the way a tool window moves its content:
 The saved `canvas-plain-*` bright frames under `build/reports/webview-flash` show the familiar
 `#EEEEEE` slab.
 
+The test asserts on Windows only, because that is where the mitigation ships and where the numbers
+describe the frame rather than the desktop. `maxBrightFraction` is absolute, so it also counts
+whatever the screen capture contains besides the window, and CI runners differ wildly:
+
+| runner | plain | empty peer | verdict |
+|---|---|---|---|
+| Windows x64 | `0.49` | `0.03` | the measurement the fix is judged by |
+| Linux x64 | `0.50` | `0.00` | same result, not asserted on |
+| Linux ARM64 | `0.50` | `0.49` | flash reproduces, the cure does not - slower runner |
+| macOS Intel / ARM64 | `0.12` / `0.16` | `0.12` / `0.16` | window chrome and wallpaper, `maxChangedFraction=0.00` in the guarded run: nothing on screen moved at all |
+| Windows ARM64 | `0.84` | `0.84` | `maxChangedFraction=0.00` in **both** runs - the capture never sees this frame |
+
+The last row is why the test also skips itself when the plain run moved no pixels: a recorder that
+sees nothing while a full-size canvas is torn out of one slot and dropped into another is measuring
+someone else's screen, and any threshold applied to it is a coin toss.
+
 The mechanism: on `addNotify` AWT creates the HWND with the bounds the component still carries from
 its previous parent, and that HWND is a child of the **frame**, so it materialises at `(0, 0)` of the
 client area at full size. Nothing paints it until the enclosing containers are laid out one EDT event
