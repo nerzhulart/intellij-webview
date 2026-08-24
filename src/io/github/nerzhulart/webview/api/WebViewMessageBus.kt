@@ -50,7 +50,6 @@ fun interface WebViewNotificationHandler<Params : Any> {
  * Disposable registration returned by WebView message bus APIs.
  */
 @ApiStatus.Experimental
-@ApiStatus.NonExtendable
 interface WebViewMessageRegistration {
   fun close()
 }
