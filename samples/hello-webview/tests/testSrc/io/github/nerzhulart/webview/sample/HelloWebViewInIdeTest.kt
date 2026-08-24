@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.condition.DisabledIfSystemProperty
 import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.GraphicsEnvironment
 import java.awt.Point
@@ -47,10 +48,12 @@ internal class HelloWebViewInIdeTest {
           buttonClicked.complete(Unit)
         }
       })
-      frame = showHost(panel.component)
+      val hostFrame = showHost(panel.component)
+      frame = hostFrame
       assertTrue(waitUntilShowing(panel.component, 5.seconds), "WebView panel did not become visible")
 
       val robot = createRobotOrSkip()
+      assumeTrue(activateFrame(hostFrame, 5.seconds), "Robot test window could not be activated")
       val center = componentCenterOnScreen(panel.component)
       val handlerReached = withTimeoutOrNull(30.seconds) {
         while (!buttonClicked.isCompleted) {
@@ -90,10 +93,31 @@ internal class HelloWebViewInIdeTest {
         contentPane.layout = BorderLayout()
         contentPane.add(host, BorderLayout.CENTER)
         size = Dimension(480, 320)
+        setLocation(80, 80)
         isVisible = true
-        toFront()
+        requestForeground(this)
       }
     }
+  }
+
+  private suspend fun activateFrame(frame: JFrame, timeout: Duration): Boolean {
+    return withTimeoutOrNull(timeout) {
+      while (true) {
+        val active = withContext(Dispatchers.EDT) {
+          requestForeground(frame)
+          frame.isActive && frame.isFocused
+        }
+        if (active) return@withTimeoutOrNull true
+        delay(100.milliseconds)
+      }
+    } == true
+  }
+
+  private fun requestForeground(frame: JFrame) {
+    runCatching { Desktop.getDesktop().requestForeground(true) }
+    frame.isAlwaysOnTop = true
+    frame.toFront()
+    frame.isAlwaysOnTop = false
   }
 
   private fun createRobotOrSkip(): Robot {
@@ -116,6 +140,7 @@ internal class HelloWebViewInIdeTest {
     mouseMove(point.x, point.y)
     mousePress(InputEvent.BUTTON1_DOWN_MASK)
     mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    waitForIdle()
   }
 
   private suspend fun disposeFrame(frame: JFrame?) {
