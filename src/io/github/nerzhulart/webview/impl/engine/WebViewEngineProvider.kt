@@ -29,7 +29,7 @@ interface WebViewEngineProvider {
   }
 }
 
-@ApiStatus.Internal
+@ApiStatus.Experimental
 data class WebViewEngineCreationOptions(
   val debugName: String?,
   val documentStartScripts: List<WebViewScript> = listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT),

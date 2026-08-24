@@ -7,7 +7,6 @@ import org.jetbrains.annotations.ApiStatus
  * Typed protocol facade for one WebView instance.
  */
 @ApiStatus.Experimental
-@ApiStatus.NonExtendable
 interface WebViewInterop {
   /**
    * Low-level JSON-RPC message bus used by this interop facade.
