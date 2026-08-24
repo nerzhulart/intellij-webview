@@ -38,7 +38,13 @@ internal class WinWebViewOverlayBoundsTest {
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent fixture scope.
     scope = CoroutineScope(SupervisorJob())
     bridge = FakeWinWebView2Bridge()
-    engine = WinWebViewEngine(scope, bridge, debugName = "overlay-test", webViewDispatcher = SyncDispatcher)
+    engine = WinWebViewEngine(
+      scope,
+      bridge,
+      debugName = "overlay-test",
+      webViewDispatcher = SyncDispatcher,
+      devToolsCpuProfilingEnabled = { false },
+    )
   }
 
   @AfterEach
@@ -94,12 +100,12 @@ internal class WinWebViewOverlayBoundsTest {
       }
       host = hostPanel
     }
-    assertTrue(bridge.visibilitySnapshot().none { it.visible }, bridge.visibilitySnapshot().toString())
     runInEdtAndWait {
       bridge.callbacks.onCreated(bridge.createdHandles.single())
     }
-    assertEquals(Bounds(20, 40, 300, 200, expectedScale(host!!)), bridge.boundsSnapshot().lastOrNull()?.bounds)
-    assertVisibilityApplied(Visibility(1L, true))
+    assertEquals(Bounds(300, 200), bridge.boundsSnapshot().lastOrNull()?.bounds)
+    // Hiding is for a host Swing does not show, so a startup inside a visible frame ends up shown.
+    assertTrue(bridge.isShown(), bridge.visibilitySnapshot().toString())
   }
 
   private fun createOverlayFixture(): OverlayFixture {
@@ -143,19 +149,6 @@ internal class WinWebViewOverlayBoundsTest {
     assertEquals(fullBounds, bounds.lastOrNull()?.bounds, bounds.toString())
   }
 
-  private fun assertVisibilityApplied(visibility: Visibility) {
-    val visibilitySnapshot: List<Visibility> = runBlocking {
-      val deadline = System.currentTimeMillis() + 1_000
-      var snapshot = bridge.visibilitySnapshot()
-      while (snapshot.lastOrNull() != visibility && System.currentTimeMillis() < deadline) {
-        delay(10)
-        snapshot = bridge.visibilitySnapshot()
-      }
-      snapshot
-    }
-    assertEquals(visibility, visibilitySnapshot.lastOrNull(), visibilitySnapshot.toString())
-  }
-
   private data class OverlayFixture(
     val contentPane: JPanel,
     val host: SwingWebViewHostPanel,
@@ -165,19 +158,9 @@ internal class WinWebViewOverlayBoundsTest {
   private fun expectedBounds(host: SwingWebViewHostPanel): Bounds {
     var result: Bounds? = null
     runInEdtAndWait {
-      val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host)!!
-      val nativeBounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
-      result = Bounds(nativeBounds.x, nativeBounds.y, nativeBounds.width, nativeBounds.height, WindowsHwndUtil.scale(host))
+      result = Bounds(host.width, host.height)
     }
     return result!!
-  }
-
-  private fun expectedScale(host: SwingWebViewHostPanel): Double {
-    var result = 1.0
-    runInEdtAndWait {
-      result = WindowsHwndUtil.scale(host)
-    }
-    return result
   }
 
   private object SyncDispatcher : CoroutineDispatcher() {
@@ -203,27 +186,42 @@ internal class WinWebViewOverlayBoundsTest {
 
     fun visibilitySnapshot(): List<Visibility> = visibility.toList()
 
-    override fun create(parentHwnd: Long, userDataDir: String, documentStartScript: String, callbacks: WinWebView2Bridge.Callbacks): Long {
+    /** A freshly created controller is visible, exactly like the native one. */
+    fun isShown(): Boolean = visibility.lastOrNull()?.visible ?: true
+
+    override fun create(
+      parentHwnd: Long,
+      generation: Long,
+      userDataDir: String,
+      documentStartScript: String,
+      backgroundColor: Int,
+      callbacks: WinWebView2Bridge.Callbacks,
+    ): Long {
       this.callbacks = callbacks
       return nextHandle++.also { createdHandles.add(it) }
     }
 
     override fun destroy(handle: Long) {
+      callbacks.onDestroyed(handle)
     }
 
-    override fun attachToParent(handle: Long, parentHwnd: Long) {
+    /** Mirrors the native reconcile: visibility reaches the controller only when it really changed. */
+    override fun setHostState(
+      handle: Long,
+      parentHwnd: Long,
+      width: Int,
+      height: Int,
+      visible: Boolean,
+      generation: Long,
+    ) {
+      bounds.add(BoundsRecord(handle, Bounds(width, height)))
+      val shown = visible && parentHwnd != 0L
+      if (shown != isShown()) {
+        visibility.add(Visibility(handle, shown))
+      }
     }
 
-    override fun detachFromParent(handle: Long) {
-    }
-
-    override fun setBounds(handle: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
-      bounds.add(BoundsRecord(handle, Bounds(x, y, width, height, scale)))
-    }
-
-    override fun setVisible(handle: Long, visible: Boolean) {
-      visibility.add(Visibility(handle, visible))
-    }
+    override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, generation: Long): Boolean = true
 
     override fun focus(handle: Long) {
     }
@@ -248,6 +246,9 @@ internal class WinWebViewOverlayBoundsTest {
 
     override fun transferToJs(handle: Long, rawJson: String) {
     }
+
+    override fun completeAssetRequest(handle: Long, requestId: Long, response: WinWebView2Bridge.AssetResponse?) {
+    }
   }
 
   private data class BoundsRecord(
@@ -256,11 +257,8 @@ internal class WinWebViewOverlayBoundsTest {
   )
 
   private data class Bounds(
-    val x: Int,
-    val y: Int,
     val width: Int,
     val height: Int,
-    val scale: Double,
   )
 
   private data class Visibility(

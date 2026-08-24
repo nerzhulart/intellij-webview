@@ -217,11 +217,7 @@ internal class LinuxWebKitWebViewEngine(
     runOnEdt { LinuxWebKitGtkBridge.detach(handle) }
   }
 
-  override fun scheduleFrameUpdate(host: Component) {
-    TODO("Not yet implemented")
-  }
-
-  override fun updateVisibility(host: Component, hidden: Boolean) {
+  override fun syncHostState(host: Component) {
     TODO("Not yet implemented")
   }
 

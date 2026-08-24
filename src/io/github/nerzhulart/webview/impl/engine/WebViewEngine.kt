@@ -66,9 +66,12 @@ interface WebViewEngine {
    */
   fun attach(host: Component): Boolean
   fun detach()
-  fun scheduleFrameUpdate(host: Component)
-  fun hasNonEmptyNativeBounds(host: Component): Boolean = SwingWebViewHostPanel.hasNonEmptyClippedBounds(host)
-  fun updateVisibility(host: Component, hidden: Boolean)
+
+  /**
+   * The single synchronization contract: any Swing event that can change placement or visibility
+   * calls this, and the engine reads the whole state (geometry, scale, showing) off [host] itself.
+   */
+  fun syncHostState(host: Component)
   fun requestFocus()
   fun clearFocus()
 

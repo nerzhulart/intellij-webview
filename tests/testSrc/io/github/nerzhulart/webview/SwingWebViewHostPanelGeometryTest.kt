@@ -634,10 +634,7 @@ class SwingWebViewHostPanelGeometryTest {
       detachCount++
     }
 
-    override fun scheduleFrameUpdate(host: Component) {
-    }
-
-    override fun updateVisibility(host: Component, hidden: Boolean) {
+    override fun syncHostState(host: Component) {
     }
 
     override fun requestFocus() {
@@ -687,10 +684,7 @@ class SwingWebViewHostPanelGeometryTest {
     override fun detach() {
     }
 
-    override fun scheduleFrameUpdate(host: Component) {
-    }
-
-    override fun updateVisibility(host: Component, hidden: Boolean) {
+    override fun syncHostState(host: Component) {
     }
 
     override suspend fun close() {

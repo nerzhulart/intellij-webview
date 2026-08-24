@@ -35,6 +35,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.annotations.ApiStatus
+import java.awt.BorderLayout
+import java.awt.Canvas
 import java.awt.Component
 import java.nio.file.Files
 import java.nio.file.Path
@@ -45,6 +47,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JComponent
+import javax.swing.JPanel
+import javax.swing.SwingUtilities
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
 import kotlin.time.TimeMark
@@ -59,15 +63,76 @@ internal class WinWebViewEngine(
   private val bridge: WinWebView2BridgeApi = NativeWinWebView2BridgeApi,
   private val debugName: String? = null,
   documentStartScripts: List<WebViewScript> = emptyList(),
-  private val webViewDispatcher: CoroutineDispatcher = WebView2Dispatcher.coroutineDispatcher,
+  private val webViewDispatcher: CoroutineDispatcher = ImmediateWebViewDispatcher,
   private val devToolsCpuProfilingEnabled: () -> Boolean = { Registry.get(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY).asBoolean() },
   private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
+  private val componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
 
-  // TODO: return real canvas when attaching to real Canvas is implemented
-  override val component: JComponent?
-    get() = null
+  private val canvas = object : Canvas() {
+    init {
+      // The AWT peer erases with the component background; the default near-white brush is a
+      // major part of the perceived flash while the native controller has no frame to present.
+      background = java.awt.Color(HOST_BACKGROUND_RGB)
+    }
+
+    override fun addNotify() {
+      // AWT creates the peer with whatever bounds the component carries over from its previous
+      // parent, and the peer is a child of the frame HWND, so it appears at (0, 0) of the client
+      // area in full size until Swing lays it out - a white rectangle over the whole UI for about
+      // a hundred milliseconds. A peer born empty has nothing to show, and the layout that follows
+      // gives it its real bounds.
+      val beforePeerCreation = bounds
+      setBounds(0, 0, 0, 0)
+      super.addNotify()
+      reattachControllerAfterPeerCreation()
+      // Being added to an already valid container produces no layout pass, and then nobody would
+      // ever give the canvas its size back. The pass has to be asked for from the next EDT event,
+      // never from here: `Container.addImpl` calls `addNotify` before it hands the constraint to the
+      // layout manager, so a layout started now runs as if the host had no place in the container -
+      // and it leaves the whole tree valid, which swallows the `revalidate()` the caller does right
+      // after `add(...)`. The host would then stay empty until something resizes it.
+      SwingUtilities.invokeLater {
+        if (!isDisplayable) return@invokeLater
+        if ((width == 0 || height == 0) && !beforePeerCreation.isEmpty) {
+          bounds = beforePeerCreation
+        }
+        revalidate()
+      }
+    }
+
+    override fun removeNotify() {
+      parkControllerBeforePeerDisposal(this)
+      super.removeNotify()
+    }
+
+    /**
+     * The controller is a child window of this Canvas, so the Canvas rectangle - not the one of the
+     * host panel - is what the page is clipped to. Nothing else reports it: the host panel listens
+     * to itself and to its ancestors, and the layout pass that finally gives the Canvas its size
+     * produces no event any of those listeners would see. Without this hook the last snapshot the
+     * native side ever gets is the empty one from [addNotify].
+     *
+     * `super.reshape` has already resized the peer, so the reconcile that follows reads the final
+     * client rect and reveals the controller once, at the size it will be seen at.
+     */
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun reshape(x: Int, y: Int, w: Int, h: Int) {
+      super.reshape(x, y, w, h)
+      // Before the peer exists there is no HWND to describe, and a snapshot without one reads as
+      // "the peer is gone" - which would park a controller that never left the holder window.
+      if (!isDisplayable) return
+      underlyingComponent?.let { syncHostState(it) }
+    }
+  }
+
+  override val component: JComponent = JPanel(BorderLayout()).apply {
+    isOpaque = false
+    isFocusable = true
+    isRequestFocusEnabled = true
+    add(canvas, BorderLayout.CENTER)
+  }
 
   private enum class State { New, Creating, Active, Closing, Closed }
 
@@ -83,12 +148,16 @@ internal class WinWebViewEngine(
     val error: String?,
   )
 
-  private data class PendingBounds(
-    val x: Int,
-    val y: Int,
+  /**
+   * The whole Swing-side placement in one immutable snapshot. `parentHwnd == 0` means the AWT peer
+   * is gone; `visible == false` means Swing does not show the host, which the native side applies
+   * as `put_IsVisible(false)` so that the page stops rendering while nobody looks at it.
+   */
+  internal data class HostState(
+    val parentHwnd: Long,
     val width: Int,
     val height: Int,
-    val scale: Double,
+    val visible: Boolean,
   )
 
   private val state = AtomicReference(State.New)
@@ -127,32 +196,26 @@ internal class WinWebViewEngine(
   @Volatile
   private var lastLoad: PendingLoad? = null
 
-  private val pendingBounds = AtomicReference<PendingBounds?>(null)
-  private val boundsScheduled = AtomicBoolean(false)
-
-  @Volatile
-  private var lastBounds: PendingBounds? = null
-
-  private val visibilityScheduled = AtomicBoolean(false)
   private val pendingFocusOp = AtomicReference<FocusOp?>(null)
   private val focusScheduled = AtomicBoolean(false)
-  private val pendingAttachParent = AtomicLong(0)
-  private val attachScheduled = AtomicBoolean(false)
+
+  /** The only placement channel: the latest requested snapshot, its coalescer and what native has. */
+  private val pendingState = AtomicReference<HostState?>(null)
+  private val syncScheduled = AtomicBoolean(false)
 
   @Volatile
-  private var currentParentHwnd: Long = 0
+  private var lastApplied: HostState? = null
+
+  private val hostGeneration = AtomicLong(0)
+
+  private val currentParentHwnd: Long
+    get() = lastApplied?.parentHwnd ?: 0
 
   @Volatile
-  private var shortcutTarget: Component? = null
+  private var underlyingComponent: Component? = null
 
   @Volatile
   private var focusGainedHandler: () -> Unit = {}
-
-  @Volatile
-  private var beforeMouseFocusHandler: () -> Unit = {}
-
-  @Volatile
-  private var hidden = false
 
   private var consecutiveRenderUnresponsiveCount = 0
 
@@ -191,6 +254,21 @@ internal class WinWebViewEngine(
       LOG.error("Failed to initialize WebView2${messageWithContext(message)}")
     }
 
+    override fun onDestroyed(handle: Long) {
+      if (nativeHandle != handle) return
+      val wasClosing = state.get() == State.Closing
+      nativeHandle = 0
+      handleReady.get().cancel(CancellationException("Engine closed"))
+      cancelPendingEvaluations()
+      clearActiveAssetResolver()
+      state.set(State.Closed)
+      closeCompleted.complete(Unit)
+      LOG.webViewLifecycle("win-webview2-close", "native cleanup complete")
+      if (!wasClosing) {
+        scope.cancel(CancellationException("Native WebView2 host was destroyed"))
+      }
+    }
+
     override fun onMessage(raw: String) {
       recordConsoleStartupFrame(raw)
       inboundMessageHandler(raw)
@@ -210,11 +288,7 @@ internal class WinWebViewEngine(
     }
 
     override fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Boolean {
-      return WinWebViewShortcutInterop.handleAcceleratorKeyPressed(shortcutTarget, keyEventKind, virtualKey, modifiers, keyEventLParam)
-    }
-
-    override fun onBeforeMouseFocus() {
-      beforeMouseFocusHandler()
+      return WinWebViewShortcutInterop.handleAcceleratorKeyPressed(underlyingComponent, keyEventKind, virtualKey, modifiers, keyEventLParam)
     }
 
     override fun onFocusGained() {
@@ -245,7 +319,20 @@ internal class WinWebViewEngine(
       }
     }
 
-    override fun resolveAsset(url: String): WinWebView2Bridge.AssetResponse? {
+    override fun onAssetRequested(handle: Long, requestId: Long, url: String) {
+      scope.launch(Dispatchers.IO) {
+        val response = runCatching { resolveAsset(url) }
+          .onFailure { LOG.warn("Failed to resolve WebView2 asset${diagnosticContext()}: $url", it) }
+          .getOrNull()
+        runCatching { bridge.completeAssetRequest(handle, requestId, response) }
+          .onFailure {
+            LOG.trace("Dropping completed WebView2 asset request during teardown")
+            LOG.trace(it)
+          }
+      }
+    }
+
+    private fun resolveAsset(url: String): WinWebView2Bridge.AssetResponse? {
       val response = resolveWebViewAssetUrl(url, activeAssetResolver.get(), "windows") ?: return null
       return response.toNativeAssetResponse()
     }
@@ -255,40 +342,20 @@ internal class WinWebViewEngine(
     inboundMessageHandler = handler::transferFromJs
   }
 
-  internal fun attachToParent(parentHwnd: Long) {
-    currentParentHwnd = parentHwnd
-    pendingAttachParent.set(parentHwnd)
-    if (state.compareAndSet(State.New, State.Creating)) {
+  /**
+   * The single placement request. Everything downstream is derived from [desired]: the native side
+   * is told the whole state and reconciles it, so the caller never sequences attach/bounds/visibility.
+   */
+  internal fun requestHostState(desired: HostState) {
+    pendingState.set(desired)
+    if (desired.parentHwnd != 0L && state.compareAndSet(State.New, State.Creating)) {
       invokeOnWebView { performCreate() }
       return
     }
     val currentState = state.get()
     if (currentState == State.Creating || currentState == State.Active) {
-      scheduleAttachApply()
+      scheduleSync()
     }
-  }
-
-  internal fun attachToParent(parentHwnd: Long, x: Int, y: Int, width: Int, height: Int, scale: Double) {
-    pendingBounds.set(PendingBounds(x, y, width, height, scale))
-    attachToParent(parentHwnd)
-  }
-
-  internal fun detachFromParent() {
-    val handle = nativeHandle
-    if (handle == 0L || state.get() == State.Closed) return
-    invokeOnWebView { bridge.detachFromParent(handle) }
-  }
-
-  internal fun setBounds(x: Int, y: Int, width: Int, height: Int, scale: Double) {
-    pendingBounds.set(PendingBounds(x, y, width, height, scale))
-    if (state.get() == State.Closed) return
-    scheduleBoundsApply()
-  }
-
-  internal fun setHidden(hidden: Boolean) {
-    this.hidden = hidden
-    if (state.get() == State.Closed) return
-    scheduleVisibilityApply()
   }
 
   override fun requestFocus() {
@@ -305,16 +372,12 @@ internal class WinWebViewEngine(
     scheduleFocusApply()
   }
 
-  internal fun setShortcutTarget(target: Component?) {
-    shortcutTarget = target
+  internal fun setUnderlyingComponent(component: Component?) {
+    underlyingComponent = component
   }
 
   internal fun setFocusGainedHandler(handler: (() -> Unit)?) {
     focusGainedHandler = handler ?: {}
-  }
-
-  internal fun setBeforeMouseFocusHandler(handler: (() -> Unit)?) {
-    beforeMouseFocusHandler = handler ?: {}
   }
 
   override suspend fun loadFile(file: Path) {
@@ -439,20 +502,15 @@ internal class WinWebViewEngine(
       if (handle != 0L) {
         try {
           invokeOnWebView {
-            var destroyFailure: Throwable? = null
             try {
-              nativeHandle = 0
               bridge.destroy(handle)
             }
             catch (t: Throwable) {
-              destroyFailure = t
-              throw t
-            }
-            finally {
-              handleReady.get().cancel(CancellationException("Engine closed"))
+              nativeHandle = 0
+              handleReady.get().cancel(CancellationException("Engine close dispatch failed"))
               state.set(State.Closed)
-              destroyFailure?.let(closeCompleted::completeExceptionally) ?: closeCompleted.complete(Unit)
-              LOG.webViewLifecycle("win-webview2-close", "native cleanup complete")
+              closeCompleted.completeExceptionally(t)
+              throw t
             }
           }
         }
@@ -479,7 +537,7 @@ internal class WinWebViewEngine(
   }
 
   private fun applyPendingState(handle: Long) {
-    applyAttachmentState(handle)
+    pendingState.get()?.let { applyHostState(handle, it) }
     when (val load = pendingLoad.getAndSet(null)) {
       is PendingLoad.Url -> applyLoad(handle, load)
       is PendingLoad.Html -> applyLoad(handle, load)
@@ -487,24 +545,26 @@ internal class WinWebViewEngine(
     }
   }
 
-  private fun applyAttachmentState(handle: Long) {
-    pendingBounds.getAndSet(null)?.let {
-      lastBounds = it
-      applyBounds(handle, it)
-    }
-    applyVisibility(handle)
-  }
-
   private fun performCreate() {
-    val parent = pendingAttachParent.getAndSet(0)
-    if (parent == 0L || state.get() == State.Closed) return
+    val desired = pendingState.get() ?: return
+    if (desired.parentHwnd == 0L || state.get() == State.Closed) return
     try {
       LOG.webViewLifecycle("win-webview2-create", "initializing WebView2${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
+      val generation = hostGeneration.incrementAndGet()
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", diagnosticDetails()) {
-        bridge.create(parent, userDataDir().toString(), documentStartScript, callbacks)
+        bridge.create(desired.parentHwnd, generation, userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
       }
-      applyAttachmentState(nativeHandle)
+      // The controller is born on this parent, so only the geometry part of the snapshot is left.
+      lastApplied = desired
+      bridge.setHostState(
+        nativeHandle,
+        desired.parentHwnd,
+        desired.width,
+        desired.height,
+        desired.visible,
+        generation,
+      )
     }
     catch (t: Throwable) {
       state.set(State.Closed)
@@ -516,47 +576,40 @@ internal class WinWebViewEngine(
     }
   }
 
-  private fun scheduleAttachApply() {
-    if (!attachScheduled.compareAndSet(false, true)) return
+  private fun scheduleSync() {
+    if (!syncScheduled.compareAndSet(false, true)) return
     invokeOnWebView {
-      attachScheduled.set(false)
+      syncScheduled.set(false)
       val handle = nativeHandle
       if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      val parent = pendingAttachParent.getAndSet(0)
-      if (parent == 0L) return@invokeOnWebView
-      bridge.attachToParent(handle, parent)
-      applyAttachmentState(handle)
+      val desired = pendingState.get() ?: return@invokeOnWebView
+      applyHostState(handle, desired)
     }
   }
 
-  private fun applyBounds(handle: Long, bounds: PendingBounds) {
-    bridge.setBounds(handle, bounds.x, bounds.y, bounds.width, bounds.height, bounds.scale)
-  }
-
-  private fun scheduleBoundsApply() {
-    if (!boundsScheduled.compareAndSet(false, true)) return
-    invokeOnWebView {
-      boundsScheduled.set(false)
-      val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      val bounds = pendingBounds.getAndSet(null) ?: return@invokeOnWebView
-      lastBounds = bounds
-      applyBounds(handle, bounds)
+  /**
+   * The only place native placement is touched. The parent is re-set exclusively when it really
+   * changed, and the visibility of the snapshot goes to the controller as it is.
+   */
+  private fun applyHostState(handle: Long, desired: HostState) {
+    val previous = lastApplied
+    if (previous == desired) return
+    // A new parent needs a new generation so that a park racing with this attach loses.
+    val generation = if (previous == null || previous.parentHwnd != desired.parentHwnd) {
+      hostGeneration.incrementAndGet()
     }
-  }
-
-  private fun scheduleVisibilityApply() {
-    if (!visibilityScheduled.compareAndSet(false, true)) return
-    invokeOnWebView {
-      visibilityScheduled.set(false)
-      val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      applyVisibility(handle)
+    else {
+      hostGeneration.get()
     }
-  }
-
-  private fun applyVisibility(handle: Long) {
-    bridge.setVisible(handle, !hidden && state.get() == State.Active)
+    lastApplied = desired
+    bridge.setHostState(
+      handle,
+      desired.parentHwnd,
+      desired.width,
+      desired.height,
+      desired.visible,
+      generation,
+    )
   }
 
   private fun scheduleFocusApply() {
@@ -659,7 +712,9 @@ internal class WinWebViewEngine(
     cancelPendingEvaluations()
     resetHandleReady("WebView2 is recovering after $event")
     pendingLoad.set(lastLoad)
-    lastBounds?.let { pendingBounds.set(it) }
+    // The replacement controller is born on the same parent, so only its geometry has to be replayed.
+    val placement = lastApplied
+    lastApplied = null
     consecutiveRenderUnresponsiveCount = 0
 
     if (oldHandle != 0L) {
@@ -671,9 +726,19 @@ internal class WinWebViewEngine(
       LOG.webViewLifecycle("win-webview2-recovery", "recreating after $event${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", "recovery=true, ${diagnosticDetails()}") {
-        bridge.create(parentHwnd, userDataDir().toString(), documentStartScript, callbacks)
+        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
       }
-      bridge.setVisible(nativeHandle, !hidden)
+      lastApplied = placement
+      placement?.let {
+        bridge.setHostState(
+          nativeHandle,
+          it.parentHwnd,
+          it.width,
+          it.height,
+          it.visible,
+          hostGeneration.get(),
+        )
+      }
     }
     catch (t: Throwable) {
       failPermanently(event, message, data, t)
@@ -965,13 +1030,11 @@ internal class WinWebViewEngine(
   private fun userDataDir(): Path = Path.of(PathManager.getSystemPath(), "webview2")
 
   /**
-   * Schedules [action] for execution on the dedicated WebView2 STA thread.
+   * Invokes the JNI facade. Production JNI calls enqueue typed native operations for AWT-Windows;
+   * the injectable dispatcher is retained only to make coalescing and delayed-destroy behavior testable.
    *
-   * Returns immediately; safe to call from EDT or any other thread.
-   * Tasks are delivered in FIFO order via `PostThreadMessageW` and are not
-   * tied to the engine's coroutine scope — they will run even if the scope
-   * is cancelled, which is required to let `close()` actually destroy the
-   * native handle.
+   * Dispatch is not tied to the engine scope, so `close()` can enqueue native destruction after
+   * cancellation and wait for [WinWebView2Bridge.Callbacks.onDestroyed].
    */
   private fun invokeOnWebView(action: () -> Unit) {
     webViewDispatcher.dispatch(EmptyCoroutineContext, Runnable { action() })
@@ -981,146 +1044,100 @@ internal class WinWebViewEngine(
    * Peer section
    */
 
-  private var attached = false
-  private var hostHidden = true
-  private var lastAppliedFrame: AppliedFrame? = null
-
   override fun attach(host: Component): Boolean {
     val hostPanel = host as SwingWebViewHostPanel
     return LOG.traceWebViewPerf(
       "win-webview2.host.attach",
       "displayable=${host.isDisplayable}, showing=${host.isShowing}, size=${host.width}x${host.height}",
     ) {
-      setShortcutTarget(host)
-      setBeforeMouseFocusHandler { hostPanel.activateWebViewFocusFromNativeMouse() }
+      setUnderlyingComponent(host)
       setFocusGainedHandler { hostPanel.nativeWebViewFocusGained() }
-      attached = true
-      hostHidden = true
-      lastAppliedFrame = null
-      setHidden(true)
-      when (updateFrame(host)) {
-        FrameUpdateResult.Applied -> Unit
-        FrameUpdateResult.Deferred -> setHidden(true)
-        FrameUpdateResult.Failed -> {
-          attached = false
-          setShortcutTarget(null)
-          setBeforeMouseFocusHandler(null)
-          setFocusGainedHandler(null)
-          return@traceWebViewPerf false
-        }
-      }
+      syncHostState(host)
       true
     }
   }
 
   override fun detach() {
-    if (!attached) return
-    detachFromParent()
-    setShortcutTarget(null)
-    setBeforeMouseFocusHandler(null)
+    if (underlyingComponent == null) return
+    // No hide here: the Canvas peer disposal has already parked the controller, and parking hides
+    // it natively.
+    setUnderlyingComponent(null)
     setFocusGainedHandler(null)
-    attached = false
-    hostHidden = true
-    currentParentHwnd = 0
-    lastAppliedFrame = null
+    pendingState.set(null)
+    lastApplied = null
   }
 
-  override fun scheduleFrameUpdate(host: Component) {
-    if (!attached) return
-    updateFrame(host)
+  override fun syncHostState(host: Component) {
+    if (underlyingComponent == null) return
+    val desired = readHostState(host)
+    val timedUpdate = measureTimedValue { requestHostState(desired) }
+    LOG.traceWebViewPerf("win-webview2.host.syncHostState", timedUpdate.duration, hostStateDiagnosticDetails(desired, host))
   }
 
-  private fun updateFrame(host: Component): FrameUpdateResult {
-    val timedUpdate = measureTimedValue {
-      val parentHwnd = WindowsHwndUtil.resolveWindowHwnd(host)
-      if (parentHwnd == null) {
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Failed, "reason=no-parent-hwnd")
-      }
-      val anchor = SwingWebViewHostPanel.resolveWindowsAnchor(host)
-      if (anchor == null) {
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Failed, "reason=no-anchor")
-      }
-      val bounds = SwingWebViewHostPanel.calculateClippedBounds(host, anchor)
-      val scale = WindowsHwndUtil.scale(host)
-      val frame = AppliedFrame(bounds, scale)
-      if (!isReadyForNativeFrame(bounds)) {
-        lastAppliedFrame = null
-        setHidden(true)
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Deferred, frameDiagnosticDetails(bounds, scale))
-      }
-
-      if (parentHwnd != currentParentHwnd) {
-        currentParentHwnd = parentHwnd
-        lastAppliedFrame = frame
-        LOG.traceWebViewPerf(
-          "win-webview2.host.updateFrame.attachToParent",
-          frameDiagnosticDetails(bounds, scale),
-        ) {
-          attachToParent(parentHwnd, bounds.x, bounds.y, bounds.width, bounds.height, scale)
-        }
-        updateNativeVisibility()
-        return@measureTimedValue FrameUpdate(FrameUpdateResult.Applied, frameDiagnosticDetails(bounds, scale))
-      }
-      val frameChanged = frame != lastAppliedFrame
-      lastAppliedFrame = frame
-      if (frameChanged) {
-        setBounds(bounds.x, bounds.y, bounds.width, bounds.height, scale)
-      }
-      updateNativeVisibility()
-      FrameUpdate(FrameUpdateResult.Applied, "frameChanged=$frameChanged, ${frameDiagnosticDetails(bounds, scale)}")
-    }
-    val update = timedUpdate.value
-    LOG.traceWebViewPerf("win-webview2.host.updateFrame", timedUpdate.duration, "result=${update.result}, ${update.details}")
-    return update.result
+  /**
+   * Reads the whole Swing-side placement in one pass. A dead peer reads as `parentHwnd == 0`, and a
+   * host Swing does not show - or one with an empty rectangle - simply reads as `visible = false`.
+   *
+   * An AWT peer is created empty and is laid out one EDT event later, so a reattached host reads as
+   * invisible first and is revealed by the layout that gives it its real size. That is the whole
+   * reveal gate: the controller is shown once, already at the size it will be seen at.
+   */
+  private fun readHostState(host: Component): HostState {
+    val width = canvas.width
+    val height = canvas.height
+    return HostState(
+      parentHwnd = componentHwndResolver(canvas) ?: 0L,
+      width = width,
+      height = height,
+      visible = host.isShowing && canvas.isShowing && width > 0 && height > 0,
+    )
   }
 
-  private fun frameDiagnosticDetails(bounds: SwingWebViewHostPanel.NativeBounds, scale: Double): String {
-    return "bounds=${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}, scale=$scale"
-  }
-
-  private fun updateNativeVisibility() {
-    setHidden(hostHidden)
-  }
-
-  private fun isReadyForNativeFrame(bounds: SwingWebViewHostPanel.NativeBounds): Boolean {
-    return bounds.width > 0 && bounds.height > 0
-  }
-
-  override fun updateVisibility(host: Component, hidden: Boolean) {
-    if (!attached) return
-    hostHidden = hidden
-    if (hidden) {
-      setHidden(true)
-      return
-    }
-
-    if (updateFrame(host) != FrameUpdateResult.Applied) {
-      setHidden(true)
-    }
+  private fun hostStateDiagnosticDetails(hostState: HostState, host: Component): String {
+    return "parent=0x${java.lang.Long.toHexString(hostState.parentHwnd)}, " +
+           "canvas=${hostState.width}x${hostState.height}, host=${host.width}x${host.height}, " +
+           "visible=${hostState.visible}"
   }
 
   override fun clearFocusForSwingFocusTransfer() {
     clearFocus()
   }
 
-  private data class AppliedFrame(
-    val bounds: SwingWebViewHostPanel.NativeBounds,
-    val scale: Double,
-  )
+  /**
+   * Runs before JBR synchronously destroys the Canvas peer. The native bridge sends a bounded
+   * barrier message to its own holder window, so the controller leaves the Canvas on AWT-Windows
+   * before that HWND can receive WM_NCDESTROY.
+   */
+  private fun parkControllerBeforePeerDisposal(component: Component) {
+    val handle = nativeHandle
+    val generation = hostGeneration.get()
+    if (handle == 0L || generation == 0L || state.get() == State.Closed) return
+    val hostHwnd = WindowsHwndUtil.resolveComponentHwnd(component) ?: return
+    val parked = runCatching {
+      bridge.parkBeforePeerDispose(handle, hostHwnd, generation)
+    }.onFailure {
+      LOG.warn("Failed to park WebView2 before Canvas peer disposal${diagnosticContext()}", it)
+    }.getOrDefault(false)
+    if (!parked) {
+      LOG.warn("WebView2 Canvas disposal barrier did not complete${diagnosticContext()}")
+    }
+    // The controller now hangs in the holder window, hidden, so nothing of the old placement is
+    // applied any more and the next attach has to push the whole snapshot again.
+    if (currentParentHwnd == hostHwnd) lastApplied = null
+  }
 
-  private data class FrameUpdate(
-    val result: FrameUpdateResult,
-    val details: String,
-  )
-
-  private enum class FrameUpdateResult {
-    Applied,
-    Deferred,
-    Failed,
+  private fun reattachControllerAfterPeerCreation() {
+    val host = underlyingComponent ?: return
+    if (state.get() == State.Closed) return
+    syncHostState(host)
   }
 
 
   private companion object {
+    /** Shared by the Canvas peer brush and the controller default background, so that a frame
+     * without page content is indistinguishable from the host behind it. */
+    private const val HOST_BACKGROUND_RGB = 0x1E1F22
+    private const val HOST_BACKGROUND_ARGB = 0xFF000000.toInt() or HOST_BACKGROUND_RGB
     private const val NATIVE_DIAGNOSTIC_WARN = 3
     private const val NATIVE_DIAGNOSTIC_ERROR = 4
     private const val MAX_RECOVERY_ATTEMPTS = 2
@@ -1144,4 +1161,10 @@ internal fun createWinWebViewEngine(
   documentStartScripts: List<WebViewScript> = emptyList(),
 ): WinWebViewEngine {
   return WinWebViewEngine(parentScope, debugName = debugName, documentStartScripts = documentStartScripts)
+}
+
+private object ImmediateWebViewDispatcher : CoroutineDispatcher() {
+  override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+    block.run()
+  }
 }

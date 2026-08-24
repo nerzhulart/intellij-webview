@@ -38,6 +38,9 @@ internal object WinWebViewShortcutInterop {
     val routing = routeKeyEvent(keyEventKind, virtualKey, keyEvent)
     if (routing == WebViewShortcutRouting.BROWSER_ONLY) return false
 
+    // WebView2 does not put IDE-owned accelerators into AWT's Java event queue even with
+    // AllowHostInputProcessing. Forward only the events that routing explicitly assigns to the IDE;
+    // browser-owned typing/editing remains on the original native path and is never duplicated.
     Toolkit.getDefaultToolkit().systemEventQueue.postEvent(keyEvent)
     return routing == WebViewShortcutRouting.FORWARD_TO_IDE_CONSUME_BROWSER_HANDLING
   }
@@ -82,9 +85,8 @@ internal object WinWebViewShortcutInterop {
   internal class SystemKeyRoutingState {
     private val ideOwnedVirtualKeys = HashSet<Int>()
 
-    // WebView2 reports Alt-based Windows shortcuts as SYSTEM_KEY_*. The IDE gets first ownership
-    // only when the active keymap actually binds the keystroke; otherwise native code forwards the
-    // original WM_SYSKEY* message to AWT so Windows behavior such as Alt+F4 stays native.
+    // WebView2 reports Alt-based Windows shortcuts as SYSTEM_KEY_*. The IDE gets ownership only
+    // when the active keymap binds the keystroke; otherwise the original host-input path stays native.
     @Synchronized
     fun routeSystemKeyDown(
       virtualKey: Int,

@@ -1,39 +1,48 @@
 # Windows WebView2 Threading Follow-up
 
-The WebView2 backend already runs controller operations on the dedicated `WebView2-Thread` with a blocking Win32 message loop. Bounds, visibility, focus, attachment, and navigation updates are coalesced before dispatch. This plan contains only the remaining threading work.
+There is no `WebView2-Thread`. Everything WebView2 runs on **AWT-Windows**, the thread that already
+owns the `Canvas` HWND, so the controller and its parent window live on the same input queue by
+construction.
+
+## How commands get there
+
+A process-wide `WH_GETMESSAGE` hook is installed on the AWT-Windows thread. Kotlin enqueues a typed
+`NativeCommand` and wakes the thread with `PostThreadMessageW`; the hook drains the queue in message
+order. The one place that needs to be synchronous - parking the controller before JBR destroys the
+Canvas peer - sends a barrier message to the bridge's own holder window, whose `wndproc` drains the
+queue before returning.
+
+This is a deliberate choice, re-confirmed by
+[Raw Win32 Audit](windows-webview2-raw-winapi-audit.md): a message-only window would need its own
+window on that thread anyway, and a dedicated STA thread would bring back a cross-thread parent HWND
+and `AttachThreadInput`.
+
+## Closed by the current design
+
+- **Focus queue attachment.** Not needed: the controller HWND and its AWT parent belong to the same
+  thread, so no `AttachThreadInput` is involved. Focus is `SetFocus` plus the controller's own
+  `MoveFocus`, and Tab traversal in both directions is covered by the runtime smoke tests.
+- **Callbacks off EDT.** WebView2 callbacks arrive on AWT-Windows, not on a private STA, so the
+  "dispatch to EDT without blocking the native STA" problem does not arise.
 
 ## Remaining Work
 
-### Focus queue attachment
-
-The WebView2 child HWND belongs to `WebView2-Thread`, while its AWT parent belongs to the EDT. Complete and validate Win32 input-queue attachment for focus transfers:
-
-- capture the EDT Win32 thread ID without confusing it with `Thread.id`;
-- attach the EDT and WebView2 input queues after a valid parent HWND is known;
-- detach them during teardown and reattachment;
-- preserve native typing, IME, shortcut routing, and Swing focus traversal;
-- define failure logging and cleanup when either thread or window is already closing.
-
-Audit callbacks that now arrive on `WebView2-Thread`. Any callback touching Swing must dispatch to EDT without blocking the native STA. Asset resolution and RPC enqueueing may remain off EDT when their contracts allow it.
-
 ### Native ownership invariant
 
-The Rust bridge uses `Rc<RefCell<NativeWebView>>`, which is sound only when handle access remains on one OS thread. Record the creating thread and add debug assertions to handle access and destruction. Document the invariant next to the raw-handle conversion.
+The Rust bridge uses `Rc<RefCell<NativeWebView>>`, which is sound only while handle access stays on
+one OS thread. That holds today because every command is executed from the drain on AWT-Windows, but
+nothing enforces it. Record the owning thread in `NativeWebView` and add debug assertions to handle
+access and destruction, and document the invariant next to the raw-handle conversion.
 
 This item also closes the H1 finding in [Windows Native Bridge Review](windows-webview2-rust-review.md).
-
-## Risks
-
-- `AttachThreadInput` changes focus and key-state behavior for both queues; attach/detach order must be idempotent.
-- A synchronous hop from a WebView2 callback to EDT can deadlock if EDT is waiting on native completion.
-- Window teardown may race with queued focus work; stale HWND and handle operations must be ignored safely.
 
 ## Acceptance Criteria
 
 - No WebView2 controller or raw-handle operation runs on EDT.
-- Focus moves WebView → Swing and Swing → WebView in both Tab directions.
+- Focus moves WebView to Swing and Swing to WebView in both Tab directions.
 - Clicking editable page content focuses it without losing subsequent keyboard input.
 - IDE shortcuts, browser editing keys, IME, and bare-Shift gestures retain current behavior.
-- Host detach/reattach and close leave no attached input queues or posted native work.
+- Host detach/reattach and close leave no posted native work and no leaked HWNDs.
 - Rust debug builds detect access from a non-owner thread.
-- Windows verification covers asset loading, bridge messages, focus, typing, shortcuts, detach/reattach, and teardown through a locally built plugin run.
+- Windows verification covers asset loading, bridge messages, focus, typing, shortcuts,
+  detach/reattach, and teardown through a locally built plugin run.

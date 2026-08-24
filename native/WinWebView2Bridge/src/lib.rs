@@ -3,17 +3,20 @@
 #![cfg(target_os = "windows")]
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{HashMap, VecDeque},
     ffi::c_void,
-    panic::AssertUnwindSafe,
     rc::Rc,
+    sync::{
+        atomic::{AtomicI64, AtomicU8, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::Instant,
 };
 
 use jni::{
     objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue},
-    sys::{jboolean, jdouble, jint, jlong, jstring},
+    sys::{jboolean, jint, jlong, jstring},
     JNIEnv, JavaVM,
 };
 use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
@@ -21,12 +24,11 @@ use windows::{
     core::{w, Interface, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::*,
-        Graphics::Gdi::*,
+        Graphics::Gdi::HBRUSH,
         System::{Com::*, LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LSHIFT, VK_LWIN, VK_MENU,
-                VK_RSHIFT, VK_RWIN, VK_SHIFT,
+                GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
             },
             Shell::SHCreateMemStream,
             WindowsAndMessaging::*,
@@ -42,9 +44,11 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-custom-scheme-assets-v11";
-const WM_USER_INVOKE: u32 = WM_USER + 1;
-const WM_USER_SHIFT_FALLBACK: u32 = WM_USER + 2;
+const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v16";
+const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
+/// Sent to the holder window to drain the command queue on AWT-Windows synchronously.
+const WM_AWT_WEBVIEW_BARRIER: u32 = WM_APP + 0x35B;
+const PARK_BARRIER_TIMEOUT_MILLIS: u32 = 2_000;
 const WEBVIEW_ASSET_CUSTOM_SCHEME: &str = "ij-webview-asset";
 const WEBVIEW_ASSET_CUSTOM_SCHEME_FILTER: &str = "ij-webview-asset://assets/*";
 const WEBVIEW_ASSET_HTTPS_FILTER: &str = "https://ij-webview-assets.local/*";
@@ -54,21 +58,386 @@ const DIAGNOSTIC_INFO: jint = 2;
 const DIAGNOSTIC_WARN: jint = 3;
 const DIAGNOSTIC_ERROR: jint = 4;
 
-thread_local! {
-    static KEYBOARD_INTEROP_WINDOWS: RefCell<Vec<HWND>> = RefCell::new(Vec::new());
-    static KEYBOARD_INTEROP_HOOK: RefCell<Option<HHOOK>> = const { RefCell::new(None) };
-    static SHIFT_FALLBACK_EVENTS: RefCell<VecDeque<PendingShiftEvent>> = RefCell::new(VecDeque::new());
-    static SHIFT_FALLBACK_ACTIVE_WINDOWS: RefCell<HashMap<jint, HWND>> = RefCell::new(HashMap::new());
-    static NEXT_SHIFT_FALLBACK_EVENT_ID: Cell<usize> = const { Cell::new(1) };
+static NEXT_NATIVE_HANDLE: AtomicI64 = AtomicI64::new(1);
+static TRANSPORT: OnceLock<Mutex<HookTransport>> = OnceLock::new();
+
+struct HookTransport {
+    threads: HashMap<u32, HookThread>,
+    routes: HashMap<jlong, Route>,
 }
 
-struct PendingShiftEvent {
-    id: usize,
-    hwnd: HWND,
-    key_event_kind: jint,
-    virtual_key: jint,
-    modifiers: jint,
-    key_event_lparam: jint,
+struct HookThread {
+    queue: VecDeque<NativeCommand>,
+    wake_pending: bool,
+    get_message_hook: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Route {
+    owner_tid: u32,
+    closing: bool,
+    /// Holder window of this view's top-level root, the only window whose `wndproc` is ours.
+    /// Read off the owner thread to address the park barrier.
+    holder_hwnd: isize,
+}
+
+enum NativeCommand {
+    Create {
+        handle: jlong,
+        host_hwnd: jlong,
+        generation: jlong,
+        user_data_dir: String,
+        document_start_script: String,
+        background_color: u32,
+        callbacks: Arc<JavaCallbacks>,
+    },
+    Destroy {
+        handle: jlong,
+    },
+    /// The whole Swing-side placement in one command. The native side reconciles it: the parent is
+    /// re-set only when it really changed, and visibility is expressed as geometry.
+    SetHostState {
+        handle: jlong,
+        host_hwnd: jlong,
+        width: i32,
+        height: i32,
+        visible: bool,
+        generation: jlong,
+    },
+    Park {
+        handle: jlong,
+        host_hwnd: jlong,
+        generation: jlong,
+        completion: Arc<AtomicU8>,
+    },
+    Focus {
+        handle: jlong,
+    },
+    ClearFocus {
+        handle: jlong,
+    },
+    LoadUrl {
+        handle: jlong,
+        url: String,
+    },
+    SetVirtualHostMapping {
+        handle: jlong,
+        host_name: String,
+        folder_path: String,
+    },
+    LoadHtml {
+        handle: jlong,
+        html: String,
+    },
+    Evaluate {
+        handle: jlong,
+        eval_id: jlong,
+        script: String,
+    },
+    CallDevTools {
+        handle: jlong,
+        call_id: jlong,
+        method_name: String,
+        params_json: String,
+    },
+    TransferToJs {
+        handle: jlong,
+        raw_json: String,
+    },
+    CompleteAsset {
+        handle: jlong,
+        request_id: u64,
+        response: BridgeResult<Option<NativeAssetResponse>>,
+    },
+}
+
+impl NativeCommand {
+    fn handle(&self) -> jlong {
+        match self {
+            Self::Create { handle, .. }
+            | Self::Destroy { handle }
+            | Self::SetHostState { handle, .. }
+            | Self::Park { handle, .. }
+            | Self::Focus { handle }
+            | Self::ClearFocus { handle }
+            | Self::LoadUrl { handle, .. }
+            | Self::SetVirtualHostMapping { handle, .. }
+            | Self::LoadHtml { handle, .. }
+            | Self::Evaluate { handle, .. }
+            | Self::CallDevTools { handle, .. }
+            | Self::TransferToJs { handle, .. }
+            | Self::CompleteAsset { handle, .. } => *handle,
+        }
+    }
+}
+
+fn transport() -> &'static Mutex<HookTransport> {
+    TRANSPORT.get_or_init(|| {
+        Mutex::new(HookTransport {
+            threads: HashMap::new(),
+            routes: HashMap::new(),
+        })
+    })
+}
+
+fn register_route(host_hwnd: jlong) -> BridgeResult<(jlong, u32)> {
+    let hwnd = HWND(host_hwnd as *mut c_void);
+    let owner_tid = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    if owner_tid == 0 {
+        return Err("Cannot resolve the AWT owner thread for the Canvas HWND".to_string());
+    }
+
+    let mut transport = transport()
+        .lock()
+        .map_err(|_| "WebView2 hook transport is poisoned".to_string())?;
+    if !transport.threads.contains_key(&owner_tid) {
+        let get_message_hook = unsafe {
+            SetWindowsHookExW(
+                WH_GETMESSAGE,
+                Some(webview_get_message_hook),
+                None,
+                owner_tid,
+            )
+            .map_err(format_windows_error)?
+        };
+        transport.threads.insert(
+            owner_tid,
+            HookThread {
+                queue: VecDeque::new(),
+                wake_pending: false,
+                get_message_hook: get_message_hook.0 as usize,
+            },
+        );
+    }
+
+    let handle = NEXT_NATIVE_HANDLE.fetch_add(1, Ordering::Relaxed).max(1);
+    transport.routes.insert(
+        handle,
+        Route {
+            owner_tid,
+            closing: false,
+            holder_hwnd: 0,
+        },
+    );
+    Ok((handle, owner_tid))
+}
+
+fn enqueue_command(command: NativeCommand) -> BridgeResult<()> {
+    let handle = command.handle();
+    let mut transport = transport()
+        .lock()
+        .map_err(|_| "WebView2 hook transport is poisoned".to_string())?;
+    let route = transport
+        .routes
+        .get(&handle)
+        .copied()
+        .ok_or_else(|| format!("Unknown WebView2 native handle: {handle}"))?;
+    if route.closing {
+        return Err("WebView2 native handle is closing".to_string());
+    }
+    let thread = transport
+        .threads
+        .get_mut(&route.owner_tid)
+        .ok_or_else(|| "AWT-Windows hook transport is unavailable".to_string())?;
+    thread.queue.push_back(command);
+    if !thread.wake_pending {
+        thread.wake_pending = true;
+        if let Err(error) = unsafe {
+            PostThreadMessageW(
+                route.owner_tid,
+                WM_AWT_WEBVIEW_COMMAND,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        } {
+            thread.wake_pending = false;
+            let _ = thread.queue.pop_back();
+            return Err(format_windows_error(error));
+        }
+    }
+    Ok(())
+}
+
+fn enqueue_destroy(handle: jlong) -> BridgeResult<()> {
+    let mut transport = transport()
+        .lock()
+        .map_err(|_| "WebView2 hook transport is poisoned".to_string())?;
+    let Some(route) = transport.routes.get(&handle).copied() else {
+        return Ok(());
+    };
+    if route.closing {
+        return Ok(());
+    }
+    transport.routes.get_mut(&handle).unwrap().closing = true;
+
+    let Some(thread) = transport.threads.get_mut(&route.owner_tid) else {
+        transport.routes.get_mut(&handle).unwrap().closing = false;
+        return Err("AWT-Windows hook transport is unavailable".to_string());
+    };
+    thread.queue.push_back(NativeCommand::Destroy { handle });
+    if !thread.wake_pending {
+        thread.wake_pending = true;
+        if let Err(error) = unsafe {
+            PostThreadMessageW(
+                route.owner_tid,
+                WM_AWT_WEBVIEW_COMMAND,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        } {
+            thread.wake_pending = false;
+            let _ = thread.queue.pop_back();
+            transport.routes.get_mut(&handle).unwrap().closing = false;
+            return Err(format_windows_error(error));
+        }
+    }
+    Ok(())
+}
+
+fn remove_route(handle: jlong) {
+    let hooks = {
+        let Ok(mut transport) = transport().lock() else {
+            return;
+        };
+        let Some(route) = transport.routes.remove(&handle) else {
+            return;
+        };
+        let owner_still_used = transport
+            .routes
+            .values()
+            .any(|candidate| candidate.owner_tid == route.owner_tid);
+        if owner_still_used {
+            None
+        } else {
+            transport.threads.remove(&route.owner_tid)
+        }
+    };
+    if let Some(thread) = hooks {
+        unsafe {
+            let _ = UnhookWindowsHookEx(HHOOK(thread.get_message_hook as *mut c_void));
+        }
+    }
+}
+
+unsafe extern "system" fn webview_get_message_hook(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let result = unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    if code >= 0 && lparam.0 != 0 {
+        let message = unsafe { &mut *(lparam.0 as *mut MSG) };
+        if message.message == WM_AWT_WEBVIEW_COMMAND && message.hwnd.0.is_null() {
+            message.message = WM_NULL;
+            drain_owner_commands(unsafe { GetCurrentThreadId() });
+        }
+    }
+    result
+}
+
+/// Placement diagnostics, off unless `WEBVIEW_WIN_PAINT_TRACE=1`. One snapshot per placement
+/// decision is all the tracing there is, so the placement code itself stays one line per call site.
+fn placement_trace_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("WEBVIEW_WIN_PAINT_TRACE")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    })
+}
+
+fn format_rect(r: RECT) -> String {
+    format!(
+        "{},{} {}x{}",
+        r.left,
+        r.top,
+        (r.right - r.left).max(0),
+        (r.bottom - r.top).max(0)
+    )
+}
+
+/// Reports where the controller actually is: the Canvas it hangs on (or the holder it is parked
+/// in), the frame around it, and the bounds WebView2 itself reports.
+fn trace_placement(tag: &str, native: &NativeHandle, extra: Option<&str>) {
+    if !placement_trace_enabled() {
+        return;
+    }
+    let Ok(view) = native.try_borrow() else {
+        return;
+    };
+
+    let canvas = view.hwnd;
+    let parked = if canvas.0.is_null() {
+        view.parent
+    } else {
+        HWND::default()
+    };
+
+    let (canvas_desc, frame_desc) = if canvas.0.is_null() {
+        ("none".to_string(), "none".to_string())
+    } else {
+        let mut client = RECT::default();
+        let _ = unsafe { GetClientRect(canvas, &mut client) };
+        let mut screen = RECT::default();
+        let _ = unsafe { GetWindowRect(canvas, &mut screen) };
+        let frame = unsafe { GetParent(canvas) }.unwrap_or_default();
+        let mut frame_rect = RECT::default();
+        let _ = unsafe { GetWindowRect(frame, &mut frame_rect) };
+        (
+            format!(
+                "{}:{}:{}:{}",
+                canvas.0 as usize,
+                format_rect(screen),
+                format_rect(client),
+                unsafe { IsWindowVisible(canvas) }.as_bool()
+            ),
+            format!("{}:{}", frame.0 as usize, format_rect(frame_rect)),
+        )
+    };
+
+    let controller_bounds = match view.controller.as_ref() {
+        Some(controller) => {
+            let mut bounds = RECT::default();
+            if unsafe { controller.Bounds(&mut bounds) }.is_ok() {
+                format_rect(bounds)
+            } else {
+                "error".to_string()
+            }
+        }
+        None => "none".to_string(),
+    };
+
+    let mut message = format!(
+        "placement.{} canvas={} parked={} frame={} controllerBounds={}",
+        tag, canvas_desc, parked.0 as usize, frame_desc, controller_bounds
+    );
+    if let Some(extra) = extra {
+        message.push(' ');
+        message.push_str(extra);
+    }
+
+    emit_diagnostic(
+        native,
+        DIAGNOSTIC_TRACE,
+        "placement.trace",
+        message,
+        String::new(),
+    );
+}
+
+fn drain_owner_commands(owner_tid: u32) {
+    let commands = {
+        let Ok(mut transport) = transport().lock() else {
+            return;
+        };
+        let Some(thread) = transport.threads.get_mut(&owner_tid) else {
+            return;
+        };
+        thread.wake_pending = false;
+        thread.queue.drain(..).collect::<Vec<_>>()
+    };
+    for command in commands {
+        execute_native_command(command);
+    }
 }
 
 struct NativeAssetResponse {
@@ -111,6 +480,13 @@ impl JavaCallbacks {
                 "(Ljava/lang/String;)V",
                 &[JValue::Object(&message)],
             )?;
+            Ok(())
+        });
+    }
+
+    fn on_destroyed(&self, handle: jlong) {
+        self.with_env(|env, object| {
+            env.call_method(object, "onDestroyed", "(J)V", &[JValue::Long(handle)])?;
             Ok(())
         });
     }
@@ -216,13 +592,6 @@ impl JavaCallbacks {
         });
     }
 
-    fn on_before_mouse_focus(&self) {
-        self.with_env(|env, object| {
-            env.call_method(object, "onBeforeMouseFocus", "()V", &[])?;
-            Ok(())
-        });
-    }
-
     #[allow(dead_code)]
     fn on_log(&self, level: jint, message: String) {
         self.with_env(|env, object| {
@@ -257,44 +626,21 @@ impl JavaCallbacks {
         });
     }
 
-    fn resolve_asset(&self, url: String) -> BridgeResult<Option<NativeAssetResponse>> {
+    fn on_asset_requested(&self, handle: jlong, request_id: u64, url: String) -> BridgeResult<()> {
         let mut env = self.vm.attach_current_thread().map_err(format_jni_error)?;
         let url = JObject::from(env.new_string(url).map_err(format_jni_error)?);
-        let response = env
-            .call_method(
-                self.object.as_obj(),
-                "resolveAsset",
-                "(Ljava/lang/String;)Lio/github/nerzhulart/webview/impl/windows/WinWebView2Bridge$AssetResponse;",
-                &[JValue::Object(&url)],
-            )
-            .map_err(format_jni_error)?
-            .l()
-            .map_err(format_jni_error)?;
-        if response.is_null() {
-            return Ok(None);
-        }
-
-        let status_code = env
-            .call_method(&response, "getStatusCode", "()I", &[])
-            .map_err(format_jni_error)?
-            .i()
-            .map_err(format_jni_error)?;
-        let status_text = call_string_getter(&mut env, &response, "getStatusText")?;
-        let headers = call_string_getter(&mut env, &response, "getHeaders")?;
-        let bytes = env
-            .call_method(&response, "getBytes", "()[B", &[])
-            .map_err(format_jni_error)?
-            .l()
-            .map_err(format_jni_error)?;
-        let bytes = env
-            .convert_byte_array(JByteArray::from(bytes))
-            .map_err(format_jni_error)?;
-        Ok(Some(NativeAssetResponse {
-            status_code,
-            status_text,
-            headers,
-            bytes,
-        }))
+        env.call_method(
+            self.object.as_obj(),
+            "onAssetRequested",
+            "(JJLjava/lang/String;)V",
+            &[
+                JValue::Long(handle),
+                JValue::Long(request_id as jlong),
+                JValue::Object(&url),
+            ],
+        )
+        .map_err(format_jni_error)?;
+        Ok(())
     }
 
     fn with_env<F>(&self, action: F)
@@ -495,6 +841,13 @@ impl SharedWebView2EnvironmentManager {
 thread_local! {
     static SHARED_ENVIRONMENT_MANAGER: RefCell<SharedWebView2EnvironmentManager> =
         RefCell::new(SharedWebView2EnvironmentManager::default());
+    static NATIVE_VIEWS: RefCell<HashMap<jlong, NativeHandle>> = RefCell::new(HashMap::new());
+}
+
+struct PendingAssetRequest {
+    environment: ICoreWebView2Environment,
+    args: ICoreWebView2WebResourceRequestedEventArgs,
+    deferral: ICoreWebView2Deferral,
 }
 
 #[derive(Clone, Copy)]
@@ -520,62 +873,92 @@ struct NativeWebView {
     )>,
     execute_script_handlers: Vec<(u64, ICoreWebView2ExecuteScriptCompletedHandler)>,
     dev_tools_handlers: Vec<(u64, ICoreWebView2CallDevToolsProtocolMethodCompletedHandler)>,
+    pending_asset_requests: HashMap<u64, PendingAssetRequest>,
+    next_asset_request_id: u64,
     next_script_handler_id: u64,
     document_start_scripts: Vec<String>,
     web_message_token: EventRegistrationToken,
     web_resource_requested_token: Option<EventRegistrationToken>,
     accelerator_key_pressed_token: Option<EventRegistrationToken>,
     got_focus_token: Option<EventRegistrationToken>,
-    callbacks: Rc<JavaCallbacks>,
+    callbacks: Arc<JavaCallbacks>,
     destroyed: bool,
+    /// Whether Swing shows the host. Pushed to the controller as `put_IsVisible`, so a host nobody
+    /// looks at stops rendering and Chromium is free to freeze its renderer.
     visible: bool,
-    x: i32,
-    y: i32,
+    /// Host background as ARGB, applied to the controller so that a frame without page content
+    /// looks exactly like the Canvas behind it.
+    background_color: u32,
+    /// Parent last pushed to the controller, so `put_ParentWindow` fires only on a real reparent.
+    applied_parent: HWND,
+    /// Bounds last pushed to the controller, so a repeated snapshot never becomes a resize.
+    applied_bounds: RECT,
+    /// Visibility last pushed to the controller. A freshly created controller is visible.
+    applied_visible: bool,
     width: i32,
     height: i32,
-    scale: f64,
+    host_generation: jlong,
 }
 
-impl NativeWebView {
-    fn destroy(&mut self) {
-        if self.destroyed {
-            return;
+struct DestroyResources {
+    controller: Option<ICoreWebView2Controller>,
+    webview: Option<ICoreWebView2>,
+    accelerator_token: Option<EventRegistrationToken>,
+    got_focus_token: Option<EventRegistrationToken>,
+    web_resource_token: Option<EventRegistrationToken>,
+    pending_asset_requests: HashMap<u64, PendingAssetRequest>,
+}
+
+fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
+    let resources = {
+        let mut view = native
+            .try_borrow_mut()
+            .map_err(|_| "WebView2 state is busy while collecting destroy resources".to_string())?;
+        if view.destroyed {
+            return Ok(());
         }
-        self.destroyed = true;
-        if let (Some(controller), Some(token)) =
-            (&self.controller, self.accelerator_key_pressed_token.take())
-        {
-            unsafe {
-                let _ = controller.remove_AcceleratorKeyPressed(token);
-            }
-        }
-        if let (Some(controller), Some(token)) = (&self.controller, self.got_focus_token.take()) {
-            unsafe {
-                let _ = controller.remove_GotFocus(token);
-            }
-        }
-        if let (Some(webview), Some(token)) =
-            (&self.webview, self.web_resource_requested_token.take())
-        {
-            unsafe {
-                let _ = webview.remove_WebResourceRequested(token);
-            }
-            remove_web_resource_requested_filter(webview, WEBVIEW_ASSET_CUSTOM_SCHEME_FILTER);
-            remove_web_resource_requested_filter(webview, WEBVIEW_ASSET_HTTPS_FILTER);
-        }
-        self.webview = None;
-        self.controller = None;
-        self.controller_completed_handler = None;
-        self.add_script_handlers.clear();
-        self.execute_script_handlers.clear();
-        self.dev_tools_handlers.clear();
-        if !self.hwnd.0.is_null() {
-            unsafe {
-                let _ = DestroyWindow(self.hwnd);
-            }
-            self.hwnd = HWND::default();
+        view.destroyed = true;
+        let resources = DestroyResources {
+            controller: view.controller.take(),
+            webview: view.webview.take(),
+            accelerator_token: view.accelerator_key_pressed_token.take(),
+            got_focus_token: view.got_focus_token.take(),
+            web_resource_token: view.web_resource_requested_token.take(),
+            pending_asset_requests: std::mem::take(&mut view.pending_asset_requests),
+        };
+        view.controller_completed_handler = None;
+        view.add_script_handlers.clear();
+        view.execute_script_handlers.clear();
+        view.dev_tools_handlers.clear();
+        // The Canvas HWND belongs to AWT's peer and must never be destroyed here.
+        view.hwnd = HWND::default();
+        view.applied_parent = HWND::default();
+        resources
+    };
+
+    if let (Some(controller), Some(token)) = (&resources.controller, resources.accelerator_token) {
+        unsafe {
+            let _ = controller.remove_AcceleratorKeyPressed(token);
         }
     }
+    if let (Some(controller), Some(token)) = (&resources.controller, resources.got_focus_token) {
+        unsafe {
+            let _ = controller.remove_GotFocus(token);
+        }
+    }
+    if let (Some(webview), Some(token)) = (&resources.webview, resources.web_resource_token) {
+        unsafe {
+            let _ = webview.remove_WebResourceRequested(token);
+        }
+        remove_web_resource_requested_filter(webview, WEBVIEW_ASSET_CUSTOM_SCHEME_FILTER);
+        remove_web_resource_requested_filter(webview, WEBVIEW_ASSET_HTTPS_FILTER);
+    }
+    for (_, request) in resources.pending_asset_requests {
+        unsafe {
+            let _ = request.deferral.Complete();
+        }
+    }
+    Ok(())
 }
 
 #[no_mangle]
@@ -593,17 +976,35 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     parent_hwnd: jlong,
+    generation: jlong,
     user_data_dir: JString<'_>,
     document_start_script: JString<'_>,
+    background_color: jint,
     callbacks: JObject<'_>,
 ) -> jlong {
-    match create_native(
-        &mut env,
-        parent_hwnd,
-        user_data_dir,
-        document_start_script,
-        callbacks,
-    ) {
+    let result = (|| {
+        let user_data_dir = jstring_to_string(&mut env, user_data_dir)?;
+        let document_start_script = jstring_to_string(&mut env, document_start_script)?;
+        let callbacks = Arc::new(JavaCallbacks {
+            vm: env.get_java_vm().map_err(format_jni_error)?,
+            object: env.new_global_ref(callbacks).map_err(format_jni_error)?,
+        });
+        let (handle, _) = register_route(parent_hwnd)?;
+        if let Err(message) = enqueue_command(NativeCommand::Create {
+            handle,
+            host_hwnd: parent_hwnd,
+            generation,
+            user_data_dir,
+            document_start_script,
+            background_color: background_color as u32,
+            callbacks,
+        }) {
+            remove_route(handle);
+            return Err(message);
+        }
+        Ok(handle)
+    })();
+    match result {
         Ok(handle) => handle,
         Err(message) => {
             let _ = env.throw_new("java/lang/IllegalStateException", message);
@@ -614,106 +1015,85 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
 
 #[no_mangle]
 pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_destroyNative(
-    _env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
 ) {
     if handle == 0 {
         return;
     }
-    unregister_shared_environment_view(handle);
-    unsafe {
-        let native = Rc::from_raw(handle as *const RefCell<NativeWebView>);
-        native.borrow_mut().destroy();
+    if let Err(message) = enqueue_destroy(handle) {
+        let _ = env.throw_new("java/lang/IllegalStateException", message);
     }
 }
 
 #[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_attachToParentNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setHostStateNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
     parent_hwnd: jlong,
-) {
-    run_with_handle(&mut env, handle, |native| {
-        let parent = HWND(parent_hwnd as *mut c_void);
-        let mut view = native.borrow_mut();
-        view.parent = parent;
-        unsafe {
-            if let Some(controller) = &view.controller {
-                controller
-                    .SetIsVisible(false)
-                    .map_err(format_windows_error)?;
-            }
-            let _ = ShowWindow(view.hwnd, SW_HIDE);
-            SetParent(view.hwnd, Some(parent)).map_err(format_windows_error)?;
-        }
-        Ok(())
-    });
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_detachFromParentNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-) {
-    run_with_handle(&mut env, handle, |native| {
-        let mut view = native.borrow_mut();
-        unsafe {
-            if let Some(controller) = &view.controller {
-                let _ = controller.SetIsVisible(false);
-            }
-            let _ = ShowWindow(view.hwnd, SW_HIDE);
-            let _ = SetParent(view.hwnd, None);
-        }
-        view.parent = HWND::default();
-        Ok(())
-    });
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setBoundsNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    handle: jlong,
-    x: jint,
-    y: jint,
     width: jint,
     height: jint,
-    scale: jdouble,
+    visible: jboolean,
+    generation: jlong,
 ) {
-    run_with_handle(&mut env, handle, |native| {
-        let mut view = native.borrow_mut();
-        view.x = x;
-        view.y = y;
-        view.width = width.max(0);
-        view.height = height.max(0);
-        view.scale = if scale > 0.0 { scale } else { 1.0 };
-        apply_bounds(&view)
-    });
+    enqueue_or_throw(
+        &mut env,
+        NativeCommand::SetHostState {
+            handle,
+            host_hwnd: parent_hwnd,
+            width,
+            height,
+            visible: visible != 0,
+            generation,
+        },
+    );
 }
 
 #[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setVisibleNative(
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_parkBeforePeerDisposeNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
     handle: jlong,
-    visible: jboolean,
-) {
-    run_with_handle(&mut env, handle, |native| {
-        let mut view = native.borrow_mut();
-        view.visible = visible != 0;
-        unsafe {
-            let _ = ShowWindow(view.hwnd, if view.visible { SW_SHOW } else { SW_HIDE });
-            if let Some(controller) = &view.controller {
-                controller
-                    .SetIsVisible(view.visible)
-                    .map_err(format_windows_error)?;
-            }
-        }
-        Ok(())
-    });
+    host_hwnd: jlong,
+    generation: jlong,
+) -> jboolean {
+    let holder = holder_window_of(handle);
+    let completion = Arc::new(AtomicU8::new(0));
+    if let Err(message) = enqueue_command(NativeCommand::Park {
+        handle,
+        host_hwnd,
+        generation,
+        completion: completion.clone(),
+    }) {
+        let _ = env.throw_new("java/lang/IllegalStateException", message);
+        return 0;
+    }
+
+    // The barrier is the whole point of owning a window on AWT-Windows: this send is handled by
+    // `holder_window_proc` there, which drains the queued Park before the peer is destroyed.
+    if holder.0.is_null() {
+        return 0;
+    }
+    let mut ignored_result = 0usize;
+    unsafe {
+        let _ = SendMessageTimeoutW(
+            holder,
+            WM_AWT_WEBVIEW_BARRIER,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            PARK_BARRIER_TIMEOUT_MILLIS,
+            Some(&mut ignored_result),
+        );
+    }
+    if completion.load(Ordering::Acquire) == 1 {
+        1
+    } else {
+        let _ = completion.compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire);
+        0
+    }
 }
 
 #[no_mangle]
@@ -722,18 +1102,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     _class: JClass<'_>,
     handle: jlong,
 ) {
-    run_with_handle(&mut env, handle, |native| {
-        let view = native.borrow();
-        unsafe {
-            let _ = SetFocus(Some(view.hwnd));
-            if let Some(controller) = &view.controller {
-                controller
-                    .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
-                    .map_err(format_windows_error)?;
-            }
-        }
-        Ok(())
-    });
+    enqueue_or_throw(&mut env, NativeCommand::Focus { handle });
 }
 
 #[no_mangle]
@@ -742,13 +1111,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     _class: JClass<'_>,
     handle: jlong,
 ) {
-    run_with_handle(&mut env, handle, |native| {
-        let view = native.borrow();
-        unsafe {
-            let _ = SetFocus(Some(view.parent));
-        }
-        Ok(())
-    });
+    enqueue_or_throw(&mut env, NativeCommand::ClearFocus { handle });
 }
 
 #[no_mangle]
@@ -761,28 +1124,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     let Ok(url) = jstring_to_string(&mut env, url) else {
         return;
     };
-    run_with_handle(&mut env, handle, |native| {
-        let webview = {
-            let mut view = native.borrow_mut();
-            view.last_navigation_requested_at = Some(Instant::now());
-            view.navigation_timings.clear();
-            view.unidentified_navigation_timing = None;
-            view.webview
-                .clone()
-                .ok_or_else(|| "WebView2 is not ready".to_string())?
-        };
-        measure_perf(
-            &native,
-            "perf.webview2.navigation.loadUrl.call",
-            vec![("urlChars", url.len().to_string())],
-            || unsafe {
-                webview
-                    .Navigate(&HSTRING::from(url.as_str()))
-                    .map_err(format_windows_error)
-            },
-        )?;
-        Ok(())
-    });
+    enqueue_or_throw(&mut env, NativeCommand::LoadUrl { handle, url });
 }
 
 #[no_mangle]
@@ -807,14 +1149,14 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
             return;
         }
     };
-    run_with_handle(&mut env, handle, |native| {
-        let view = native.borrow();
-        let webview = view
-            .webview
-            .as_ref()
-            .ok_or_else(|| "WebView2 is not ready".to_string())?;
-        set_virtual_host_name_to_folder_mapping(webview, &host_name, &folder_path)
-    });
+    enqueue_or_throw(
+        &mut env,
+        NativeCommand::SetVirtualHostMapping {
+            handle,
+            host_name,
+            folder_path,
+        },
+    );
 }
 
 #[no_mangle]
@@ -828,28 +1170,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     let Ok(html) = jstring_to_string(&mut env, html) else {
         return;
     };
-    run_with_handle(&mut env, handle, |native| {
-        let webview = {
-            let mut view = native.borrow_mut();
-            view.last_navigation_requested_at = Some(Instant::now());
-            view.navigation_timings.clear();
-            view.unidentified_navigation_timing = None;
-            view.webview
-                .clone()
-                .ok_or_else(|| "WebView2 is not ready".to_string())?
-        };
-        measure_perf(
-            &native,
-            "perf.webview2.navigation.loadHtml.call",
-            vec![("htmlChars", html.len().to_string())],
-            || unsafe {
-                webview
-                    .NavigateToString(&HSTRING::from(html.as_str()))
-                    .map_err(format_windows_error)
-            },
-        )?;
-        Ok(())
-    });
+    enqueue_or_throw(&mut env, NativeCommand::LoadHtml { handle, html });
 }
 
 #[no_mangle]
@@ -863,39 +1184,14 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     let Ok(script) = jstring_to_string(&mut env, script) else {
         return;
     };
-    run_with_handle(&mut env, handle, |native| {
-        let (webview, handler, handler_id) = {
-            let mut view = native.borrow_mut();
-            let webview = view
-                .webview
-                .clone()
-                .ok_or_else(|| "WebView2 is not ready".to_string())?;
-            let callbacks = view.callbacks.clone();
-            let handler_id = view.next_script_handler_id;
-            view.next_script_handler_id += 1;
-            let native_for_callback = native.clone();
-            let handler =
-                ExecuteScriptCompletedHandler::create(Box::new(move |error_code, result| {
-                    remove_execute_script_handler(&native_for_callback, handler_id);
-                    match error_code {
-                        Ok(()) => callbacks.on_evaluation_result(eval_id, result),
-                        Err(error) => {
-                            callbacks.on_evaluation_error(eval_id, format_windows_error(error))
-                        }
-                    }
-                    Ok(())
-                }));
-            view.execute_script_handlers
-                .push((handler_id, handler.clone()));
-            (webview, handler, handler_id)
-        };
-        let result = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) };
-        if let Err(error) = result {
-            remove_execute_script_handler(&native, handler_id);
-            return Err(format_windows_error(error));
-        }
-        Ok(())
-    });
+    enqueue_or_throw(
+        &mut env,
+        NativeCommand::Evaluate {
+            handle,
+            eval_id,
+            script,
+        },
+    );
 }
 
 #[no_mangle]
@@ -921,51 +1217,15 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
             return;
         }
     };
-    run_with_handle(&mut env, handle, |native| {
-        let (webview, handler, handler_id) = {
-            let mut view = native.borrow_mut();
-            let webview = view
-                .webview
-                .clone()
-                .ok_or_else(|| "WebView2 is not ready".to_string())?;
-            let callbacks = view.callbacks.clone();
-            let handler_id = view.next_script_handler_id;
-            view.next_script_handler_id += 1;
-            let native_for_callback = native.clone();
-            let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
-                move |error_code, result| {
-                    remove_dev_tools_handler(&native_for_callback, handler_id);
-                    match error_code {
-                        Ok(()) => callbacks.on_dev_tools_protocol_method_result(
-                            call_id,
-                            Some(result),
-                            None,
-                        ),
-                        Err(error) => callbacks.on_dev_tools_protocol_method_result(
-                            call_id,
-                            None,
-                            Some(format_windows_error(error)),
-                        ),
-                    }
-                    Ok(())
-                },
-            ));
-            view.dev_tools_handlers.push((handler_id, handler.clone()));
-            (webview, handler, handler_id)
-        };
-        let result = unsafe {
-            webview.CallDevToolsProtocolMethod(
-                &HSTRING::from(method_name.as_str()),
-                &HSTRING::from(params_json.as_str()),
-                &handler,
-            )
-        };
-        if let Err(error) = result {
-            remove_dev_tools_handler(&native, handler_id);
-            return Err(format_windows_error(error));
-        }
-        Ok(())
-    });
+    enqueue_or_throw(
+        &mut env,
+        NativeCommand::CallDevTools {
+            handle,
+            call_id,
+            method_name,
+            params_json,
+        },
+    );
 }
 
 #[no_mangle]
@@ -978,217 +1238,647 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     let Ok(raw_json) = jstring_to_string(&mut env, raw_json) else {
         return;
     };
+    enqueue_or_throw(&mut env, NativeCommand::TransferToJs { handle, raw_json });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_completeAssetRequestNative(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    request_id: jlong,
+    response: JObject<'_>,
+) {
+    let response = asset_response_from_java(&mut env, response);
+    enqueue_or_throw(
+        &mut env,
+        NativeCommand::CompleteAsset {
+            handle,
+            request_id: request_id as u64,
+            response,
+        },
+    );
+}
+
+fn enqueue_or_throw(env: &mut JNIEnv<'_>, command: NativeCommand) {
+    if let Err(message) = enqueue_command(command) {
+        let _ = env.throw_new("java/lang/IllegalStateException", message);
+    }
+}
+
+const HOLDER_WINDOW_CLASS: PCWSTR = w!("IJWebView2Holder");
+/// Keeps the parked widget away from the visible client area even for the frames where the parent
+/// clip has not been applied yet.
+const HOLDER_WINDOW_OFFSET: i32 = -32_000;
+
+/// The only window the bridge owns. It never paints - it has no client area - and exists for two
+/// reasons: it is a live parent for a controller whose Canvas peer is gone, and it is the one
+/// window on AWT-Windows whose `wndproc` is ours, which is what makes the park barrier possible.
+unsafe extern "system" fn holder_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_AWT_WEBVIEW_BARRIER => {
+            drain_owner_commands(unsafe { GetCurrentThreadId() });
+            LRESULT(0)
+        }
+        WM_NCDESTROY => {
+            // A newer Canvas attachment queued before this teardown must win.
+            drain_owner_commands(unsafe { GetCurrentThreadId() });
+            destroy_views_parked_on(hwnd);
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+fn ensure_holder_window_class() -> BridgeResult<()> {
+    static REGISTERED: OnceLock<BridgeResult<()>> = OnceLock::new();
+    REGISTERED
+        .get_or_init(|| {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(holder_window_proc),
+                hInstance: unsafe { GetModuleHandleW(None) }
+                    .map_err(format_windows_error)?
+                    .into(),
+                hbrBackground: HBRUSH::default(),
+                lpszClassName: HOLDER_WINDOW_CLASS,
+                ..Default::default()
+            };
+            if unsafe { RegisterClassW(&class) } == 0 {
+                return Err("Failed to register the WebView2 holder window class".to_string());
+            }
+            Ok(())
+        })
+        .clone()
+}
+
+thread_local! {
+    /// One holder window per top-level root, reused for the lifetime of that root.
+    static HOLDER_WINDOWS: RefCell<HashMap<isize, HWND>> = RefCell::new(HashMap::new());
+}
+
+/// Resolves the holder for the root the Canvas belongs to, creating it on first use.
+fn resolve_holder_window(canvas: HWND) -> BridgeResult<HWND> {
+    if canvas.0.is_null() {
+        return Err("WebView2 Canvas HWND is null".to_string());
+    }
+    let owner_tid = unsafe { GetWindowThreadProcessId(canvas, None) };
+    let current_tid = unsafe { GetCurrentThreadId() };
+    if owner_tid == 0 || owner_tid != current_tid {
+        return Err("WebView2 Canvas HWND is not owned by AWT-Windows".to_string());
+    }
+
+    // GA_ROOTOWNER, not GA_ROOT: for an ordinary frame the two are the same window, so parking
+    // stays inside one composition tree; for a floating dialog it resolves to the owning frame,
+    // which outlives the dialog. Parking under a window that is about to be disposed would
+    // destroy the controller together with it.
+    let root_owner = unsafe { GetAncestor(canvas, GA_ROOTOWNER) };
+    if root_owner.0.is_null()
+        || unsafe { GetWindowThreadProcessId(root_owner, None) } != current_tid
+    {
+        return Err("Cannot resolve an AWT root for the WebView2 holder window".to_string());
+    }
+
+    ensure_holder_window(root_owner)
+}
+
+/// Returns the holder window for `root`: a `WS_VISIBLE`, zero-sized child of it. The parked
+/// controller is hidden through `put_IsVisible`, and the holder only has to be a live parent that
+/// outlives the Canvas peer - it is kept visible and zero-sized so that a controller which is shown
+/// again before it is re-parented still has nothing to present into.
+fn ensure_holder_window(root: HWND) -> BridgeResult<HWND> {
+    let key = root.0 as isize;
+    if let Some(existing) = HOLDER_WINDOWS.with(|windows| windows.borrow().get(&key).copied()) {
+        if unsafe { IsWindow(Some(existing)) }.as_bool() {
+            return Ok(existing);
+        }
+        HOLDER_WINDOWS.with(|windows| {
+            windows.borrow_mut().remove(&key);
+        });
+    }
+
+    ensure_holder_window_class()?;
+    // Far outside the client area, not at (0, 0): the parked controller keeps its real size, and
+    // for a frame or two after the reparent its widget is presented before the parent clip is
+    // re-applied. At the origin that shows up as a white ghost in the top-left of the frame.
+    let holder = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            HOLDER_WINDOW_CLASS,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            HOLDER_WINDOW_OFFSET,
+            HOLDER_WINDOW_OFFSET,
+            0,
+            0,
+            Some(root),
+            None,
+            None,
+            None,
+        )
+        .map_err(format_windows_error)?
+    };
+    HOLDER_WINDOWS.with(|windows| {
+        windows.borrow_mut().insert(key, holder);
+    });
+    Ok(holder)
+}
+
+/// Reads the holder recorded for `handle`. Called off the owner thread by the park barrier.
+fn holder_window_of(handle: jlong) -> HWND {
+    let Ok(transport) = transport().lock() else {
+        return HWND::default();
+    };
+    transport
+        .routes
+        .get(&handle)
+        .map(|route| HWND(route.holder_hwnd as *mut c_void))
+        .unwrap_or_default()
+}
+
+/// Publishes the holder to the route so the park barrier, which runs on the Swing thread, can
+/// address a window whose `wndproc` drains the queue.
+fn publish_holder_window(handle: jlong, canvas: HWND) {
+    let Ok(holder) = resolve_holder_window(canvas) else {
+        return;
+    };
+    if let Ok(mut transport) = transport().lock() {
+        if let Some(route) = transport.routes.get_mut(&handle) {
+            route.holder_hwnd = holder.0 as isize;
+        }
+    }
+}
+
+fn execute_native_command(command: NativeCommand) {
+    let handle = command.handle();
+    let result = match command {
+        NativeCommand::Create {
+            handle,
+            host_hwnd,
+            generation,
+            user_data_dir,
+            document_start_script,
+            background_color,
+            callbacks,
+        } => {
+            let result = create_native_on_owner(
+                handle,
+                host_hwnd,
+                generation,
+                user_data_dir,
+                document_start_script,
+                background_color,
+                callbacks.clone(),
+            );
+            if let Err(message) = &result {
+                callbacks.on_create_failed(message.clone());
+                callbacks.on_destroyed(handle);
+                remove_route(handle);
+            }
+            result
+        }
+        NativeCommand::Destroy { handle } => destroy_native_on_owner(handle),
+        NativeCommand::SetHostState {
+            handle,
+            host_hwnd,
+            width,
+            height,
+            visible,
+            generation,
+        } => with_native(handle, |native| {
+            let host = HWND(host_hwnd as *mut c_void);
+            if !host.0.is_null()
+                && unsafe { GetWindowThreadProcessId(host, None) }
+                    != unsafe { GetCurrentThreadId() }
+            {
+                return Err("Canvas HWND is not owned by AWT-Windows".to_string());
+            }
+            {
+                let mut view = native
+                    .try_borrow_mut()
+                    .map_err(|_| "WebView2 state is busy while applying host state".to_string())?;
+                if generation < view.host_generation {
+                    return Ok(());
+                }
+                view.host_generation = generation;
+                view.width = width.max(0);
+                view.height = height.max(0);
+                view.visible = visible;
+                if !host.0.is_null() {
+                    view.hwnd = host;
+                    view.parent = host;
+                }
+            }
+            if !host.0.is_null() {
+                // The Canvas may have landed under a different top-level, and the barrier has to
+                // reach the holder of the root it is in now.
+                publish_holder_window(handle, host);
+            }
+            reconcile(&native)
+        }),
+        NativeCommand::Park {
+            handle,
+            host_hwnd,
+            generation,
+            completion,
+        } => {
+            if completion
+                .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+            let result = with_native(handle, |native| {
+                let parking_target = resolve_holder_window(HWND(host_hwnd as *mut c_void))?;
+                let controller = {
+                    let view = native
+                        .try_borrow()
+                        .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
+                    if view.host_generation != generation
+                        || view.hwnd.0 as isize as jlong != host_hwnd
+                    {
+                        return Ok(());
+                    }
+                    view.controller.clone()
+                };
+                // The dying Canvas HWND takes its children with it, so the controller has to move
+                // out before WM_NCDESTROY. Hiding it first is what the park is for: nobody can see
+                // the page any more, so the renderer should stop working for it. A controller that
+                // does not exist yet is hidden and re-parented by the reconcile that follows its
+                // creation.
+                if let Some(controller) = &controller {
+                    unsafe {
+                        controller.SetIsVisible(false).map_err(|error| {
+                            format!(
+                                "WebView2 park SetIsVisible(false) failed: {}",
+                                format_windows_error(error)
+                            )
+                        })?;
+                        controller
+                            .SetParentWindow(parking_target)
+                            .map_err(|error| {
+                                format!(
+                                    "WebView2 park SetParentWindow(holder) failed: {}",
+                                    format_windows_error(error)
+                                )
+                            })?;
+                    }
+                    trace_placement("park", &native, None);
+                }
+                {
+                    let mut view = native
+                        .try_borrow_mut()
+                        .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
+                    view.parent = parking_target;
+                    view.hwnd = HWND::default();
+                    view.visible = false;
+                    if controller.is_some() {
+                        view.applied_parent = parking_target;
+                        view.applied_bounds = RECT::default();
+                        view.applied_visible = false;
+                    }
+                }
+                emit_diagnostic(
+                    &native,
+                    DIAGNOSTIC_TRACE,
+                    "host.state",
+                    "WebView2 controller parked in the holder window".to_string(),
+                    diagnostic_data(vec![
+                        ("phase", "parked".to_string()),
+                        ("hostHwnd", host_hwnd.to_string()),
+                        ("holderHwnd", (parking_target.0 as usize as u64).to_string()),
+                        (
+                            "holderVisible",
+                            unsafe { IsWindowVisible(parking_target) }
+                                .as_bool()
+                                .to_string(),
+                        ),
+                        ("generation", generation.to_string()),
+                        ("controller", controller.is_some().to_string()),
+                    ]),
+                );
+                Ok(())
+            });
+            completion.store(if result.is_ok() { 1 } else { 2 }, Ordering::Release);
+            result
+        }
+        NativeCommand::Focus { handle } => with_native(handle, |native| {
+            let (hwnd, controller) = {
+                let view = native
+                    .try_borrow()
+                    .map_err(|_| "WebView2 state is busy while focusing Canvas".to_string())?;
+                (view.hwnd, view.controller.clone())
+            };
+            unsafe {
+                if !hwnd.0.is_null() {
+                    let _ = SetFocus(Some(hwnd));
+                }
+                if let Some(controller) = controller {
+                    controller
+                        .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+                        .map_err(format_windows_error)?;
+                }
+            }
+            Ok(())
+        }),
+        NativeCommand::ClearFocus { handle } => with_native(handle, |native| {
+            let parent = native
+                .try_borrow()
+                .map_err(|_| "WebView2 state is busy while clearing focus".to_string())?
+                .parent;
+            unsafe {
+                if !parent.0.is_null() {
+                    let root = GetAncestor(parent, GA_ROOT);
+                    if !root.0.is_null() {
+                        let _ = SetFocus(Some(root));
+                    }
+                }
+            }
+            Ok(())
+        }),
+        NativeCommand::LoadUrl { handle, url } => {
+            with_native(handle, |native| load_url(&native, url))
+        }
+        NativeCommand::SetVirtualHostMapping {
+            handle,
+            host_name,
+            folder_path,
+        } => with_native(handle, |native| {
+            let webview = native
+                .try_borrow()
+                .map_err(|_| "WebView2 state is busy while setting host mapping".to_string())?
+                .webview
+                .clone()
+                .ok_or_else(|| "WebView2 is not ready".to_string())?;
+            set_virtual_host_name_to_folder_mapping(&webview, &host_name, &folder_path)
+        }),
+        NativeCommand::LoadHtml { handle, html } => {
+            with_native(handle, |native| load_html(&native, html))
+        }
+        NativeCommand::Evaluate {
+            handle,
+            eval_id,
+            script,
+        } => with_native(handle, |native| evaluate_script(&native, eval_id, script)),
+        NativeCommand::CallDevTools {
+            handle,
+            call_id,
+            method_name,
+            params_json,
+        } => with_native(handle, |native| {
+            call_dev_tools(&native, call_id, method_name, params_json)
+        }),
+        NativeCommand::TransferToJs { handle, raw_json } => {
+            with_native(handle, |native| transfer_to_js(&native, raw_json))
+        }
+        NativeCommand::CompleteAsset {
+            handle,
+            request_id,
+            response,
+        } => with_native(handle, |native| {
+            complete_asset_request(&native, request_id, response)
+        }),
+    };
+
+    if let Err(message) = result {
+        NATIVE_VIEWS.with(|views| {
+            if let Some(native) = views.borrow().get(&handle) {
+                emit_diagnostic(
+                    native,
+                    DIAGNOSTIC_WARN,
+                    "command.failed",
+                    message,
+                    String::new(),
+                );
+            }
+        });
+    }
+}
+
+fn with_native(
+    action_handle: jlong,
+    action: impl FnOnce(NativeHandle) -> BridgeResult<()>,
+) -> BridgeResult<()> {
+    let native = NATIVE_VIEWS
+        .with(|views| views.borrow().get(&action_handle).cloned())
+        .ok_or_else(|| format!("Unknown WebView2 native handle on AWT-Windows: {action_handle}"))?;
+    action(native)
+}
+
+fn destroy_native_on_owner(handle: jlong) -> BridgeResult<()> {
+    let native = NATIVE_VIEWS.with(|views| views.borrow().get(&handle).cloned());
+    let Some(native) = native else {
+        remove_route(handle);
+        return Ok(());
+    };
+    unregister_shared_environment_view(handle);
+    let callbacks = native
+        .try_borrow()
+        .map_err(|_| "WebView2 state is busy while destroying".to_string())?
+        .callbacks
+        .clone();
+    destroy_native_state(&native)?;
+    NATIVE_VIEWS.with(|views| {
+        views.borrow_mut().remove(&handle);
+    });
+    remove_route(handle);
+    callbacks.on_destroyed(handle);
+    Ok(())
+}
+
+fn destroy_views_parked_on(hwnd: HWND) {
+    let handles = NATIVE_VIEWS.with(|views| {
+        views
+            .borrow()
+            .iter()
+            .filter_map(|(handle, native)| {
+                native.try_borrow().ok().and_then(|view| {
+                    (view.hwnd.0.is_null() && view.parent == hwnd).then_some(*handle)
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    for handle in handles {
+        if let Ok(mut transport) = transport().lock() {
+            if let Some(route) = transport.routes.get_mut(&handle) {
+                route.closing = true;
+            }
+        }
+        let _ = destroy_native_on_owner(handle);
+    }
+}
+
+fn load_url(native: &NativeHandle, url: String) -> BridgeResult<()> {
+    let webview = {
+        let mut view = native.borrow_mut();
+        view.last_navigation_requested_at = Some(Instant::now());
+        view.navigation_timings.clear();
+        view.unidentified_navigation_timing = None;
+        view.webview
+            .clone()
+            .ok_or_else(|| "WebView2 is not ready".to_string())?
+    };
+    measure_perf(
+        native,
+        "perf.webview2.navigation.loadUrl.call",
+        vec![("urlChars", url.len().to_string())],
+        || unsafe {
+            webview
+                .Navigate(&HSTRING::from(url.as_str()))
+                .map_err(format_windows_error)
+        },
+    )
+}
+
+fn load_html(native: &NativeHandle, html: String) -> BridgeResult<()> {
+    let webview = {
+        let mut view = native.borrow_mut();
+        view.last_navigation_requested_at = Some(Instant::now());
+        view.navigation_timings.clear();
+        view.unidentified_navigation_timing = None;
+        view.webview
+            .clone()
+            .ok_or_else(|| "WebView2 is not ready".to_string())?
+    };
+    measure_perf(
+        native,
+        "perf.webview2.navigation.loadHtml.call",
+        vec![("htmlChars", html.len().to_string())],
+        || unsafe {
+            webview
+                .NavigateToString(&HSTRING::from(html.as_str()))
+                .map_err(format_windows_error)
+        },
+    )
+}
+
+fn evaluate_script(native: &NativeHandle, eval_id: jlong, script: String) -> BridgeResult<()> {
+    let (webview, handler, handler_id) = {
+        let mut view = native.borrow_mut();
+        let webview = view
+            .webview
+            .clone()
+            .ok_or_else(|| "WebView2 is not ready".to_string())?;
+        let callbacks = view.callbacks.clone();
+        let handler_id = view.next_script_handler_id;
+        view.next_script_handler_id += 1;
+        let native_for_callback = native.clone();
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |error_code, result| {
+            remove_execute_script_handler(&native_for_callback, handler_id);
+            match error_code {
+                Ok(()) => callbacks.on_evaluation_result(eval_id, result),
+                Err(error) => callbacks.on_evaluation_error(eval_id, format_windows_error(error)),
+            }
+            Ok(())
+        }));
+        view.execute_script_handlers
+            .push((handler_id, handler.clone()));
+        (webview, handler, handler_id)
+    };
+    if let Err(error) = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) } {
+        remove_execute_script_handler(native, handler_id);
+        return Err(format_windows_error(error));
+    }
+    Ok(())
+}
+
+fn call_dev_tools(
+    native: &NativeHandle,
+    call_id: jlong,
+    method_name: String,
+    params_json: String,
+) -> BridgeResult<()> {
+    let (webview, handler, handler_id) = {
+        let mut view = native.borrow_mut();
+        let webview = view
+            .webview
+            .clone()
+            .ok_or_else(|| "WebView2 is not ready".to_string())?;
+        let callbacks = view.callbacks.clone();
+        let handler_id = view.next_script_handler_id;
+        view.next_script_handler_id += 1;
+        let native_for_callback = native.clone();
+        let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+            move |error_code, result| {
+                remove_dev_tools_handler(&native_for_callback, handler_id);
+                match error_code {
+                    Ok(()) => {
+                        callbacks.on_dev_tools_protocol_method_result(call_id, Some(result), None)
+                    }
+                    Err(error) => callbacks.on_dev_tools_protocol_method_result(
+                        call_id,
+                        None,
+                        Some(format_windows_error(error)),
+                    ),
+                }
+                Ok(())
+            },
+        ));
+        view.dev_tools_handlers.push((handler_id, handler.clone()));
+        (webview, handler, handler_id)
+    };
+    if let Err(error) = unsafe {
+        webview.CallDevToolsProtocolMethod(
+            &HSTRING::from(method_name),
+            &HSTRING::from(params_json),
+            &handler,
+        )
+    } {
+        remove_dev_tools_handler(native, handler_id);
+        return Err(format_windows_error(error));
+    }
+    Ok(())
+}
+
+fn transfer_to_js(native: &NativeHandle, raw_json: String) -> BridgeResult<()> {
     let script = format!(
         /*language=JavaScript*/ "window.__WVI__ && window.__WVI__.__deliver({});",
         js_string_literal(&raw_json)
     );
-    run_with_handle(&mut env, handle, |native| {
-        let (webview, handler, handler_id) = {
-            let mut view = native.borrow_mut();
-            let webview = view
-                .webview
-                .clone()
-                .ok_or_else(|| "WebView2 is not ready".to_string())?;
-            let handler_id = view.next_script_handler_id;
-            view.next_script_handler_id += 1;
-            let native_for_callback = native.clone();
-            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_, _| {
-                remove_execute_script_handler(&native_for_callback, handler_id);
-                Ok(())
-            }));
-            view.execute_script_handlers
-                .push((handler_id, handler.clone()));
-            (webview, handler, handler_id)
-        };
-        let result = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) };
-        if let Err(error) = result {
-            remove_execute_script_handler(&native, handler_id);
-            return Err(format_windows_error(error));
-        }
-        Ok(())
-    });
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_currentThreadIdNative(
-    _env: JNIEnv<'_>,
-    _class: JClass<'_>,
-) -> jlong {
-    unsafe {
-        // Force creation of the message queue so that PostThreadMessageW from other
-        // threads cannot race with the queue's first use inside runMessageLoopNative.
-        let mut msg = MSG::default();
-        let _ = PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE);
-        GetCurrentThreadId() as jlong
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_runMessageLoopNative(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-) {
-    let mut msg = MSG::default();
-    unsafe {
-        loop {
-            let ret = GetMessageW(&mut msg, None, 0, 0).0;
-            if ret == 0 {
-                // WM_QUIT received; exit normally.
-                break;
-            }
-            if ret < 0 {
-                // System error in GetMessageW; the thread queue is broken.
-                report_dispatcher_error(
-                    &mut env,
-                    "WebView2 dispatcher: GetMessageW returned an error; exiting message loop",
-                );
-                break;
-            }
-            // Only thread-targeted messages (PostThreadMessageW) carry our task pointer.
-            // Window messages from WebView2/COM with msg.message == WM_USER_INVOKE must
-            // pass through to DispatchMessageW; reinterpreting their lParam as a Box
-            // would dereference a non-pointer value.
-            if msg.message == WM_USER_INVOKE && msg.hwnd.0.is_null() {
-                let task = Box::from_raw(msg.lParam.0 as *mut PostedTask);
-                let panic_result = {
-                    let env_ref = &mut env;
-                    std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        let _ = env_ref.call_method(task.runnable.as_obj(), "run", "()V", &[]);
-                    }))
-                };
-                report_task_exception_if_pending(&mut env);
-                if let Err(payload) = panic_result {
-                    let message = panic_payload_message(payload);
-                    report_dispatcher_error(
-                        &mut env,
-                        &format!("WebView2 dispatcher: Rust panic in task glue: {}", message),
-                    );
-                }
-                continue;
-            }
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-}
-
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_postTaskNative(
-    env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    runnable: JObject<'_>,
-    target_tid: jlong,
-) {
-    if target_tid == 0 {
-        // Win32 would route the message to the calling thread which is never
-        // what we want. Drop the task instead of corrupting the caller's queue.
-        return;
-    }
-    let Ok(runnable) = env.new_global_ref(runnable) else {
-        return;
+    let (webview, handler, handler_id) = {
+        let mut view = native.borrow_mut();
+        let webview = view
+            .webview
+            .clone()
+            .ok_or_else(|| "WebView2 is not ready".to_string())?;
+        let handler_id = view.next_script_handler_id;
+        view.next_script_handler_id += 1;
+        let native_for_callback = native.clone();
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |_, _| {
+            remove_execute_script_handler(&native_for_callback, handler_id);
+            Ok(())
+        }));
+        view.execute_script_handlers
+            .push((handler_id, handler.clone()));
+        (webview, handler, handler_id)
     };
-    let task = Box::new(PostedTask { runnable });
-    let raw = Box::into_raw(task);
-    unsafe {
-        if PostThreadMessageW(
-            target_tid as u32,
-            WM_USER_INVOKE,
-            WPARAM(0),
-            LPARAM(raw as isize),
-        )
-        .is_err()
-        {
-            // Reclaim the box if posting failed so we do not leak the global ref.
-            drop(Box::from_raw(raw));
-        }
+    if let Err(error) = unsafe { webview.ExecuteScript(&HSTRING::from(script), &handler) } {
+        remove_execute_script_handler(native, handler_id);
+        return Err(format_windows_error(error));
     }
+    Ok(())
 }
 
-#[no_mangle]
-pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_stopMessageLoopNative(
-    _env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    target_tid: jlong,
-) {
-    unsafe {
-        let _ = PostThreadMessageW(target_tid as u32, WM_QUIT, WPARAM(0), LPARAM(0));
-    }
-}
-
-struct PostedTask {
-    runnable: GlobalRef,
-}
-
-fn report_task_exception_if_pending(env: &mut JNIEnv<'_>) {
-    if !env.exception_check().unwrap_or(false) {
-        return;
-    }
-    let throwable = match env.exception_occurred() {
-        Ok(t) => t,
-        Err(_) => {
-            let _ = env.exception_clear();
-            return;
-        }
-    };
-    let _ = env.exception_clear();
-    let _ = env.call_static_method(
-        "io/github/nerzhulart/webview/impl/windows/WinWebView2Bridge",
-        "reportTaskException",
-        "(Ljava/lang/Throwable;)V",
-        &[(&throwable).into()],
-    );
-    // If the reporter itself threw, clear so we don't leak the pending exception
-    // back into the next iteration of the dispatcher loop.
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
-    }
-}
-
-fn report_dispatcher_error(env: &mut JNIEnv<'_>, message: &str) {
-    let java_message = match env.new_string(message) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let _ = env.call_static_method(
-        "io/github/nerzhulart/webview/impl/windows/WinWebView2Bridge",
-        "reportDispatcherError",
-        "(Ljava/lang/String;)V",
-        &[(&java_message).into()],
-    );
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_clear();
-    }
-}
-
-fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&'static str>() {
-        return (*s).to_owned();
-    }
-    if let Some(s) = payload.downcast_ref::<String>() {
-        return s.clone();
-    }
-    "<non-string panic payload>".to_owned()
-}
-
-fn create_native(
-    env: &mut JNIEnv<'_>,
+#[allow(clippy::too_many_arguments)]
+fn create_native_on_owner(
+    handle: jlong,
     parent_hwnd: jlong,
-    user_data_dir: JString<'_>,
-    document_start_script: JString<'_>,
-    callbacks: JObject<'_>,
-) -> BridgeResult<jlong> {
+    generation: jlong,
+    user_data_dir: String,
+    document_start_script: String,
+    background_color: u32,
+    callbacks: Arc<JavaCallbacks>,
+) -> BridgeResult<()> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
     }
 
-    let callbacks = Rc::new(JavaCallbacks {
-        vm: env.get_java_vm().map_err(format_jni_error)?,
-        object: env.new_global_ref(callbacks).map_err(format_jni_error)?,
-    });
     let parent = HWND(parent_hwnd as *mut c_void);
-    let hwnd = create_container_hwnd(parent, callbacks.clone())?;
-    let user_data_dir = jstring_to_string(env, user_data_dir)?;
-    let document_start_script = jstring_to_string(env, document_start_script)?;
+    let hwnd = parent;
     let document_start_scripts = if document_start_script.is_empty() {
         Vec::new()
     } else {
@@ -1196,7 +1886,7 @@ fn create_native(
     };
 
     let native = Rc::new(RefCell::new(NativeWebView {
-        handle: 0,
+        handle,
         parent,
         hwnd,
         controller: None,
@@ -1209,6 +1899,8 @@ fn create_native(
         add_script_handlers: Vec::new(),
         execute_script_handlers: Vec::new(),
         dev_tools_handlers: Vec::new(),
+        pending_asset_requests: HashMap::new(),
+        next_asset_request_id: 1,
         next_script_handler_id: 0,
         document_start_scripts,
         web_message_token: EventRegistrationToken::default(),
@@ -1218,23 +1910,29 @@ fn create_native(
         callbacks,
         destroyed: false,
         visible: false,
-        x: 0,
-        y: 0,
+        background_color,
+        applied_parent: HWND::default(),
+        applied_bounds: RECT::default(),
+        applied_visible: true,
         width: 0,
         height: 0,
-        scale: 1.0,
+        host_generation: generation,
     }));
 
-    let raw = Rc::into_raw(native.clone()) as jlong;
-    native.borrow_mut().handle = raw;
+    NATIVE_VIEWS.with(|views| {
+        views.borrow_mut().insert(handle, native.clone());
+    });
+    // Eagerly, not on the first park: `removeNotify` can arrive before anything else, and the
+    // barrier needs a window to talk to by then.
+    publish_holder_window(handle, parent);
     if let Err(message) = ensure_shared_environment(native.clone(), user_data_dir) {
-        native.borrow_mut().destroy();
-        unsafe {
-            drop(Rc::from_raw(raw as *const RefCell<NativeWebView>));
-        }
+        let _ = destroy_native_state(&native);
+        NATIVE_VIEWS.with(|views| {
+            views.borrow_mut().remove(&handle);
+        });
         return Err(message);
     }
-    Ok(raw)
+    Ok(())
 }
 
 fn ensure_shared_environment(native: NativeHandle, user_data_dir: String) -> BridgeResult<()> {
@@ -1265,7 +1963,13 @@ fn start_shared_environment_creation(
     let options = ICoreWebView2EnvironmentOptions::from(options);
     unsafe {
         if let Err(error) =
-            options.SetAdditionalBrowserArguments(w!("--disable-features=ElasticOverscroll"))
+            // CalculateNativeWinOcclusion must be off: a host that Swing shows can still be
+            // covered by another heavyweight peer, and the occlusion tracker would throttle it
+            // until rAF stops entirely. Hiding is reported explicitly through put_IsVisible, so
+            // nothing is lost by not guessing it from window geometry.
+            options.SetAdditionalBrowserArguments(w!(
+                "--disable-features=ElasticOverscroll,CalculateNativeWinOcclusion"
+            ))
         {
             SHARED_ENVIRONMENT_MANAGER.with(|manager| {
                 manager.borrow_mut().clear_start_failure(generation);
@@ -1395,7 +2099,13 @@ fn begin_create_controller(
     if !register_shared_environment_active_view(generation, native.clone()) {
         return Ok(());
     }
-    let hwnd = native.borrow().hwnd;
+    // The controller is created directly in the Canvas HWND. Recording it as the applied parent
+    // keeps the first reconcile from re-parenting the controller to the window it is already in.
+    let hwnd = {
+        let mut view = native.borrow_mut();
+        view.applied_parent = view.hwnd;
+        view.hwnd
+    };
     emit_diagnostic(
         &native,
         DIAGNOSTIC_TRACE,
@@ -1483,7 +2193,24 @@ fn begin_create_controller(
         view.controller_create_started_at = Some(Instant::now());
     }
     unsafe {
-        if let Err(error) = environment.CreateCoreWebView2Controller(hwnd, &handler) {
+        let create_result = if let Ok(environment10) =
+            environment.cast::<ICoreWebView2Environment10>()
+        {
+            match environment10.CreateCoreWebView2ControllerOptions() {
+                Ok(options) => {
+                    if let Ok(options4) = options.cast::<ICoreWebView2ControllerOptions4>() {
+                        options4
+                            .SetAllowHostInputProcessing(true)
+                            .map_err(format_windows_error)?;
+                    }
+                    environment10.CreateCoreWebView2ControllerWithOptions(hwnd, &options, &handler)
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            environment.CreateCoreWebView2Controller(hwnd, &handler)
+        };
+        if let Err(error) = create_result {
             unregister_shared_environment_view(native_handle(&native));
             if let Ok(mut view) = native.try_borrow_mut() {
                 view.controller_create_started_at = None;
@@ -1568,6 +2295,11 @@ fn finish_create(
         || attach_got_focus_handler(&controller, native.clone()),
     )?;
 
+    // Without this the controller paints its own near-white default before the first frame of the
+    // page reaches the screen, which is the white flash seen on reattach. The Canvas peer is
+    // already erased with the same color, so the transition becomes invisible.
+    apply_default_background_color(&native, &controller);
+
     measure_perf(
         &native,
         "perf.webview2.finish.diagnostics",
@@ -1586,7 +2318,7 @@ fn finish_create(
         },
     )?;
 
-    let (callbacks, handle, hwnd, controller, visible, x, y, width, height, scale) = {
+    let (callbacks, handle) = {
         let mut view = native.borrow_mut();
         if view.destroyed || !is_shared_environment_current(generation) {
             return Ok(());
@@ -1596,31 +2328,14 @@ fn finish_create(
         view.web_resource_requested_token = Some(web_resource_token);
         view.accelerator_key_pressed_token = Some(accelerator_token);
         view.got_focus_token = Some(got_focus_token);
-        view.controller = Some(controller);
+        view.controller = Some(controller.clone());
         view.webview = Some(webview);
-        (
-            view.callbacks.clone(),
-            view.handle,
-            view.hwnd,
-            view.controller.clone(),
-            view.visible,
-            view.x,
-            view.y,
-            view.width,
-            view.height,
-            view.scale,
-        )
+        (view.callbacks.clone(), view.handle)
     };
 
-    apply_bounds_values(hwnd, controller.as_ref(), x, y, width, height, scale)?;
-    unsafe {
-        if let Some(controller) = &controller {
-            controller
-                .SetIsVisible(visible)
-                .map_err(format_windows_error)?;
-        }
-        let _ = ShowWindow(hwnd, if visible { SW_SHOW } else { SW_HIDE });
-    }
+    // Swing keeps its own snapshot, so the latest state is applied once here and every later
+    // change arrives as its own SetHostState command.
+    reconcile(&native)?;
 
     callbacks.on_created(handle);
     emit_perf_diagnostic(
@@ -1633,6 +2348,40 @@ fn finish_create(
         ],
     );
     Ok(())
+}
+
+/// Paints the controller with the host background instead of the WebView2 default, so a frame
+/// without page content is indistinguishable from the Canvas behind it.
+fn apply_default_background_color(native: &NativeHandle, controller: &ICoreWebView2Controller) {
+    let color = match native.try_borrow() {
+        Ok(view) => view.background_color,
+        Err(_) => return,
+    };
+    let Ok(controller2) = controller.cast::<ICoreWebView2Controller2>() else {
+        emit_diagnostic(
+            native,
+            DIAGNOSTIC_WARN,
+            "controller.background.unsupported",
+            "ICoreWebView2Controller2 is unavailable, keeping the default background".to_string(),
+            String::new(),
+        );
+        return;
+    };
+    let value = COREWEBVIEW2_COLOR {
+        A: ((color >> 24) & 0xFF) as u8,
+        R: ((color >> 16) & 0xFF) as u8,
+        G: ((color >> 8) & 0xFF) as u8,
+        B: (color & 0xFF) as u8,
+    };
+    if let Err(error) = unsafe { controller2.SetDefaultBackgroundColor(value) } {
+        emit_diagnostic(
+            native,
+            DIAGNOSTIC_WARN,
+            "controller.background.failed",
+            format_windows_error(error),
+            String::new(),
+        );
+    }
 }
 
 fn configure_webview_application_settings(webview: &ICoreWebView2) -> BridgeResult<()> {
@@ -2495,8 +3244,12 @@ fn attach_web_resource_requested_handler(
             if let Err(message) =
                 handle_web_resource_requested(&environment, &native_for_callback, &args)
             {
-                if let Ok(view) = native_for_callback.try_borrow() {
-                    view.callbacks.on_log(
+                let callbacks = native_for_callback
+                    .try_borrow()
+                    .ok()
+                    .map(|view| view.callbacks.clone());
+                if let Some(callbacks) = callbacks {
+                    callbacks.on_log(
                         DIAGNOSTIC_WARN,
                         format!("WinWebView2Bridge: asset request failed: {message}"),
                     );
@@ -2551,14 +3304,64 @@ fn handle_web_resource_requested(
         .map_err(|_| "WebView2 state is busy while resolving asset".to_string())?
         .callbacks
         .clone();
-    let Some(asset_response) = callbacks.resolve_asset(url)? else {
-        return Ok(());
+    let deferral = unsafe { args.GetDeferral().map_err(format_windows_error)? };
+    let (handle, request_id) = {
+        let mut view = native
+            .try_borrow_mut()
+            .map_err(|_| "WebView2 state is busy while deferring asset resolution".to_string())?;
+        let request_id = view.next_asset_request_id;
+        view.next_asset_request_id = view.next_asset_request_id.wrapping_add(1).max(1);
+        view.pending_asset_requests.insert(
+            request_id,
+            PendingAssetRequest {
+                environment: environment.clone(),
+                args: args.clone(),
+                deferral,
+            },
+        );
+        (view.handle, request_id)
     };
-    let response = create_web_resource_response(environment, asset_response)?;
-    unsafe {
-        args.SetResponse(&response).map_err(format_windows_error)?;
+
+    if let Err(error) = callbacks.on_asset_requested(handle, request_id, url) {
+        let request = native
+            .try_borrow_mut()
+            .map_err(|_| "WebView2 state is busy while cancelling asset deferral".to_string())?
+            .pending_asset_requests
+            .remove(&request_id);
+        if let Some(request) = request {
+            unsafe {
+                let _ = request.deferral.Complete();
+            }
+        }
+        return Err(error);
     }
     Ok(())
+}
+
+fn complete_asset_request(
+    native: &NativeHandle,
+    request_id: u64,
+    response: BridgeResult<Option<NativeAssetResponse>>,
+) -> BridgeResult<()> {
+    let request = native
+        .borrow_mut()
+        .pending_asset_requests
+        .remove(&request_id)
+        .ok_or_else(|| format!("Unknown deferred WebView2 asset request: {request_id}"))?;
+    let result = (|| {
+        let Some(asset_response) = response? else {
+            return Ok(());
+        };
+        let response = create_web_resource_response(&request.environment, asset_response)?;
+        unsafe {
+            request
+                .args
+                .SetResponse(&response)
+                .map_err(format_windows_error)
+        }
+    })();
+    let completion = unsafe { request.deferral.Complete().map_err(format_windows_error) };
+    result.and(completion)
 }
 
 fn set_virtual_host_name_to_folder_mapping(
@@ -2614,8 +3417,9 @@ fn attach_ipc_handler(
                     let mut message = PWSTR::null();
                     args.TryGetWebMessageAsString(&mut message)?;
                     let message = take_pwstr(message);
-                    if let Ok(view) = native.try_borrow() {
-                        view.callbacks.on_message(message);
+                    let callbacks = native.try_borrow().ok().map(|view| view.callbacks.clone());
+                    if let Some(callbacks) = callbacks {
+                        callbacks.on_message(message);
                     }
                     Ok(())
                 })),
@@ -2646,10 +3450,10 @@ fn attach_accelerator_key_handler(
                     let mut key_event_lparam = 0;
                     args.KeyEventLParam(&mut key_event_lparam)?;
 
-                    let handled = native
-                        .try_borrow()
-                        .map(|view| {
-                            view.callbacks.on_accelerator_key_pressed(
+                    let callbacks = native.try_borrow().ok().map(|view| view.callbacks.clone());
+                    let handled = callbacks
+                        .map(|callbacks| {
+                            callbacks.on_accelerator_key_pressed(
                                 key_event_kind.0,
                                 virtual_key as jint,
                                 current_modifier_flags(),
@@ -2657,13 +3461,6 @@ fn attach_accelerator_key_handler(
                             )
                         })
                         .unwrap_or(false);
-                    let handled = handled
-                        || forward_system_key_to_awt_root_window_if_unhandled(
-                            &native,
-                            key_event_kind.0,
-                            virtual_key,
-                            key_event_lparam,
-                        );
                     if handled {
                         args.SetHandled(true)?;
                     }
@@ -2685,8 +3482,9 @@ fn attach_got_focus_handler(
         controller
             .add_GotFocus(
                 &FocusChangedEventHandler::create(Box::new(move |_, _| {
-                    if let Ok(view) = native.try_borrow() {
-                        view.callbacks.on_focus_gained();
+                    let callbacks = native.try_borrow().ok().map(|view| view.callbacks.clone());
+                    if let Some(callbacks) = callbacks {
+                        callbacks.on_focus_gained();
                     }
                     Ok(())
                 })),
@@ -2706,10 +3504,13 @@ fn fail_create(native: &NativeHandle, message: String) {
     if handle != 0 {
         unregister_shared_environment_view(handle);
     }
-    if let Ok(mut view) = native.try_borrow_mut() {
-        view.destroy();
-    }
+    let _ = destroy_native_state(native);
     callbacks.on_create_failed(message);
+    NATIVE_VIEWS.with(|views| {
+        views.borrow_mut().remove(&handle);
+    });
+    remove_route(handle);
+    callbacks.on_destroyed(handle);
 }
 
 fn remove_execute_script_handler(native: &NativeHandle, handler_id: u64) {
@@ -2775,168 +3576,143 @@ fn remove_add_script_handler(native: &NativeHandle, handler_id: u64) {
     }
 }
 
-fn create_container_hwnd(parent: HWND, callbacks: Rc<JavaCallbacks>) -> BridgeResult<HWND> {
-    unsafe extern "system" fn window_proc(
-        hwnd: HWND,
-        msg: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        if is_mouse_focus_message(msg, wparam) {
-            unsafe {
-                notify_before_mouse_focus(hwnd);
-            }
-        }
-        if msg == WM_SETFOCUS {
-            if let Ok(child) = GetWindow(hwnd, GW_CHILD) {
-                let _ = SetFocus(Some(child));
-            }
-        }
-        if msg == WM_USER_SHIFT_FALLBACK {
-            unsafe {
-                dispatch_pending_shift_event(hwnd, wparam.0);
-            }
-            return LRESULT(0);
-        }
-        let result = DefWindowProcW(hwnd, msg, wparam, lparam);
-        if msg == WM_NCDESTROY {
-            unsafe {
-                unregister_keyboard_interop_window(hwnd);
-                clear_container_callbacks(hwnd);
-            }
-        }
-        result
+/// Remembers what the controller was actually told, so the next reconcile can stay silent.
+fn store_applied_placement(native: &NativeHandle, parent: HWND, bounds: RECT, visible: bool) {
+    if let Ok(mut view) = native.try_borrow_mut() {
+        view.applied_parent = parent;
+        view.applied_bounds = bounds;
+        view.applied_visible = visible;
     }
+}
 
-    let class_name = w!("IJ_WEBVIEW2_BRIDGE");
-    let class = WNDCLASSEXW {
-        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW,
-        lpfnWndProc: Some(window_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: unsafe { HINSTANCE(GetModuleHandleW(PCWSTR::null()).unwrap_or_default().0) },
-        hIcon: HICON::default(),
-        hCursor: HCURSOR::default(),
-        hbrBackground: HBRUSH::default(),
-        lpszMenuName: PCWSTR::null(),
-        lpszClassName: class_name,
-        hIconSm: HICON::default(),
-    };
-    unsafe {
-        RegisterClassExW(&class);
-    }
-
-    let hwnd = unsafe {
-        CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            class_name,
-            PCWSTR::null(),
-            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            0,
-            0,
-            0,
-            0,
-            Some(parent),
-            None,
-            GetModuleHandleW(PCWSTR::null()).map(Into::into).ok(),
-            None,
+/// The single reconcile: brings the controller to the desired [`NativeWebView`] state.
+///
+/// Placement is the WebView2 API and nothing else: `SetParentWindow` (`put_ParentWindow`) on a real
+/// parent change, `SetBounds` when the parent or the rectangle changed,
+/// `NotifyParentWindowPositionChanged` after a reparent, and `SetIsVisible` (`put_IsVisible`) on a
+/// real visibility change. Hiding is honest, which is the only way Chromium ever learns that the
+/// page is off screen and may freeze its renderer.
+///
+/// The order is what keeps the reveal free of intermediate frames: hide before moving, move before
+/// showing, so nothing is ever presented at a size or position the host no longer has.
+fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
+    // With no Canvas, `parent` is the holder the view was parked in.
+    let (
+        hwnd,
+        holder,
+        controller,
+        visible,
+        width,
+        height,
+        applied_parent,
+        applied_bounds,
+        applied_visible,
+    ) = {
+        let view = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while reading Canvas bounds".to_string())?;
+        (
+            view.hwnd,
+            view.parent,
+            view.controller.clone(),
+            view.visible,
+            view.width,
+            view.height,
+            view.applied_parent,
+            view.applied_bounds,
+            view.applied_visible,
         )
-        .map_err(format_windows_error)?
     };
-
-    unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Rc::into_raw(callbacks) as isize);
-        register_keyboard_interop_window(hwnd);
-    }
-    Ok(hwnd)
-}
-
-fn apply_bounds(view: &NativeWebView) -> BridgeResult<()> {
-    apply_bounds_values(
-        view.hwnd,
-        view.controller.as_ref(),
-        view.x,
-        view.y,
-        view.width,
-        view.height,
-        view.scale,
-    )
-}
-
-fn apply_bounds_values(
-    hwnd: HWND,
-    controller: Option<&ICoreWebView2Controller>,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    scale: f64,
-) -> BridgeResult<()> {
+    let Some(controller) = controller else {
+        return Ok(());
+    };
     if hwnd.0.is_null() {
+        // The controller was created after the park, so the park itself had nothing to move nor to
+        // hide. Leaving it on the destroyed Canvas HWND would take it down together with the peer.
+        if applied_visible {
+            unsafe {
+                controller
+                    .SetIsVisible(false)
+                    .map_err(format_windows_error)?;
+            }
+        }
+        if !holder.0.is_null() && applied_parent != holder {
+            unsafe {
+                controller
+                    .SetParentWindow(holder)
+                    .map_err(format_windows_error)?;
+            }
+            store_applied_placement(native, holder, RECT::default(), false);
+        } else if applied_visible {
+            store_applied_placement(native, applied_parent, applied_bounds, false);
+        }
         return Ok(());
     }
 
-    let width = width.max(0);
-    let height = height.max(0);
-    let left = scale_to_i32(x, scale);
-    let top = scale_to_i32(y, scale);
-    let right = scale_to_i32(x.saturating_add(width), scale);
-    let bottom = scale_to_i32(y.saturating_add(height), scale);
-    let width = right.saturating_sub(left).max(0);
-    let height = bottom.saturating_sub(top).max(0);
-
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            None,
-            left,
-            top,
-            width,
-            height,
-            SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOZORDER,
+    let mut client = RECT::default();
+    let (client_width, client_height) = unsafe {
+        match GetClientRect(hwnd, &mut client) {
+            Ok(()) => (client.right - client.left, client.bottom - client.top),
+            Err(_) => (width, height),
+        }
+    };
+    // An AWT peer is born empty and gets its real bounds one layout later. Resizing the page down
+    // to 1x1 in between costs a reflow and a frame, and that size is never what anyone sees, so an
+    // empty host keeps whatever the controller already has.
+    let (width, height) = if client_width > 0 && client_height > 0 {
+        (client_width, client_height)
+    } else if applied_bounds.right > applied_bounds.left
+        && applied_bounds.bottom > applied_bounds.top
+    {
+        (
+            applied_bounds.right - applied_bounds.left,
+            applied_bounds.bottom - applied_bounds.top,
         )
-        .map_err(format_windows_error)?;
+    } else {
+        (1, 1)
+    };
+    let bounds = RECT {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+    };
 
-        if let Some(controller) = controller {
+    let parent_changed = applied_parent != hwnd;
+    unsafe {
+        if applied_visible && !visible {
             controller
-                .SetBounds(RECT {
-                    left: 0,
-                    top: 0,
-                    right: width,
-                    bottom: height,
-                })
+                .SetIsVisible(false)
                 .map_err(format_windows_error)?;
+        }
+        if parent_changed {
+            controller
+                .SetParentWindow(hwnd)
+                .map_err(format_windows_error)?;
+        }
+        if parent_changed || bounds != applied_bounds {
+            controller.SetBounds(bounds).map_err(format_windows_error)?;
+        }
+        if parent_changed {
             controller
                 .NotifyParentWindowPositionChanged()
                 .map_err(format_windows_error)?;
         }
+        if visible && !applied_visible {
+            controller.SetIsVisible(true).map_err(format_windows_error)?;
+        }
     }
+    store_applied_placement(native, hwnd, bounds, visible);
+
+    let extra = format!(
+        "bounds={} visible={} reparented={}",
+        format_rect(bounds),
+        visible,
+        parent_changed
+    );
+    trace_placement("reconcile", native, Some(&extra));
+
     Ok(())
-}
-
-fn run_with_handle<F>(env: &mut JNIEnv<'_>, handle: jlong, action: F)
-where
-    F: FnOnce(NativeHandle) -> BridgeResult<()>,
-{
-    if handle == 0 {
-        let _ = env.throw_new(
-            "java/lang/IllegalStateException",
-            "WebView2 native handle is 0",
-        );
-        return;
-    }
-
-    let native = unsafe {
-        let native = Rc::from_raw(handle as *const RefCell<NativeWebView>);
-        let cloned = native.clone();
-        let _ = Rc::into_raw(native);
-        cloned
-    };
-
-    if let Err(message) = action(native) {
-        let _ = env.throw_new("java/lang/IllegalStateException", message);
-    }
 }
 
 fn current_modifier_flags() -> jint {
@@ -2962,274 +3738,6 @@ unsafe fn is_key_down(virtual_key: VIRTUAL_KEY) -> bool {
     (GetKeyState(virtual_key.0 as i32) as u16 & 0x8000) != 0
 }
 
-fn modifier_flags_for_shift_event(key_event_kind: jint) -> jint {
-    let mut flags = current_modifier_flags();
-    if key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN.0
-        || key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0
-    {
-        flags |= MODIFIER_SHIFT;
-    } else {
-        flags &= !MODIFIER_SHIFT;
-    }
-    flags
-}
-
-fn is_shift_key(virtual_key: jint) -> bool {
-    virtual_key == VK_SHIFT.0 as jint
-        || virtual_key == VK_LSHIFT.0 as jint
-        || virtual_key == VK_RSHIFT.0 as jint
-}
-
-fn forward_system_key_to_awt_root_window_if_unhandled(
-    native: &NativeHandle,
-    key_event_kind: jint,
-    virtual_key: u32,
-    key_event_lparam: i32,
-) -> bool {
-    let Some(message) = system_key_message_from_event_kind(key_event_kind) else {
-        return false;
-    };
-    let Ok(view) = native.try_borrow() else {
-        return false;
-    };
-    unsafe {
-        forward_system_key_to_awt_root_window(
-            view.hwnd,
-            message,
-            WPARAM(virtual_key as usize),
-            LPARAM(key_event_lparam as isize),
-        )
-    }
-}
-
-unsafe fn forward_system_key_to_awt_root_window(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> bool {
-    // Kotlin gets the first chance to claim SYSTEM_KEY_* as an IDE shortcut. Unclaimed system keys
-    // are posted here with their original native MSG payload so AWT/JBR can run Windows-level
-    // handling such as Alt+F4 close through the peer/DefWindowProc path.
-    let root = GetAncestor(hwnd, GA_ROOT);
-    if !is_system_key_message(message) {
-        return false;
-    }
-    !root.0.is_null() && PostMessageW(Some(root), message, wparam, lparam).is_ok()
-}
-
-fn is_system_key_message(message: u32) -> bool {
-    matches!(message, WM_SYSKEYDOWN | WM_SYSKEYUP)
-}
-
-fn system_key_message_from_event_kind(key_event_kind: jint) -> Option<u32> {
-    match key_event_kind {
-        kind if kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0 => Some(WM_SYSKEYDOWN),
-        kind if kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP.0 => Some(WM_SYSKEYUP),
-        _ => None,
-    }
-}
-
-unsafe fn register_keyboard_interop_window(hwnd: HWND) {
-    KEYBOARD_INTEROP_WINDOWS.with(|windows| {
-        let mut windows = windows.borrow_mut();
-        if !windows.contains(&hwnd) {
-            windows.push(hwnd);
-        }
-    });
-    KEYBOARD_INTEROP_HOOK.with(|hook| {
-        let mut hook = hook.borrow_mut();
-        if hook.is_none() {
-            if let Ok(installed_hook) =
-                SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_interop_proc), None, 0)
-            {
-                *hook = Some(installed_hook);
-            }
-        }
-    });
-}
-
-unsafe fn unregister_keyboard_interop_window(hwnd: HWND) {
-    KEYBOARD_INTEROP_WINDOWS.with(|windows| {
-        let mut windows = windows.borrow_mut();
-        windows.retain(|registered_hwnd| *registered_hwnd != hwnd);
-        if windows.is_empty() {
-            KEYBOARD_INTEROP_HOOK.with(|hook| {
-                if let Some(installed_hook) = hook.borrow_mut().take() {
-                    let _ = UnhookWindowsHookEx(installed_hook);
-                }
-            });
-        }
-    });
-    SHIFT_FALLBACK_EVENTS.with(|events| {
-        events.borrow_mut().retain(|event| event.hwnd != hwnd);
-    });
-    SHIFT_FALLBACK_ACTIVE_WINDOWS.with(|windows| {
-        windows
-            .borrow_mut()
-            .retain(|_, active_hwnd| *active_hwnd != hwnd);
-    });
-}
-
-unsafe extern "system" fn keyboard_interop_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if code >= 0 {
-        let keyboard_event = *(lparam.0 as *const KBDLLHOOKSTRUCT);
-        handle_keyboard_interop_event(wparam.0 as u32, keyboard_event);
-    }
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-unsafe fn handle_keyboard_interop_event(message: u32, keyboard_event: KBDLLHOOKSTRUCT) {
-    if !is_key_down_or_up_message(message) {
-        return;
-    }
-
-    schedule_shift_fallback_if_needed(message, keyboard_event);
-}
-
-unsafe fn schedule_shift_fallback_if_needed(message: u32, keyboard_event: KBDLLHOOKSTRUCT) {
-    let virtual_key = keyboard_event.vkCode as jint;
-    if !is_shift_key(virtual_key) {
-        return;
-    }
-
-    let key_event_kind = key_event_kind_from_message(message);
-    // WebView2 AcceleratorKeyPressed does not report bare Shift transitions, but the IDE gesture
-    // handler needs them for double-Shift. Pair key-up with the key-down HWND because the second
-    // Shift press can open an IDE popup and move focus before the physical key-up arrives.
-    let Some(hwnd) = shift_fallback_target_window(virtual_key, key_event_kind) else {
-        return;
-    };
-
-    let id = NEXT_SHIFT_FALLBACK_EVENT_ID.with(|next_id| {
-        let id = next_id.get();
-        next_id.set(id.wrapping_add(1).max(1));
-        id
-    });
-    let event = PendingShiftEvent {
-        id,
-        hwnd,
-        key_event_kind,
-        virtual_key,
-        modifiers: modifier_flags_for_shift_event(key_event_kind),
-        key_event_lparam: key_event_lparam_from_low_level_keyboard_event(&keyboard_event),
-    };
-    SHIFT_FALLBACK_EVENTS.with(|events| {
-        events.borrow_mut().push_back(event);
-    });
-    let _ = PostMessageW(Some(hwnd), WM_USER_SHIFT_FALLBACK, WPARAM(id), LPARAM(0));
-}
-
-unsafe fn shift_fallback_target_window(virtual_key: jint, key_event_kind: jint) -> Option<HWND> {
-    let active_key = shift_fallback_active_key(virtual_key);
-    if is_key_down_event_kind(key_event_kind) {
-        let hwnd = focused_keyboard_interop_window()?;
-        SHIFT_FALLBACK_ACTIVE_WINDOWS.with(|windows| {
-            windows.borrow_mut().insert(active_key, hwnd);
-        });
-        return Some(hwnd);
-    }
-
-    let stored_hwnd =
-        SHIFT_FALLBACK_ACTIVE_WINDOWS.with(|windows| windows.borrow_mut().remove(&active_key));
-    stored_hwnd.or_else(|| focused_keyboard_interop_window())
-}
-
-fn shift_fallback_active_key(_virtual_key: jint) -> jint {
-    VK_SHIFT.0 as jint
-}
-
-unsafe fn focused_keyboard_interop_window() -> Option<HWND> {
-    let foreground = GetForegroundWindow();
-    if foreground.0.is_null() {
-        return None;
-    }
-    let foreground_thread_id = GetWindowThreadProcessId(foreground, None);
-    let mut gui_thread_info = GUITHREADINFO {
-        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    if GetGUIThreadInfo(foreground_thread_id, &mut gui_thread_info).is_err() {
-        return None;
-    }
-
-    let focus = gui_thread_info.hwndFocus;
-    if focus.0.is_null() {
-        return None;
-    }
-    KEYBOARD_INTEROP_WINDOWS.with(|windows| {
-        windows
-            .borrow()
-            .iter()
-            .copied()
-            .find(|hwnd| *hwnd == focus || IsChild(*hwnd, focus).as_bool())
-    })
-}
-
-fn is_key_down_or_up_message(message: u32) -> bool {
-    matches!(message, WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP)
-}
-
-fn is_key_down_event_kind(key_event_kind: jint) -> bool {
-    key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN.0
-        || key_event_kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0
-}
-
-fn key_event_kind_from_message(message: u32) -> jint {
-    match message {
-        WM_SYSKEYDOWN => COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN.0,
-        WM_SYSKEYUP => COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP.0,
-        WM_KEYUP => COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP.0,
-        _ => COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN.0,
-    }
-}
-
-fn key_event_lparam_from_low_level_keyboard_event(event: &KBDLLHOOKSTRUCT) -> jint {
-    let mut lparam = 1 | ((event.scanCode as i32) << 16);
-    if event.flags.contains(LLKHF_EXTENDED) {
-        lparam |= 1 << 24;
-    }
-    if event.flags.contains(LLKHF_ALTDOWN) {
-        lparam |= 1 << 29;
-    }
-    if event.flags.contains(LLKHF_UP) {
-        lparam |= 1 << 30;
-        lparam |= i32::MIN;
-    }
-    lparam
-}
-
-unsafe fn dispatch_pending_shift_event(hwnd: HWND, id: usize) {
-    let event = SHIFT_FALLBACK_EVENTS.with(|events| {
-        let mut events = events.borrow_mut();
-        events
-            .iter()
-            .position(|event| event.id == id)
-            .and_then(|index| events.remove(index))
-    });
-    let Some(event) = event else {
-        return;
-    };
-    if event.hwnd != hwnd {
-        return;
-    }
-
-    let callbacks_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const JavaCallbacks;
-    if callbacks_ptr.is_null() {
-        return;
-    }
-    (*callbacks_ptr).on_accelerator_key_pressed(
-        event.key_event_kind,
-        event.virtual_key,
-        event.modifiers,
-        event.key_event_lparam,
-    );
-}
-
 fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> BridgeResult<String> {
     env.get_string(&value)
         .map(|value| value.into())
@@ -3247,6 +3755,36 @@ fn call_string_getter(
         .l()
         .map_err(format_jni_error)?;
     jstring_to_string(env, JString::from(value))
+}
+
+fn asset_response_from_java(
+    env: &mut JNIEnv<'_>,
+    response: JObject<'_>,
+) -> BridgeResult<Option<NativeAssetResponse>> {
+    if response.is_null() {
+        return Ok(None);
+    }
+    let status_code = env
+        .call_method(&response, "getStatusCode", "()I", &[])
+        .map_err(format_jni_error)?
+        .i()
+        .map_err(format_jni_error)?;
+    let status_text = call_string_getter(env, &response, "getStatusText")?;
+    let headers = call_string_getter(env, &response, "getHeaders")?;
+    let bytes = env
+        .call_method(&response, "getBytes", "()[B", &[])
+        .map_err(format_jni_error)?
+        .l()
+        .map_err(format_jni_error)?;
+    let bytes = env
+        .convert_byte_array(JByteArray::from(bytes))
+        .map_err(format_jni_error)?;
+    Ok(Some(NativeAssetResponse {
+        status_code,
+        status_text,
+        headers,
+        bytes,
+    }))
 }
 
 fn js_string_literal(value: &str) -> String {
@@ -3267,10 +3805,6 @@ fn js_string_literal(value: &str) -> String {
     }
     result.push('\'');
     result
-}
-
-fn scale_to_i32(value: i32, scale: f64) -> i32 {
-    ((value as f64) * scale).round() as i32
 }
 
 unsafe fn get_pwstr<F>(read: F) -> Option<String>
@@ -3375,36 +3909,6 @@ where
     Some(value)
 }
 
-fn is_mouse_focus_message(msg: u32, wparam: WPARAM) -> bool {
-    match msg {
-        WM_MOUSEACTIVATE | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-            true
-        }
-        WM_PARENTNOTIFY => matches!(
-            (wparam.0 & 0xffff) as u32,
-            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
-        ),
-        _ => false,
-    }
-}
-
-unsafe fn notify_before_mouse_focus(hwnd: HWND) {
-    let callbacks_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const JavaCallbacks;
-    if callbacks_ptr.is_null() {
-        return;
-    }
-    (*callbacks_ptr).on_before_mouse_focus();
-}
-
-unsafe fn clear_container_callbacks(hwnd: HWND) {
-    let callbacks_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const JavaCallbacks;
-    if callbacks_ptr.is_null() {
-        return;
-    }
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-    drop(Rc::from_raw(callbacks_ptr));
-}
-
 fn diagnostic_data(pairs: Vec<(&str, String)>) -> String {
     pairs
         .into_iter()
@@ -3505,4 +4009,100 @@ fn format_windows_error<E: std::fmt::Debug>(error: E) -> String {
 
 fn format_jni_error(error: jni::errors::Error) -> String {
     format!("{error:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestWindow(HWND);
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DestroyWindow(self.0);
+            }
+        }
+    }
+
+    /// The owned-window case (a floating dialog parking under its owner) cannot be modeled here -
+    /// a synthetic window does not get AWT's ownership - and is covered by
+    /// `WebViewRuntimeSmokeTest.facade_survives_move_from_disposed_floating_window`.
+    #[test]
+    fn holder_is_visible_zero_sized_child_of_root() {
+        let root = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("webview-test-root"),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                320,
+                240,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create test root")
+        });
+        unsafe {
+            let _ = ShowWindow(root.0, SW_SHOW);
+        }
+        let canvas = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("webview-test-canvas"),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                320,
+                240,
+                Some(root.0),
+                None,
+                None,
+                None,
+            )
+            .expect("create test Canvas")
+        });
+
+        let first = resolve_holder_window(canvas.0).expect("resolve first holder window");
+        let second = resolve_holder_window(canvas.0).expect("resolve repeated holder window");
+
+        assert_eq!(
+            first, second,
+            "every view under one root shares a single holder window"
+        );
+        assert_ne!(
+            first, root.0,
+            "parking must target the holder window, not the root itself"
+        );
+        assert_eq!(
+            unsafe { GetAncestor(first, GA_ROOT) },
+            root.0,
+            "the holder window must stay under the same top-level window"
+        );
+        assert!(
+            unsafe { IsWindowVisible(first) }.as_bool(),
+            "a hidden holder would drop IsWindowVisible of the parked controller and freeze the page"
+        );
+
+        let mut rect = RECT::default();
+        unsafe { GetClientRect(first, &mut rect) }.expect("read holder client rect");
+        assert_eq!(
+            (rect.right - rect.left, rect.bottom - rect.top),
+            (0, 0),
+            "the holder window clips the parked controller away by having an empty client area"
+        );
+
+        let mut class_buffer = [0u16; 64];
+        let length = unsafe { GetClassNameW(first, &mut class_buffer) }.max(0) as usize;
+        assert_eq!(
+            String::from_utf16_lossy(&class_buffer[..length]),
+            "IJWebView2Holder",
+            "the holder must use the bridge window class, which is what makes the park barrier work"
+        );
+    }
 }

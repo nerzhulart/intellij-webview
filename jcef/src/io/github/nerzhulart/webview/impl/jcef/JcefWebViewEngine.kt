@@ -206,12 +206,8 @@ internal class JcefWebViewEngine(
     // TODO: see above
   }
 
-  override fun scheduleFrameUpdate(host: Component) {
+  override fun syncHostState(host: Component) {
     // TODO: should we still have some controller for native only operations to avoid no ops like this
-  }
-
-  override fun updateVisibility(host: Component, hidden: Boolean) {
-    // TODO: see above
   }
 
   override suspend fun close() {

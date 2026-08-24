@@ -10,18 +10,25 @@ This review tracks unresolved findings in `native/WinWebView2Bridge/src/lib.rs`.
 | C3 | `js_string_literal` leaves most U+0000..U+001F characters unescaped | Emit valid JavaScript/JSON escapes and add a control-character transfer test |
 | H1 | Raw `Rc<RefCell<_>>` handles rely on single-thread access without a native assertion | Record and assert the owning OS thread; coordinate with the threading follow-up |
 | H2 | `web_message_token` is not removed explicitly during destroy | Store it as an optional token and unregister it symmetrically |
-| H3 | Native attach hides the child window and relies on Kotlin to restore visibility | Restore the recorded visibility or make the native contract explicit and covered |
+
+Closed by the [raw Win32 cleanup](windows-webview2-raw-winapi-audit.md):
+
+| ID | Was | Why it is gone |
+| --- | --- | --- |
+| H3 | Native attach hid the child window and relied on Kotlin to restore visibility | There is no bridge-owned child window any more, and no window is ever hidden: placement is `put_ParentWindow` plus `SetBounds`, and hiding is a bounds offset |
 
 ## Additional Cleanup
 
 - Consolidate repeated mutable borrows in creation-failure cleanup.
 - Report asset-handler borrow failures instead of silently dropping the error.
 - Use human-readable Windows error formatting.
-- Pair or explicitly document COM initialization lifetime on the dedicated thread.
-- Make attach/detach error handling consistent.
-- Register the container window class once.
+- Pair or explicitly document COM initialization lifetime on the AWT-Windows thread.
 - Log failed host-to-page script delivery.
 - Add a defensive `Drop` path or prove that explicit destruction owns every exit.
+
+Done: attach and detach are no longer separate operations with their own error handling - there is a
+single `reconcile` - and the only window class the bridge registers is the holder, registered once
+through a `OnceLock`.
 
 These are native implementation concerns; they must not change the consumer Kotlin or TypeScript API.
 

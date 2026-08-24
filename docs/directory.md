@@ -54,6 +54,7 @@ These documents describe unfinished work only:
 - [Bridge Readiness](interop/WebView-Bridge-Ready-Panel-Plan.md)
 - [Windows WebView2 Off-EDT Work](backends/windows-webview2-off-edt-plan.md)
 - [Windows Native Bridge Review](backends/windows-webview2-rust-review.md)
+- [Windows Reparent Flash Measurement](backends/windows-webview2-reparent-flash.md)
 
 The ACP chat demo keeps its remaining feature backlog next to the view at `demo/webview-src/views/acp-chat/PLAN.md`.
 
