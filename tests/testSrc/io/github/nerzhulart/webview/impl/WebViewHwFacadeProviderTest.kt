@@ -1,9 +1,11 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package io.github.nerzhulart.webview.impl
 
+import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.testFramework.junit5.RegistryKey
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.ui.HwFacadeHelper
+import com.intellij.ui.HwFacadeProvider
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -12,6 +14,7 @@ import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Point
 import java.awt.Rectangle
+import java.awt.Shape
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -22,6 +25,13 @@ import javax.swing.JPanel
 @TestApplication
 internal class WebViewHwFacadeProviderTest {
   @Test
+  fun providerIsRegisteredFirst() {
+    val providers = ExtensionPointName.create<HwFacadeProvider>("com.intellij.hwFacadeProvider").extensionList
+
+    assertTrue(providers.firstOrNull() is WebViewHwFacadeProvider, providers.joinToString { it.javaClass.name })
+  }
+
+  @Test
   fun providerIsAvailableByDefault() {
     assertTrue(WebViewHwFacadeProvider().isAvailable())
   }
@@ -30,6 +40,21 @@ internal class WebViewHwFacadeProviderTest {
   @RegistryKey(key = WEBVIEW_HW_FACADE_REGISTRY_KEY, value = "false")
   fun providerIsUnavailableWhenRegistryFlagIsDisabled() {
     assertFalse(WebViewHwFacadeProvider().isAvailable())
+  }
+
+  @Test
+  fun facadeMixingCutoutIsAppliedAndRestoredRecursively() {
+    val target = MixingCutoutRecordingPanel()
+    val child = MixingCutoutRecordingPanel()
+    target.add(child)
+
+    setWebViewFacadeMixingCutoutDisabled(target, true)
+    setWebViewFacadeMixingCutoutDisabled(target, false)
+
+    assertTrue(target.shapes.single { it != null }!!.bounds.isEmpty)
+    assertEquals(null, target.shapes.last())
+    assertTrue(child.shapes.single { it != null }!!.bounds.isEmpty)
+    assertEquals(null, child.shapes.last())
   }
 
   @Test
@@ -143,6 +168,17 @@ internal class WebViewHwFacadeProviderTest {
     override fun isShowing(): Boolean = true
 
     override fun getLocationOnScreen(): Point = screenLocation
+  }
+
+  private class MixingCutoutRecordingPanel : JPanel() {
+    val shapes = ArrayList<Shape?>()
+
+    override fun isLightweight(): Boolean = true
+
+    override fun setMixingCutoutShape(shape: Shape?) {
+      super.setMixingCutoutShape(shape)
+      shapes += shape
+    }
   }
 
   private class RecordingHwFacadeHelper : HwFacadeHelper() {

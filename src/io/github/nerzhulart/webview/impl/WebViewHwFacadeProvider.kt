@@ -10,6 +10,7 @@ import com.intellij.util.ui.MouseEventAdapter
 import org.jetbrains.annotations.ApiStatus
 import java.awt.AlphaComposite
 import java.awt.Component
+import java.awt.Container
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GraphicsEnvironment
@@ -33,6 +34,17 @@ import javax.swing.SwingUtilities
 internal const val WEBVIEW_HW_FACADE_REGISTRY_KEY = "io.github.nerzhulart.webview.heavyweight.hwfacade.enabled"
 
 private val HW_FACADE_EP_NAME = ExtensionPointName.create<HwFacadeProvider>("com.intellij.hwFacadeProvider")
+
+internal fun setWebViewFacadeMixingCutoutDisabled(component: Component, disabled: Boolean) {
+  if (component.isLightweight) {
+    component.setMixingCutoutShape(if (disabled) Rectangle() else null)
+  }
+  if (component is Container) {
+    for (child in component.components) {
+      setWebViewFacadeMixingCutoutDisabled(child, disabled)
+    }
+  }
+}
 
 @ApiStatus.Internal
 class WebViewHwFacadeProvider : HwFacadeProvider {
@@ -59,6 +71,7 @@ internal class WebViewHwFacadeHelper(
   private var owner: Window? = null
   private var ownerListener: ComponentAdapter? = null
   private var targetListener: ComponentAdapter? = null
+  private var mixingCutoutDisabled = false
   private val mouseEventRedispatcher = WebViewMouseEventRedispatcher(target)
 
   private val registryListener = Runnable {
@@ -195,6 +208,7 @@ internal class WebViewHwFacadeHelper(
     window.isFocusable = false
     window.focusableWindowState = false
     setTransparent(window)
+    setTargetMixingCutoutDisabled(true)
     window.isVisible = true
     delegate.hide()
   }
@@ -272,6 +286,7 @@ internal class WebViewHwFacadeHelper(
   @RequiresEdt
   private fun disposeFacade() {
     mouseEventRedispatcher.reset()
+    setTargetMixingCutoutDisabled(false)
     facadeWindow?.dispose()
     facadeWindow = null
     backBuffer?.flush()
@@ -283,6 +298,12 @@ internal class WebViewHwFacadeHelper(
     }
     this.owner = null
     this.ownerListener = null
+  }
+
+  private fun setTargetMixingCutoutDisabled(disabled: Boolean) {
+    if (mixingCutoutDisabled == disabled) return
+    setWebViewFacadeMixingCutoutDisabled(target, disabled)
+    mixingCutoutDisabled = disabled
   }
 
   @RequiresEdt
