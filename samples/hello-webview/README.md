@@ -15,7 +15,7 @@ The test is intentionally skipped when the process is headless, a WebView panel 
 The IDE runtime dependency is:
 
 ```kotlin
-plugin("io.github.nerzhulart.webview:0.7.0-eap.2@eap")
+plugin("io.github.nerzhulart.webview:0.7.1-eap.3@eap")
 ```
 
 The `@eap` suffix selects the Marketplace EAP channel. Drop it after the same version is released on the default channel. The frontend package is pinned to the matching version in `webview-src/package.json` and locked in `webview-src/bun.lock`.
