@@ -8,3 +8,4 @@ build/
 resources/webview/
 demo/resources/webview/
 markdown-preview/resources/webview/
+samples/hello-webview/resources/webview/

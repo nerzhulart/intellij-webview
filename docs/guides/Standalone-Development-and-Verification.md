@@ -62,6 +62,10 @@ Generated production resources are placed under each module's `build/generated-r
 
 The root task uses the demo sandbox, which installs the runtime, demo, and Markdown preview plugins together. Open the **WebView Demo** tool window to exercise the sample views.
 
+## Consumer Sample
+
+[`samples/hello-webview`](../../samples/hello-webview/README.md) is a standalone consumer build that resolves the published Marketplace and npm SDK artifacts. It provides local `buildPlugin`, `test`, and `runIde` commands, including a visible Robot click test for the bundled button view.
+
 ## Work on Frontend Packages
 
 Run commands from the package that owns the changed sources.
