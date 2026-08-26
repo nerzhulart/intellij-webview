@@ -3,7 +3,6 @@
 package io.github.nerzhulart.webview.gradle
 
 import org.gradle.api.DefaultTask
-import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.file.ConfigurableFileCollection
@@ -26,43 +25,11 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.language.jvm.tasks.ProcessResources
 import org.gradle.process.ExecOperations
 import org.gradle.work.DisableCachingByDefault
-import java.io.ByteArrayOutputStream
+import java.io.File
 import javax.inject.Inject
 
-private const val VERIFY_BUN_TASK_NAME = "verifyBun"
 private const val BUN_INSTALL_TASK_NAME = "bunInstall"
 private const val BUILD_WEBVIEW_ASSETS_TASK_NAME = "buildWebViewAssets"
-
-@DisableCachingByDefault(because = "The task only validates the locally installed Bun executable")
-abstract class VerifyBunVersionTask : DefaultTask() {
-  @get:Input
-  abstract val expectedVersion: Property<String>
-
-  @get:Inject
-  abstract val execOperations: ExecOperations
-
-  @TaskAction
-  fun verifyVersion() {
-    val output = ByteArrayOutputStream()
-    try {
-      execOperations.exec {
-        commandLine("bun", "--version")
-        standardOutput = output
-      }.assertNormalExitValue()
-    }
-    catch (error: Exception) {
-      throw GradleException(
-        "Bun ${expectedVersion.get()} is required to build WebView frontend assets. Install Bun and make it available on PATH.",
-        error,
-      )
-    }
-
-    val actualVersion = output.toString(Charsets.UTF_8.name()).trim()
-    if (actualVersion != expectedVersion.get()) {
-      throw GradleException("Bun ${expectedVersion.get()} is required, but $actualVersion is available on PATH.")
-    }
-  }
-}
 
 @DisableCachingByDefault(because = "Bun installs dependencies into the package-local node_modules directory")
 abstract class BunInstallTask : DefaultTask() {
@@ -74,7 +41,7 @@ abstract class BunInstallTask : DefaultTask() {
   abstract val packageManifests: ConfigurableFileCollection
 
   @get:Input
-  abstract val bunVersion: Property<String>
+  abstract val bunExecutable: Property<String>
 
   @get:OutputFile
   abstract val markerFile: RegularFileProperty
@@ -86,12 +53,12 @@ abstract class BunInstallTask : DefaultTask() {
   fun installDependencies() {
     execOperations.exec {
       workingDir(webViewSrcDirectory.get().asFile)
-      commandLine("bun", "install", "--frozen-lockfile")
+      commandLine(bunExecutable.get(), "install", "--frozen-lockfile")
     }.assertNormalExitValue()
 
     markerFile.get().asFile.apply {
       parentFile.mkdirs()
-      writeText("bun=${bunVersion.get()}\n")
+      writeText("installed\n")
     }
   }
 }
@@ -106,7 +73,7 @@ abstract class BuildWebViewAssetsTask : DefaultTask() {
   abstract val sourceFiles: ConfigurableFileCollection
 
   @get:Input
-  abstract val bunVersion: Property<String>
+  abstract val bunExecutable: Property<String>
 
   @get:OutputDirectory
   abstract val generatedResourcesDirectory: DirectoryProperty
@@ -128,7 +95,7 @@ abstract class BuildWebViewAssetsTask : DefaultTask() {
     execOperations.exec {
       workingDir(webViewSrcDirectory.get().asFile)
       environment("WEBVIEW_OUTPUT_ROOT", generatedResources.resolve("webview").absolutePath)
-      commandLine("bun", "run", "build")
+      commandLine(bunExecutable.get(), "run", "build")
     }.assertNormalExitValue()
   }
 }
@@ -143,17 +110,10 @@ class WebViewFrontendPlugin : Plugin<Project> {
       "The io.github.nerzhulart.webview.frontend plugin requires ${webViewSrcDir.asFile}"
     }
 
-    val expectedBunVersion = rootProject.providers.gradleProperty("bunVersion")
-    val verifyBun = if (project == rootProject) {
-      project.tasks.register(VERIFY_BUN_TASK_NAME, VerifyBunVersionTask::class.java) {
-        group = "verification"
-        description = "Verifies the Bun version used for WebView frontend builds."
-        expectedVersion.set(expectedBunVersion)
-      }
-    }
-    else {
-      rootProject.tasks.named(VERIFY_BUN_TASK_NAME, VerifyBunVersionTask::class.java)
-    }
+    val bunExecutable = listOf(
+      "/opt/homebrew/bin/bun",
+      "/usr/local/bin/bun",
+    ).firstOrNull { File(it).isFile } ?: "bun"
 
     val installLock = project.gradle.sharedServices.registerIfAbsent("webViewBunInstallLock", BunInstallLock::class.java) {
       maxParallelUsages.set(1)
@@ -161,7 +121,6 @@ class WebViewFrontendPlugin : Plugin<Project> {
     val bunInstall = project.tasks.register(BUN_INSTALL_TASK_NAME, BunInstallTask::class.java) {
       group = "webview"
       description = "Installs locked dependencies for ${project.path} WebView frontend sources."
-      dependsOn(verifyBun)
       usesService(installLock)
       webViewSrcDirectory.set(webViewSrcDir)
       packageManifests.from(
@@ -171,7 +130,7 @@ class WebViewFrontendPlugin : Plugin<Project> {
           include("package.json", "packages/*/package.json")
         },
       )
-      bunVersion.set(expectedBunVersion)
+      this.bunExecutable.set(bunExecutable)
       markerFile.set(webViewSrcDir.file("node_modules/.gradle-bun-install"))
     }
 
@@ -188,7 +147,7 @@ class WebViewFrontendPlugin : Plugin<Project> {
           exclude("node_modules/**", "playwright-report/**", "test-results/**")
         })
       }
-      bunVersion.set(expectedBunVersion)
+      this.bunExecutable.set(bunExecutable)
       generatedResourcesDirectory.set(project.layout.buildDirectory.dir("generated-resources/webview/main"))
     }
 

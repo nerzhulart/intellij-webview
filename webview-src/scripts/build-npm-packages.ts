@@ -239,7 +239,6 @@ function testkitPackageJson(): Record<string, unknown> {
       vite: "^8.0.0",
     },
     engines: {
-      bun: ">=1.3.14",
       node: "^20.19.0 || >=22.12.0",
     },
     publishConfig: { access: "public", registry: "https://registry.npmjs.org/" },

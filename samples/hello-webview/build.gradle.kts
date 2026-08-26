@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import java.io.File
 
 plugins {
   kotlin("jvm") version "2.4.10"
@@ -19,6 +20,10 @@ val webviewVersion = providers.gradleProperty("webviewVersion").get()
 val webviewChannel = providers.gradleProperty("webviewPluginChannel").get()
 val webViewSrcDirectory = layout.projectDirectory.dir("webview-src")
 val generatedWebViewResources = layout.buildDirectory.dir("generated-resources/webview/main")
+val bunExecutable = listOf(
+  "/opt/homebrew/bin/bun",
+  "/usr/local/bin/bun",
+).firstOrNull { File(it).isFile } ?: "bun"
 
 repositories {
   mavenCentral()
@@ -81,7 +86,7 @@ val bunInstall by tasks.registering(Exec::class) {
     webViewSrcDirectory.file("bun.lock"),
   )
   outputs.dir(webViewSrcDirectory.dir("node_modules"))
-  commandLine("bun", "install", "--frozen-lockfile")
+  commandLine(bunExecutable, "install", "--frozen-lockfile")
 }
 
 val buildWebViewAssets by tasks.registering(Exec::class) {
@@ -93,7 +98,7 @@ val buildWebViewAssets by tasks.registering(Exec::class) {
     "WEBVIEW_OUTPUT_ROOT",
     generatedWebViewResources.get().asFile.resolve("webview").absolutePath,
   )
-  commandLine("bun", "run", "build")
+  commandLine(bunExecutable, "run", "build")
 }
 
 tasks.processResources {
