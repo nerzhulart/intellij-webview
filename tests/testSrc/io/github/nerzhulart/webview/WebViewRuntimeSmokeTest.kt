@@ -44,21 +44,32 @@ import org.junit.jupiter.api.condition.DisabledIfSystemProperty
 import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
+import java.awt.AWTEvent
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Desktop
 import java.awt.Dimension
+import java.awt.KeyboardFocusManager
+import java.awt.MouseInfo
 import java.awt.Point
 import java.awt.Robot
+import java.awt.Toolkit
+import java.awt.Window
+import java.awt.event.AWTEventListener
+import java.awt.event.FocusEvent
 import java.awt.event.InputEvent
+import java.awt.event.MouseEvent
+import java.awt.event.WindowEvent
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Collections
 import javax.swing.JButton
 import javax.swing.JDialog
 import javax.swing.JFrame
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
+import javax.swing.SwingUtilities
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
@@ -506,35 +517,85 @@ internal class WebViewRuntimeSmokeTest {
       "true",
       "Swing popup smoke page did not load",
     )
-    panel.webView.evaluateJavaScript(
+    val diagnosticsInstalled = panel.webView.evaluateJavaScript(
       /*language=JavaScript*/
       """
         window.__swingPopupSmokeClickCount = 0;
+        window.__swingPopupSmokeEvents = [];
+        const recordPopupSmokeEvent = event => {
+          window.__swingPopupSmokeEvents.push({
+            type: event.type,
+            target: event.target?.id || event.target?.tagName || null,
+            button: event.button,
+            buttons: event.buttons,
+            detail: event.detail,
+            defaultPrevented: event.defaultPrevented,
+            activeElement: document.activeElement?.id || document.activeElement?.tagName || null,
+          });
+        };
+        ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(type => {
+          document.addEventListener(type, recordPopupSmokeEvent, true);
+        });
         document.addEventListener("click", () => window.__swingPopupSmokeClickCount += 1);
+        window.addEventListener("focus", recordPopupSmokeEvent, true);
+        window.addEventListener("blur", recordPopupSmokeEvent, true);
+        true;
       """.trimIndent(),
+    ).value
+    assertEquals(
+      "true",
+      javaScriptResultContent(diagnosticsInstalled),
+      "Swing popup smoke diagnostics were not installed",
     )
     assertTrue(waitUntilShowing(popupAnchor), "Swing popup anchor did not become showing")
     assertTrue(waitUntilShowing(panel.component), "WebView host component did not become showing")
     assumeTrue(waitUntil({ frame!!.isActive && frame!!.isFocused }), "AWT Robot test window could not be activated")
 
     val robot = createRobotOrSkip()
-    withContext(Dispatchers.EDT) {
-      popupMenu.show(popupAnchor, 0, popupAnchor.height)
+    val awtEvents = Collections.synchronizedList(mutableListOf<String>())
+    val startedAtNanos = System.nanoTime()
+    val awtListener = AWTEventListener { event ->
+      describePopupSmokeAwtEvent(event, frame!!)?.let { description ->
+        val elapsedMillis = (System.nanoTime() - startedAtNanos) / 1_000_000
+        synchronized(awtEvents) {
+          if (awtEvents.size < 40) awtEvents.add("${elapsedMillis}ms $description")
+        }
+      }
     }
-    assertTrue(waitUntil { popupMenu.isVisible }, "Swing popup menu did not open")
-
-    clickCenter(robot, panel.component)
-    assertTrue(
-      waitUntil { !popupMenu.isVisible },
-      "Clicking the WebView must close an open Swing popup menu",
+    Toolkit.getDefaultToolkit().addAWTEventListener(
+      awtListener,
+      AWTEvent.MOUSE_EVENT_MASK or AWTEvent.FOCUS_EVENT_MASK or AWTEvent.WINDOW_EVENT_MASK or AWTEvent.WINDOW_FOCUS_EVENT_MASK,
     )
-    if (panel.webView.runtimeInfo.engineId != WebViewEngineId.JCEF) {
-      waitForJavaScript(
-        panel.webView,
-        "window.__swingPopupSmokeClickCount === 1",
-        "true",
-        "Robot click did not reach the WebView page exactly once",
+    var clickPoint: Point? = null
+    try {
+      withContext(Dispatchers.EDT) {
+        popupMenu.show(popupAnchor, 0, popupAnchor.height)
+      }
+      assertTrue(waitUntil { popupMenu.isVisible }, "Swing popup menu did not open")
+      awtEvents.add("checkpoint.before-click ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
+
+      clickPoint = clickCenter(robot, panel.component)
+      val popupClosed = waitUntil { !popupMenu.isVisible }
+      awtEvents.add("checkpoint.after-click ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
+      val popupFailureDiagnostics = if (popupClosed) "" else "; " +
+        popupSmokeDiagnostics(frame!!, panel, popupMenu, clickPoint, awtEvents)
+      assertTrue(
+        popupClosed,
+        "Clicking the WebView must close an open Swing popup menu$popupFailureDiagnostics",
       )
+      if (panel.webView.runtimeInfo.engineId != WebViewEngineId.JCEF) {
+        waitForJavaScript(
+          panel.webView,
+          "window.__swingPopupSmokeClickCount === 1",
+          "true",
+          "Robot click did not reach the WebView page exactly once",
+        ) {
+          popupSmokeDiagnostics(frame!!, panel, popupMenu, clickPoint, awtEvents)
+        }
+      }
+    }
+    finally {
+      Toolkit.getDefaultToolkit().removeAWTEventListener(awtListener)
     }
   }
 
@@ -662,7 +723,7 @@ internal class WebViewRuntimeSmokeTest {
     }
   }
 
-  private suspend fun clickCenter(robot: Robot, component: Component) {
+  private suspend fun clickCenter(robot: Robot, component: Component): Point {
     val center = withContext(Dispatchers.EDT) {
       val location = component.locationOnScreen
       Point(location.x + component.width / 2, location.y + component.height / 2)
@@ -671,6 +732,70 @@ internal class WebViewRuntimeSmokeTest {
     robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     robot.waitForIdle()
+    return center
+  }
+
+  private suspend fun popupSmokeSwingState(frame: JFrame, component: Component, popupMenu: JPopupMenu): String {
+    return withContext(Dispatchers.EDT) {
+      val focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+      val componentLocation = runCatching { component.locationOnScreen }.getOrNull()
+      val popupLocation = runCatching { popupMenu.locationOnScreen }.getOrNull()
+      "frameActive=${frame.isActive}, frameFocused=${frame.isFocused}, " +
+        "focusOwner=${focusManager.focusOwner?.javaClass?.name}, " +
+        "permanentFocusOwner=${focusManager.permanentFocusOwner?.javaClass?.name}, " +
+        "componentShowing=${component.isShowing}, componentBounds=${component.bounds}, componentScreen=$componentLocation, " +
+        "popupVisible=${popupMenu.isVisible}, popupShowing=${popupMenu.isShowing}, " +
+        "popupBounds=${popupMenu.bounds}, popupScreen=$popupLocation"
+    }
+  }
+
+  private suspend fun popupSmokeDiagnostics(
+    frame: JFrame,
+    panel: WebViewPanel,
+    popupMenu: JPopupMenu,
+    clickPoint: Point?,
+    awtEvents: List<String>,
+  ): String {
+    val swingState = popupSmokeSwingState(frame, panel.component, popupMenu)
+    val pointerLocation = runCatching { MouseInfo.getPointerInfo()?.location }.getOrNull()
+    val javaScriptState = runCatching {
+      javaScriptResultContent(panel.webView.evaluateJavaScript(
+        /*language=JavaScript*/
+        """
+          JSON.stringify({
+            clickCount: window.__swingPopupSmokeClickCount,
+            events: window.__swingPopupSmokeEvents,
+            activeElement: document.activeElement?.id || document.activeElement?.tagName || null,
+            hasFocus: document.hasFocus(),
+            visibilityState: document.visibilityState,
+          })
+        """.trimIndent(),
+      ).value)
+    }.fold(
+      onSuccess = { it },
+      onFailure = { "evaluation failed: ${it.message}" },
+    )
+    val recordedAwtEvents = synchronized(awtEvents) { awtEvents.toList() }
+    return "runtime=${panel.webView.runtimeInfo.engineId}, os=${System.getProperty("os.name")} " +
+      "${System.getProperty("os.version")}/${System.getProperty("os.arch")}, clickPoint=$clickPoint, " +
+      "pointer=$pointerLocation, swing={$swingState}, js=$javaScriptState, awtEvents=$recordedAwtEvents"
+  }
+
+  private fun describePopupSmokeAwtEvent(event: AWTEvent, frame: JFrame): String? {
+    val source = event.source
+    val belongsToFrame = source === frame || source is Component && (
+      SwingUtilities.getWindowAncestor(source) === frame || source is Window && source.owner === frame
+    )
+    if (!belongsToFrame) return null
+    val sourceName = source.javaClass.name
+    return when (event) {
+      is MouseEvent -> "mouse[id=${event.id}, source=$sourceName, button=${event.button}, modifiersEx=${event.modifiersEx}, " +
+        "point=${event.point}, screen=(${event.xOnScreen},${event.yOnScreen}), consumed=${event.isConsumed}]"
+      is FocusEvent -> "focus[id=${event.id}, source=$sourceName, temporary=${event.isTemporary}, " +
+        "opposite=${event.oppositeComponent?.javaClass?.name}]"
+      is WindowEvent -> "window[id=${event.id}, source=$sourceName, opposite=${event.oppositeWindow?.javaClass?.name}]"
+      else -> null
+    }
   }
 
   private suspend fun waitUntilShowing(component: Component): Boolean {
@@ -697,6 +822,7 @@ internal class WebViewRuntimeSmokeTest {
     @Language("JavaScript") script: String,
     expected: String,
     description: String,
+    diagnostics: suspend () -> String = { "" },
   ) {
     var lastResult: String? = null
     var lastError: Throwable? = null
@@ -716,9 +842,11 @@ internal class WebViewRuntimeSmokeTest {
       }
     } == true
     val matched = completedWithinTimeout || javaScriptResultMatches(lastResult, expected)
+    val diagnosticDetails = if (matched) "" else "; diagnostics=${runCatching { diagnostics() }.getOrElse { "failed: ${it.message}" }}"
     assertTrue(
       matched,
-      "$description; expected=$expected, lastResult=$lastResult, lastError=${lastError?.message}, runtime=${webView.runtimeInfo.engineId}",
+      "$description; expected=$expected, lastResult=$lastResult, lastError=${lastError?.message}, " +
+      "runtime=${webView.runtimeInfo.engineId}$diagnosticDetails",
     )
   }
 
