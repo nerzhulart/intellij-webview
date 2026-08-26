@@ -506,12 +506,18 @@ internal class WebViewRuntimeSmokeTest {
       "true",
       "Swing popup smoke page did not load",
     )
-    panel.webView.evaluateJavaScript(
+    val clickListenerInstalled = panel.webView.evaluateJavaScript(
       /*language=JavaScript*/
       """
         window.__swingPopupSmokeClickCount = 0;
         document.addEventListener("click", () => window.__swingPopupSmokeClickCount += 1);
+        true;
       """.trimIndent(),
+    ).value
+    assertEquals(
+      "true",
+      javaScriptResultContent(clickListenerInstalled),
+      "Swing popup smoke click listener was not installed",
     )
     assertTrue(waitUntilShowing(popupAnchor), "Swing popup anchor did not become showing")
     assertTrue(waitUntilShowing(panel.component), "WebView host component did not become showing")
