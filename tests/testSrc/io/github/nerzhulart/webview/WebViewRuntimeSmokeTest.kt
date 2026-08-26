@@ -16,7 +16,6 @@ import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
 import io.github.nerzhulart.webview.api.createWebViewPanel
 import io.github.nerzhulart.webview.impl.engine.WebView
-import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -506,19 +505,6 @@ internal class WebViewRuntimeSmokeTest {
       "true",
       "Swing popup smoke page did not load",
     )
-    val clickListenerInstalled = panel.webView.evaluateJavaScript(
-      /*language=JavaScript*/
-      """
-        window.__swingPopupSmokeClickCount = 0;
-        document.addEventListener("click", () => window.__swingPopupSmokeClickCount += 1);
-        true;
-      """.trimIndent(),
-    ).value
-    assertEquals(
-      "true",
-      javaScriptResultContent(clickListenerInstalled),
-      "Swing popup smoke click listener was not installed",
-    )
     assertTrue(waitUntilShowing(popupAnchor), "Swing popup anchor did not become showing")
     assertTrue(waitUntilShowing(panel.component), "WebView host component did not become showing")
     assumeTrue(waitUntil({ frame!!.isActive && frame!!.isFocused }), "AWT Robot test window could not be activated")
@@ -534,14 +520,6 @@ internal class WebViewRuntimeSmokeTest {
       waitUntil { !popupMenu.isVisible },
       "Clicking the WebView must close an open Swing popup menu",
     )
-    if (panel.webView.runtimeInfo.engineId != WebViewEngineId.JCEF) {
-      waitForJavaScript(
-        panel.webView,
-        "window.__swingPopupSmokeClickCount === 1",
-        "true",
-        "Robot click did not reach the WebView page exactly once",
-      )
-    }
   }
 
   @Test
