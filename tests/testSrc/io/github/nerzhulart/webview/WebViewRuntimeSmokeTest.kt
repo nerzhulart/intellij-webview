@@ -7,7 +7,9 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.wm.impl.IdeGlassPaneImpl
 import com.intellij.testFramework.junit5.TestApplication
+import com.intellij.ui.OnePixelSplitter
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.api.WebViewPanel
@@ -41,12 +43,17 @@ import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.awt.BorderLayout
+import java.awt.Desktop
 import java.awt.Dimension
+import java.awt.Point
+import java.awt.Robot
+import java.awt.event.InputEvent
 import java.nio.file.Files
 import java.nio.file.Path
 import javax.swing.JDialog
 import javax.swing.JFrame
 import javax.swing.JPanel
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -464,6 +471,55 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   @Test
+  @EnabledOnOs(OS.WINDOWS)
+  fun editorPreviewSplitter_resizesWebViewPreviewInBothDirections(): Unit = runSmokeTest {
+    val panel = createPanel(scope!!)
+    val splitter = withContext(Dispatchers.EDT) {
+      frame!!.glassPane = IdeGlassPaneImpl(frame!!.rootPane)
+      OnePixelSplitter(false, 0.5f).apply {
+        firstComponent = JPanel()
+        secondComponent = panel.component
+        frame!!.contentPane.removeAll()
+        frame!!.contentPane.add(this, BorderLayout.CENTER)
+        frame!!.size = Dimension(1_000, 600)
+        frame!!.setLocation(80, 80)
+        frame!!.validate()
+        runCatching { Desktop.getDesktop().requestForeground(true) }
+        frame!!.isAlwaysOnTop = true
+        frame!!.toFront()
+        frame!!.requestFocus()
+      }
+    }
+
+    withTimeout(5.seconds) {
+      while (withContext(Dispatchers.EDT) { !splitter.divider.isShowing || panel.component.width < 300 }) {
+        delay(50.milliseconds)
+      }
+    }
+
+    val robot = Robot().apply {
+      autoDelay = 20
+      isAutoWaitForIdle = true
+    }
+    val initialPreviewWidth = withContext(Dispatchers.EDT) { panel.component.width }
+
+    dragDivider(robot, splitter, deltaX = -150)
+    val expandedPreviewWidth = withContext(Dispatchers.EDT) { panel.component.width }
+    assertTrue(
+      expandedPreviewWidth > initialPreviewWidth + 80,
+      "Dragging the divider left must expand the WebView preview; initial=$initialPreviewWidth, expanded=$expandedPreviewWidth",
+    )
+
+    dragDivider(robot, splitter, deltaX = 300)
+    val shrunkPreviewWidth = withContext(Dispatchers.EDT) { panel.component.width }
+    assertTrue(
+      shrunkPreviewWidth < initialPreviewWidth - 80,
+      "Dragging the divider right must shrink the WebView preview below its initial width; " +
+      "initial=$initialPreviewWidth, expanded=$expandedPreviewWidth, shrunk=$shrunkPreviewWidth",
+    )
+  }
+
+  @Test
   fun createAndCancel_100times_noLeak(): Unit = runBlocking {
     withTimeout(2.minutes) {
       repeat(100) { index ->
@@ -508,6 +564,22 @@ internal class WebViewRuntimeSmokeTest {
       frame!!.revalidate()
       frame!!.repaint()
     }
+  }
+
+  private suspend fun dragDivider(robot: Robot, splitter: OnePixelSplitter, deltaX: Int) {
+    val (start, screenDeltaX) = withContext(Dispatchers.EDT) {
+      val location = splitter.divider.locationOnScreen
+      val start = Point(location.x + splitter.divider.width / 2, location.y + splitter.divider.height / 2)
+      val scaleX = splitter.graphicsConfiguration.defaultTransform.scaleX
+      start to (deltaX * scaleX).roundToInt()
+    }
+    robot.mouseMove(start.x, start.y)
+    robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+    repeat(10) { index ->
+      robot.mouseMove(start.x + screenDeltaX * (index + 1) / 10, start.y)
+    }
+    robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    robot.waitForIdle()
   }
 
   private fun runSmokeTest(action: suspend CoroutineScope.() -> Unit): Unit = runBlocking {

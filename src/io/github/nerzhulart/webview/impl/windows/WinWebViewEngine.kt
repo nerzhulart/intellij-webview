@@ -38,6 +38,7 @@ import org.jetbrains.annotations.ApiStatus
 import java.awt.BorderLayout
 import java.awt.Canvas
 import java.awt.Component
+import java.awt.Dimension
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -131,6 +132,8 @@ internal class WinWebViewEngine(
     isOpaque = false
     isFocusable = true
     isRequestFocusEnabled = true
+    // Windows AWT peers report a Canvas's current bounds as its minimum size.
+    minimumSize = Dimension(0, 0)
     add(canvas, BorderLayout.CENTER)
   }
 
