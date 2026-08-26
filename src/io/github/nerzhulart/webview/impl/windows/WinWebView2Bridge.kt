@@ -45,7 +45,7 @@ private class WinWebView2BridgePluginAnchor
  */
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v16"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v17"
 
   init {
     if (SystemInfo.isWindows) {
@@ -347,6 +347,15 @@ internal object WinWebView2Bridge {
      * @return `true` to swallow the key, `false` to let the page have it.
      */
     fun onAcceleratorKeyPressed(keyEventKind: Int, virtualKey: Int, modifiers: Int, keyEventLParam: Int): Boolean
+
+    /**
+     * A mouse button was pressed over the WebView2 child HWND. The original native event continues
+     * to WebView2; Swing receives a separate consumed press for popup dismissal.
+     *
+     * @param button Java `MouseEvent.BUTTON*` number.
+     * @param modifiers bridge-owned modifier mask, matching [onAcceleratorKeyPressed].
+     */
+    fun onMousePressed(button: Int, modifiers: Int)
 
     /** The page took the focus by itself, typically by a click, so Swing has to give up its focus owner. */
     fun onFocusGained()

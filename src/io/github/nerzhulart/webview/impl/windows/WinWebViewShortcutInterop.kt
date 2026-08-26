@@ -120,7 +120,7 @@ internal object WinWebViewShortcutInterop {
     return keymap.getActionIds(KeyStroke.getKeyStrokeForEvent(event)).isNotEmpty()
   }
 
-  private fun modifierFlagsToJavaModifiers(modifierFlags: Int): Int {
+  internal fun modifierFlagsToJavaModifiers(modifierFlags: Int): Int {
     var result = 0
     if (modifierFlags and MODIFIER_SHIFT != 0) result = result or InputEvent.SHIFT_DOWN_MASK
     if (modifierFlags and MODIFIER_CONTROL != 0) result = result or InputEvent.CTRL_DOWN_MASK

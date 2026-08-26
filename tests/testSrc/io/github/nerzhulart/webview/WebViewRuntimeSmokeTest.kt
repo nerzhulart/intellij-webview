@@ -35,6 +35,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -43,6 +44,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.awt.BorderLayout
+import java.awt.Component
 import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.Point
@@ -50,9 +52,12 @@ import java.awt.Robot
 import java.awt.event.InputEvent
 import java.nio.file.Files
 import java.nio.file.Path
+import javax.swing.JButton
 import javax.swing.JDialog
 import javax.swing.JFrame
+import javax.swing.JMenuItem
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
@@ -471,6 +476,67 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   @Test
+  fun clickingWebView_closesOpenSwingPopupMenu(): Unit = runSmokeTest {
+    val panel = createPanel(scope!!)
+    val popupMenu = JPopupMenu().apply {
+      add(JMenuItem("Popup item"))
+    }
+    val popupButton = JButton("Open popup").apply {
+      addActionListener {
+        popupMenu.show(this, 0, height)
+      }
+    }
+
+    withContext(Dispatchers.EDT) {
+      frame!!.contentPane.removeAll()
+      frame!!.contentPane.add(popupButton, BorderLayout.NORTH)
+      frame!!.contentPane.add(panel.component, BorderLayout.CENTER)
+      frame!!.size = Dimension(640, 420)
+      frame!!.setLocation(80, 80)
+      frame!!.validate()
+      runCatching { Desktop.getDesktop().requestForeground(true) }
+      frame!!.isAlwaysOnTop = true
+      frame!!.toFront()
+      frame!!.requestFocus()
+      frame!!.isAlwaysOnTop = false
+    }
+
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>Click target</body></html>")
+    waitForJavaScript(
+      panel.webView,
+      "document.body?.textContent?.trim() === 'Click target'",
+      "true",
+      "Swing popup smoke page did not load",
+    )
+    panel.webView.evaluateJavaScript(
+      /*language=JavaScript*/
+      """
+        window.__swingPopupSmokeClickCount = 0;
+        document.addEventListener("click", () => window.__swingPopupSmokeClickCount += 1);
+      """.trimIndent(),
+    )
+    assertTrue(waitUntilShowing(popupButton), "Swing popup button did not become showing")
+    assertTrue(waitUntilShowing(panel.component), "WebView host component did not become showing")
+    assumeTrue(waitUntil({ frame!!.isActive && frame!!.isFocused }), "AWT Robot test window could not be activated")
+
+    val robot = createRobotOrSkip()
+    clickCenter(robot, popupButton)
+    assertTrue(waitUntil { popupMenu.isVisible }, "Swing popup menu did not open after Robot click")
+
+    clickCenter(robot, panel.component)
+    waitForJavaScript(
+      panel.webView,
+      "window.__swingPopupSmokeClickCount === 1",
+      "true",
+      "Robot click did not reach the WebView page",
+    )
+    assertTrue(
+      waitUntil { !popupMenu.isVisible },
+      "Clicking the WebView must close an open Swing popup menu",
+    )
+  }
+
+  @Test
   @EnabledOnOs(OS.WINDOWS)
   fun editorPreviewSplitter_resizesWebViewPreviewInBothDirections(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
@@ -580,6 +646,42 @@ internal class WebViewRuntimeSmokeTest {
     }
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     robot.waitForIdle()
+  }
+
+  private fun createRobotOrSkip(): Robot {
+    return runCatching {
+      Robot().apply {
+        autoDelay = 20
+        isAutoWaitForIdle = true
+      }
+    }.getOrElse { error ->
+      assumeTrue(false, "AWT Robot is unavailable: ${error.message}")
+      throw error
+    }
+  }
+
+  private suspend fun clickCenter(robot: Robot, component: Component) {
+    val center = withContext(Dispatchers.EDT) {
+      val location = component.locationOnScreen
+      Point(location.x + component.width / 2, location.y + component.height / 2)
+    }
+    robot.mouseMove(center.x, center.y)
+    robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+    robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    robot.waitForIdle()
+  }
+
+  private suspend fun waitUntilShowing(component: Component): Boolean {
+    return waitUntil { component.isShowing }
+  }
+
+  private suspend fun waitUntil(condition: () -> Boolean): Boolean {
+    return withTimeoutOrNull(5.seconds) {
+      while (true) {
+        if (withContext(Dispatchers.EDT) { condition() }) return@withTimeoutOrNull true
+        delay(50.milliseconds)
+      }
+    } == true
   }
 
   private fun runSmokeTest(action: suspend CoroutineScope.() -> Unit): Unit = runBlocking {

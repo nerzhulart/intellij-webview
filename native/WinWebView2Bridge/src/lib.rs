@@ -28,9 +28,10 @@ use windows::{
         System::{Com::*, LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+                GetKeyState, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
+                VK_SHIFT, VK_XBUTTON1, VK_XBUTTON2,
             },
-            Shell::SHCreateMemStream,
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SHCreateMemStream, SetWindowSubclass},
             WindowsAndMessaging::*,
         },
     },
@@ -44,7 +45,7 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v16";
+const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v17";
 const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
 /// Sent to the holder window to drain the command queue on AWT-Windows synchronously.
 const WM_AWT_WEBVIEW_BARRIER: u32 = WM_APP + 0x35B;
@@ -592,6 +593,18 @@ impl JavaCallbacks {
         });
     }
 
+    fn on_mouse_pressed(&self, button: jint, modifiers: jint) {
+        self.with_env(|env, object| {
+            env.call_method(
+                object,
+                "onMousePressed",
+                "(II)V",
+                &[JValue::Int(button), JValue::Int(modifiers)],
+            )?;
+            Ok(())
+        });
+    }
+
     #[allow(dead_code)]
     fn on_log(&self, level: jint, message: String) {
         self.with_env(|env, object| {
@@ -881,6 +894,8 @@ struct NativeWebView {
     web_resource_requested_token: Option<EventRegistrationToken>,
     accelerator_key_pressed_token: Option<EventRegistrationToken>,
     got_focus_token: Option<EventRegistrationToken>,
+    subclassed_hwnd: HWND,
+    last_mouse_press: Option<(i32, jint)>,
     callbacks: Arc<JavaCallbacks>,
     destroyed: bool,
     /// Whether Swing shows the host. Pushed to the controller as `put_IsVisible`, so a host nobody
@@ -906,6 +921,7 @@ struct DestroyResources {
     accelerator_token: Option<EventRegistrationToken>,
     got_focus_token: Option<EventRegistrationToken>,
     web_resource_token: Option<EventRegistrationToken>,
+    subclassed_hwnd: HWND,
     pending_asset_requests: HashMap<u64, PendingAssetRequest>,
 }
 
@@ -924,6 +940,7 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
             accelerator_token: view.accelerator_key_pressed_token.take(),
             got_focus_token: view.got_focus_token.take(),
             web_resource_token: view.web_resource_requested_token.take(),
+            subclassed_hwnd: std::mem::take(&mut view.subclassed_hwnd),
             pending_asset_requests: std::mem::take(&mut view.pending_asset_requests),
         };
         view.controller_completed_handler = None;
@@ -935,6 +952,16 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
         view.applied_parent = HWND::default();
         resources
     };
+
+    if !resources.subclassed_hwnd.0.is_null() {
+        unsafe {
+            let _ = RemoveWindowSubclass(
+                resources.subclassed_hwnd,
+                Some(canvas_mouse_subclass_proc),
+                native_handle(native) as usize,
+            );
+        }
+    }
 
     if let (Some(controller), Some(token)) = (&resources.controller, resources.accelerator_token) {
         unsafe {
@@ -959,6 +986,145 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
         }
     }
     Ok(())
+}
+
+fn install_canvas_mouse_subclass(native: &NativeHandle, hwnd: HWND) -> BridgeResult<()> {
+    if hwnd.0.is_null() {
+        return Ok(());
+    }
+
+    let (handle, current_hwnd) = {
+        let view = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while installing Canvas subclass".to_string())?;
+        (view.handle, view.subclassed_hwnd)
+    };
+    if current_hwnd == hwnd {
+        return Ok(());
+    }
+
+    let installed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(canvas_mouse_subclass_proc),
+            handle as usize,
+            handle as usize,
+        )
+    };
+    if !installed.as_bool() {
+        return Err(format!(
+            "Failed to subclass WebView2 Canvas HWND {}",
+            hwnd.0 as usize
+        ));
+    }
+
+    if !current_hwnd.0.is_null() {
+        unsafe {
+            let _ = RemoveWindowSubclass(
+                current_hwnd,
+                Some(canvas_mouse_subclass_proc),
+                handle as usize,
+            );
+        }
+    }
+    let mut view = native
+        .try_borrow_mut()
+        .map_err(|_| "WebView2 state is busy after installing Canvas subclass".to_string())?;
+    view.subclassed_hwnd = hwnd;
+    view.last_mouse_press = None;
+    Ok(())
+}
+
+fn remove_canvas_mouse_subclass(native: &NativeHandle, expected_hwnd: Option<HWND>) {
+    let removed = native.try_borrow_mut().ok().and_then(|mut view| {
+        let hwnd = view.subclassed_hwnd;
+        if hwnd.0.is_null() || expected_hwnd.is_some_and(|expected| expected != hwnd) {
+            return None;
+        }
+        view.subclassed_hwnd = HWND::default();
+        view.last_mouse_press = None;
+        Some((hwnd, view.handle))
+    });
+    if let Some((hwnd, handle)) = removed {
+        unsafe {
+            let _ = RemoveWindowSubclass(hwnd, Some(canvas_mouse_subclass_proc), handle as usize);
+        }
+    }
+}
+
+unsafe extern "system" fn canvas_mouse_subclass_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    subclass_id: usize,
+    reference_data: usize,
+) -> LRESULT {
+    if message == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(hwnd, Some(canvas_mouse_subclass_proc), subclass_id);
+        NATIVE_VIEWS.with(|views| {
+            let native = views.borrow().get(&(reference_data as jlong)).cloned();
+            if let Some(native) = native {
+                if let Ok(mut view) = native.try_borrow_mut() {
+                    if view.subclassed_hwnd == hwnd {
+                        view.subclassed_hwnd = HWND::default();
+                        view.last_mouse_press = None;
+                    }
+                }
+            }
+        });
+    } else if let Some(button) = canvas_mouse_button(message, wparam) {
+        let message_time = GetMessageTime();
+        let callbacks = NATIVE_VIEWS.with(|views| {
+            let native = views.borrow().get(&(reference_data as jlong)).cloned()?;
+            let mut view = native.try_borrow_mut().ok()?;
+            if view.destroyed || view.hwnd != hwnd || view.subclassed_hwnd != hwnd {
+                return None;
+            }
+            if view.last_mouse_press == Some((message_time, button)) {
+                return None;
+            }
+            view.last_mouse_press = Some((message_time, button));
+            Some(view.callbacks.clone())
+        });
+        if let Some(callbacks) = callbacks {
+            callbacks.on_mouse_pressed(button, current_modifier_flags());
+        }
+    }
+
+    DefSubclassProc(hwnd, message, wparam, lparam)
+}
+
+unsafe fn canvas_mouse_button(message: u32, wparam: WPARAM) -> Option<jint> {
+    let mouse_message = if message == WM_PARENTNOTIFY {
+        (wparam.0 & 0xffff) as u32
+    } else {
+        message
+    };
+    match mouse_message {
+        WM_LBUTTONDOWN => Some(1),
+        WM_MBUTTONDOWN => Some(2),
+        WM_RBUTTONDOWN => Some(3),
+        WM_XBUTTONDOWN => {
+            let xbutton = if message == WM_PARENTNOTIFY {
+                if is_key_down(VK_XBUTTON1) {
+                    1
+                } else if is_key_down(VK_XBUTTON2) {
+                    2
+                } else {
+                    return None;
+                }
+            } else {
+                ((wparam.0 >> 16) & 0xffff) as u16
+            };
+            match xbutton {
+                1 => Some(4),
+                2 => Some(5),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 #[no_mangle]
@@ -1458,12 +1624,20 @@ fn execute_native_command(command: NativeCommand) {
                 return Err("Canvas HWND is not owned by AWT-Windows".to_string());
             }
             {
-                let mut view = native
-                    .try_borrow_mut()
-                    .map_err(|_| "WebView2 state is busy while applying host state".to_string())?;
+                let view = native
+                    .try_borrow()
+                    .map_err(|_| "WebView2 state is busy while checking host state".to_string())?;
                 if generation < view.host_generation {
                     return Ok(());
                 }
+            }
+            if !host.0.is_null() {
+                install_canvas_mouse_subclass(&native, host)?;
+            }
+            {
+                let mut view = native
+                    .try_borrow_mut()
+                    .map_err(|_| "WebView2 state is busy while applying host state".to_string())?;
                 view.host_generation = generation;
                 view.width = width.max(0);
                 view.height = height.max(0);
@@ -1505,6 +1679,7 @@ fn execute_native_command(command: NativeCommand) {
                     }
                     view.controller.clone()
                 };
+                remove_canvas_mouse_subclass(&native, Some(HWND(host_hwnd as *mut c_void)));
                 // The dying Canvas HWND takes its children with it, so the controller has to move
                 // out before WM_NCDESTROY. Hiding it first is what the park is for: nobody can see
                 // the page any more, so the renderer should stop working for it. A controller that
@@ -1907,6 +2082,8 @@ fn create_native_on_owner(
         web_resource_requested_token: None,
         accelerator_key_pressed_token: None,
         got_focus_token: None,
+        subclassed_hwnd: HWND::default(),
+        last_mouse_press: None,
         callbacks,
         destroyed: false,
         visible: false,
@@ -1922,6 +2099,13 @@ fn create_native_on_owner(
     NATIVE_VIEWS.with(|views| {
         views.borrow_mut().insert(handle, native.clone());
     });
+    if let Err(message) = install_canvas_mouse_subclass(&native, parent) {
+        let _ = destroy_native_state(&native);
+        NATIVE_VIEWS.with(|views| {
+            views.borrow_mut().remove(&handle);
+        });
+        return Err(message);
+    }
     // Eagerly, not on the first park: `removeNotify` can arrive before anything else, and the
     // barrier needs a window to talk to by then.
     publish_holder_window(handle, parent);
@@ -3699,7 +3883,9 @@ fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
                 .map_err(format_windows_error)?;
         }
         if visible && !applied_visible {
-            controller.SetIsVisible(true).map_err(format_windows_error)?;
+            controller
+                .SetIsVisible(true)
+                .map_err(format_windows_error)?;
         }
     }
     store_applied_placement(native, hwnd, bounds, visible);

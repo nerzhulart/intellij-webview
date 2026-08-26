@@ -92,6 +92,9 @@ internal class MacWebViewEngine(
   @Volatile
   private var modifierKeyHandler: (WKWebViewBridge.ModifierKeyEvent) -> Unit = {}
 
+  @Volatile
+  private var nativeMousePressedHandler: (WKWebViewBridge.NativeMousePressedEvent) -> Unit = {}
+
   private val handlesReady = CompletableDeferred<WKWebViewBridge.WebViewHandles>()
 
   private val nextEvalId = AtomicLong(0)
@@ -119,6 +122,7 @@ internal class MacWebViewEngine(
                   resolveAssetUrl = this@MacWebViewEngine::resolveAssetUrl,
                   onNewWindowRequested = this@MacWebViewEngine::openNewWindowRequest,
                   onModifierKeyEvent = { event -> modifierKeyHandler(event) },
+                  onNativeMousePressed = { event -> nativeMousePressedHandler(event) },
                   documentStartScripts = documentStartScripts,
                 )
               }
@@ -155,6 +159,10 @@ internal class MacWebViewEngine(
 
   internal fun setModifierKeyHandler(handler: ((WKWebViewBridge.ModifierKeyEvent) -> Unit)?) {
     modifierKeyHandler = handler ?: {}
+  }
+
+  private fun setNativeMousePressedHandler(handler: ((WKWebViewBridge.NativeMousePressedEvent) -> Unit)?) {
+    nativeMousePressedHandler = handler ?: {}
   }
 
   override suspend fun loadFile(file: Path) {
@@ -240,6 +248,8 @@ internal class MacWebViewEngine(
 
   override suspend fun close() {
     clearActiveAssetResolver()
+    setModifierKeyHandler(null)
+    setNativeMousePressedHandler(null)
     while (true) {
       when (state.get()) {
         State.New -> {
@@ -473,12 +483,13 @@ internal class MacWebViewEngine(
     val initialLayout = resolveLayout(host) ?: return false
     WebViewLogger.LOG.info("Attaching WKWebView host: layout=$initialLayout, showing=${host.isShowing}")
 
-    // WKWebView reports bare modifier transitions through AppKit while it owns first responder.
-    // The Swing host is the right boundary for mirroring them into AWT because it owns attach/detach lifecycle.
-    setModifierKeyHandler { event -> postModifierKeyEvent(host, event) }
     attachmentRequested = true
     val generation = ++attachmentGeneration
     hostHidden = true
+    // The Swing host is the right boundary for mirroring native input into AWT because it owns
+    // attach/detach lifecycle. Both callbacks are invalidated by this attachment generation.
+    setModifierKeyHandler { event -> postModifierKeyEvent(host, event) }
+    setNativeMousePressedHandler { event -> postNativeMousePressed(host, generation, event) }
 
     scope.launch(MacMainThreadDispatcher) {
       if (!awaitReadyForAttachment() || !isCurrentAttachment(generation)) return@launch
@@ -517,6 +528,7 @@ internal class MacWebViewEngine(
     attachmentGeneration++
     hostHidden = true
     setModifierKeyHandler(null)
+    setNativeMousePressedHandler(null)
     scope.launch(MacMainThreadDispatcher) {
       releaseAttachment()
     }
@@ -594,6 +606,15 @@ internal class MacWebViewEngine(
     if (WebViewShortcutRouter.route(keyEvent) != WebViewShortcutRouting.FORWARD_TO_IDE_KEEP_BROWSER_HANDLING) return
 
     Toolkit.getDefaultToolkit().systemEventQueue.postEvent(keyEvent)
+  }
+
+  private fun postNativeMousePressed(
+    host: Component,
+    generation: Long,
+    event: WKWebViewBridge.NativeMousePressedEvent,
+  ) {
+    if (!isCurrentAttachment(generation) || !host.isShowing) return
+    (host as? SwingWebViewHostPanel)?.nativeWebViewMousePressed(event.button, event.modifiersEx)
   }
 
   private fun applyLayout(layout: MacNativeLayout) {

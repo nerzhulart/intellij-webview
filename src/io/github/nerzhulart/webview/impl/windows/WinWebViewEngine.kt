@@ -294,6 +294,13 @@ internal class WinWebViewEngine(
       return WinWebViewShortcutInterop.handleAcceleratorKeyPressed(underlyingComponent, keyEventKind, virtualKey, modifiers, keyEventLParam)
     }
 
+    override fun onMousePressed(button: Int, modifiers: Int) {
+      (underlyingComponent as? SwingWebViewHostPanel)?.nativeWebViewMousePressed(
+        button,
+        WinWebViewShortcutInterop.modifierFlagsToJavaModifiers(modifiers),
+      )
+    }
+
     override fun onFocusGained() {
       focusGainedHandler()
     }
