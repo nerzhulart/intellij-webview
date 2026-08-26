@@ -45,7 +45,7 @@ private class WinWebView2BridgePluginAnchor
  */
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v17"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v18"
 
   init {
     if (SystemInfo.isWindows) {

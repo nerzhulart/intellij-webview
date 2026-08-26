@@ -477,6 +477,7 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   @Test
+  @EnabledOnOs(OS.MAC, OS.WINDOWS)
   fun clickingWebView_closesOpenSwingPopupMenu(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
     val popupMenu = JPopupMenu().apply {

@@ -12,7 +12,9 @@ import com.intellij.util.ui.EDT
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.jetbrains.annotations.ApiStatus
 import java.awt.AWTEvent
 import java.awt.BorderLayout
@@ -45,6 +47,7 @@ import javax.swing.JPanel
 import javax.swing.JRootPane
 import javax.swing.RootPaneContainer
 import javax.swing.SwingUtilities
+import kotlin.time.Duration.Companion.milliseconds
 
 private val LOG = logger<SwingWebViewHostPanel>()
 
@@ -82,6 +85,8 @@ class SwingWebViewHostPanel internal constructor(
   )
 
   internal companion object {
+    private val NATIVE_CLICK_SETTLE_DELAY = 100.milliseconds
+
     fun calculateHostBounds(host: Component, anchor: Component): NativeBounds {
       val hostOrigin = SwingUtilities.convertPoint(host, 0, 0, anchor)
       return NativeBounds(
@@ -366,16 +371,15 @@ class SwingWebViewHostPanel internal constructor(
     val screenLocation = runCatching { MouseInfo.getPointerInfo()?.location }.getOrNull()
 
     // Native WebViews receive pointer input outside AWT, so Swing menus and IDE popups never see
-    // the click-outside press they use for cancellation. Mirror only that press through
-    // IdeEventQueue; the original native event remains the sole source of browser pointer events.
-    if (EDT.isCurrentThreadEdt()) {
-      dispatchNativeWebViewMousePressedOnEdt(button, modifiersEx, screenLocation)
-    }
-    else {
-      // A Windows Canvas window procedure runs on the native toolkit thread. Blocking it on EDT
-      // deadlocks when popup cancellation or focus restoration calls back into AWT-Windows.
+    // the click-outside press they use for cancellation. Let the native click finish propagating
+    // first: closing a popup releases the toolkit mouse grab and can otherwise steal the WebView's
+    // native mouse-up/click. The owner scope makes this delayed handoff attachment-safe.
+    scope.launch {
+      delay(NATIVE_CLICK_SETTLE_DELAY)
       SwingUtilities.invokeLater {
-        dispatchNativeWebViewMousePressedOnEdt(button, modifiersEx, screenLocation)
+        if (scope.isActive) {
+          dispatchNativeWebViewMousePressedOnEdt(button, modifiersEx, screenLocation)
+        }
       }
     }
   }
