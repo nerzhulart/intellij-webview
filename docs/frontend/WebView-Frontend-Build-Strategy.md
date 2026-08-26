@@ -22,8 +22,7 @@ The view ID must match the ID passed to `WebViewAssetRoot.forView(viewId)`.
 
 The repository-local `io.github.nerzhulart.webview.frontend` Gradle plugin is the production build entry point. It registers:
 
-- `verifyBun`, which checks the `bunVersion` declared in `gradle.properties`;
-- `bunInstall`, which runs `bun install --frozen-lockfile` in the module package;
+- `bunInstall`, which runs `bun install --frozen-lockfile` in the module package, using a default Homebrew installation when present and otherwise resolving `bun` from `PATH`;
 - `buildWebViewAssets`, which runs the package `build` script with `WEBVIEW_OUTPUT_ROOT` set to `build/generated-resources/webview/main/webview`;
 - a `processResources` dependency that packages the generated output into the plugin.
 

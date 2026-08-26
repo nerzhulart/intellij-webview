@@ -5,7 +5,7 @@ Use this guide when changing WebView Runtime itself. The repository builds again
 ## Prerequisites
 
 - A JDK whose major version matches both the selected binary IntelliJ SDK and the `jvmToolchain` declared in the Gradle build.
-- The Bun version declared by `bunVersion` in `gradle.properties`.
+- Bun installed through Homebrew or available on `PATH`.
 - A local Gradle matching `gradle/wrapper/gradle-wrapper.properties` for the one-time wrapper bootstrap described below.
 - Rust and native build tools only when changing a native bridge.
 

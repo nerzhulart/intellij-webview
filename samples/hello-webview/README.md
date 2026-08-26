@@ -5,7 +5,7 @@ This standalone plugin consumes the published WebView Runtime and npm SDK to pro
 ## Prerequisites
 
 - JDK 25 and Gradle 9.1.0.
-- Bun 1.3.14.
+- Bun installed through Homebrew or available on `PATH`.
 - A graphical desktop and an available WebView engine for the UI test.
 
 The test is intentionally skipped when the process is headless, a WebView panel cannot be created, or `java.awt.Robot` is unavailable. It does not prepare or test native libraries.

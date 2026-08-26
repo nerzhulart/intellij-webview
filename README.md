@@ -126,7 +126,7 @@ Current distribution limitations:
 
 Use a JDK whose major version matches the selected binary IntelliJ SDK and the Gradle toolchain declared by this repository. Keep the SDK version, Gradle toolchain, Kotlin JVM target, and CI runtime aligned when upgrading the target IDE.
 
-Install the Bun version declared by `bunVersion` in `gradle.properties`, then run:
+Install Bun through Homebrew or make it available on `PATH`, then run:
 
 ```shell
 ./gradlew buildPlugin :demo:buildPlugin :markdown-preview:buildPlugin
