@@ -369,6 +369,10 @@ class SwingWebViewHostPanel internal constructor(
 
   internal fun nativeWebViewMousePressed(button: Int, modifiersEx: Int) {
     val screenLocation = runCatching { MouseInfo.getPointerInfo()?.location }.getOrNull()
+    logFocus(
+      "native.mousePressed.received",
+      "button=$button, modifiersEx=$modifiersEx, screenLocation=$screenLocation, scopeActive=${scope.isActive}",
+    )
 
     // Native WebViews receive pointer input outside AWT, so Swing menus and IDE popups never see
     // the click-outside press they use for cancellation. Let the native click finish propagating
