@@ -37,10 +37,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
+import java.awt.AWTEvent
 import java.awt.Component
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
+import java.awt.Window
+import java.awt.event.AWTEventListener
 import java.awt.event.KeyEvent
+import java.awt.event.WindowEvent
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -94,6 +98,8 @@ internal class MacWebViewEngine(
 
   @Volatile
   private var nativeMousePressedHandler: (WKWebViewBridge.NativeMousePressedEvent) -> Unit = {}
+
+  private var swingPopupMouseGrabRelease: MacSwingPopupMouseGrabRelease? = null
 
   private val handlesReady = CompletableDeferred<WKWebViewBridge.WebViewHandles>()
 
@@ -250,6 +256,7 @@ internal class MacWebViewEngine(
     clearActiveAssetResolver()
     setModifierKeyHandler(null)
     setNativeMousePressedHandler(null)
+    uninstallSwingPopupMouseGrabRelease()
     while (true) {
       when (state.get()) {
         State.New -> {
@@ -486,6 +493,7 @@ internal class MacWebViewEngine(
     attachmentRequested = true
     val generation = ++attachmentGeneration
     hostHidden = true
+    installSwingPopupMouseGrabRelease(host)
     // The Swing host is the right boundary for mirroring native input into AWT because it owns
     // attach/detach lifecycle. Both callbacks are invalidated by this attachment generation.
     setModifierKeyHandler { event -> postModifierKeyEvent(host, event) }
@@ -522,6 +530,7 @@ internal class MacWebViewEngine(
   }
 
   override fun detach() {
+    uninstallSwingPopupMouseGrabRelease()
     if (!attachmentRequested) return
 
     attachmentRequested = false
@@ -617,6 +626,17 @@ internal class MacWebViewEngine(
     (host as? SwingWebViewHostPanel)?.nativeWebViewMousePressed(event.button, event.modifiersEx)
   }
 
+  private fun installSwingPopupMouseGrabRelease(host: Component) {
+    check(SwingUtilities.isEventDispatchThread())
+    swingPopupMouseGrabRelease?.close()
+    swingPopupMouseGrabRelease = MacSwingPopupMouseGrabRelease(host).also { it.install() }
+  }
+
+  private fun uninstallSwingPopupMouseGrabRelease() {
+    swingPopupMouseGrabRelease?.close()
+    swingPopupMouseGrabRelease = null
+  }
+
   private fun applyLayout(layout: MacNativeLayout) {
     val currentAttachment = attachment ?: return
     if (layout != lastAppliedLayout) {
@@ -676,6 +696,59 @@ internal class MacWebViewEngine(
   }
 
 
+}
+
+private class MacSwingPopupMouseGrabRelease(
+  private val host: Component,
+) : AutoCloseable {
+  private val listener = AWTEventListener { event -> releasePopupMouseGrab(event) }
+  private var installed = false
+  private var accessFailureLogged = false
+
+  fun install() {
+    check(SwingUtilities.isEventDispatchThread())
+    if (installed) return
+    installed = true
+    LOG.debug("Installing macOS Swing popup mouse-grab release listener")
+    Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.WINDOW_EVENT_MASK)
+  }
+
+  override fun close() {
+    if (!SwingUtilities.isEventDispatchThread()) {
+      SwingUtilities.invokeLater { close() }
+      return
+    }
+    if (!installed) return
+    installed = false
+    LOG.debug("Uninstalling macOS Swing popup mouse-grab release listener")
+    Toolkit.getDefaultToolkit().removeAWTEventListener(listener)
+  }
+
+  private fun releasePopupMouseGrab(event: AWTEvent) {
+    if (event.id != WindowEvent.WINDOW_OPENED) return
+    val popupWindow = (event as? WindowEvent)?.window ?: return
+    val hostWindow = SwingUtilities.getWindowAncestor(host)
+    LOG.debug(
+      "Observed macOS Swing window opened: class=${popupWindow.javaClass.name}, type=${popupWindow.type}, " +
+      "ownerMatchesHost=${popupWindow.owner === hostWindow}",
+    )
+    hostWindow ?: return
+    if (popupWindow.type != Window.Type.POPUP) return
+    if (popupWindow.owner !== hostWindow) return
+
+    runCatching {
+      val sunToolkitClass = Class.forName("sun.awt.SunToolkit")
+      val ungrab = sunToolkitClass.getMethod("ungrab", Window::class.java)
+      ungrab.invoke(Toolkit.getDefaultToolkit(), hostWindow)
+    }.onSuccess {
+      LOG.debug("Released macOS Swing popup mouse grab for native WebView host")
+    }.onFailure { error ->
+      if (!accessFailureLogged) {
+        accessFailureLogged = true
+        LOG.warn("Cannot release macOS Swing popup mouse grab for native WebView host", error)
+      }
+    }
+  }
 }
 
 /**
