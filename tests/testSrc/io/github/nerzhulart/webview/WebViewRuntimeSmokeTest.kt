@@ -44,6 +44,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.condition.DisabledIfSystemProperty
+import org.junit.jupiter.api.condition.DisabledOnOs
 import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
@@ -492,6 +493,11 @@ internal class WebViewRuntimeSmokeTest {
 
   @Test
   @EnabledOnOs(OS.MAC, OS.WINDOWS)
+  @DisabledOnOs(
+    value = [OS.WINDOWS],
+    architectures = ["aarch64"],
+    disabledReason = "AWT Robot does not deliver native pointer input on Windows ARM64",
+  )
   fun clickingWebView_closesOpenSwingPopupMenu(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
     val popupMenu = JPopupMenu().apply {
@@ -622,6 +628,11 @@ internal class WebViewRuntimeSmokeTest {
 
   @Test
   @EnabledOnOs(OS.MAC, OS.WINDOWS)
+  @DisabledOnOs(
+    value = [OS.WINDOWS],
+    architectures = ["aarch64"],
+    disabledReason = "AWT Robot does not deliver native pointer input on Windows ARM64",
+  )
   fun clickingWebView_closesFocusedIdePopupOnFirstClick(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
     val popupAnchor = JButton("Popup anchor")

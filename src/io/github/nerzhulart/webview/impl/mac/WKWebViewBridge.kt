@@ -15,6 +15,7 @@ import com.intellij.ui.mac.foundation.Foundation.nsString
 import com.intellij.ui.mac.foundation.Foundation.registerObjcClassPair
 import com.intellij.ui.mac.foundation.Foundation.toStringViaUTF8
 import com.intellij.ui.mac.foundation.ID
+import com.intellij.util.system.CpuArch
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
@@ -547,7 +548,10 @@ internal object WKWebViewBridge {
     // still reaches WebKit and the passive mouse observer on the first press.
     val acceptsFirstMouseCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
-      fun callback(self: ID, selector: Pointer, event: ID): Byte = 1
+      fun callback(self: ID, selector: Pointer, event: ID): Boolean {
+        WebViewLogger.LOG.debug("WKWebView accepted first mouse: event=$event")
+        return true
+      }
     }
     webViewAcceptsFirstMouseCallback = acceptsFirstMouseCallback
 
@@ -566,7 +570,8 @@ internal object WKWebViewBridge {
     }
     webViewFlagsChangedCallback = flagsChangedCallback
 
-    addMethod(cls, SEL_ACCEPTS_FIRST_MOUSE, acceptsFirstMouseCallback, "B@:@")
+    val objectiveCBooleanType = if (CpuArch.isIntel64()) "c" else "B"
+    addMethod(cls, SEL_ACCEPTS_FIRST_MOUSE, acceptsFirstMouseCallback, "${objectiveCBooleanType}@:@")
     addMethod(cls, SEL_FLAGS_CHANGED, flagsChangedCallback, "v@:@")
 
     registerObjcClassPair(cls)
