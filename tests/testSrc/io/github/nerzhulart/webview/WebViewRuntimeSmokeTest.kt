@@ -568,13 +568,15 @@ internal class WebViewRuntimeSmokeTest {
     )
     var clickPoint: Point? = null
     try {
+      val preparedClickPoint = moveToCenter(robot, panel.component)
+      clickPoint = preparedClickPoint
       withContext(Dispatchers.EDT) {
         popupMenu.show(popupAnchor, 0, popupAnchor.height)
       }
       assertTrue(waitUntil { popupMenu.isVisible }, "Swing popup menu did not open")
       awtEvents.add("checkpoint.before-click ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
 
-      clickPoint = clickCenter(robot, panel.component)
+      clickCurrentPointer(robot)
       val popupClosed = waitUntil { !popupMenu.isVisible }
       awtEvents.add("checkpoint.after-click ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
       val popupFailureDiagnostics = if (popupClosed) "" else "; " +
@@ -741,16 +743,20 @@ internal class WebViewRuntimeSmokeTest {
     }
   }
 
-  private suspend fun clickCenter(robot: Robot, component: Component): Point {
+  private suspend fun moveToCenter(robot: Robot, component: Component): Point {
     val center = withContext(Dispatchers.EDT) {
       val location = component.locationOnScreen
       Point(location.x + component.width / 2, location.y + component.height / 2)
     }
     robot.mouseMove(center.x, center.y)
+    robot.waitForIdle()
+    return center
+  }
+
+  private fun clickCurrentPointer(robot: Robot) {
     robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     robot.waitForIdle()
-    return center
   }
 
   private suspend fun dragCenter(robot: Robot, component: Component): Point {
