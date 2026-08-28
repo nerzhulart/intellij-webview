@@ -76,6 +76,7 @@ internal object WKWebViewBridge {
 
   // WKWebView
   private val SEL_INIT_WITH_FRAME_CONFIGURATION = createSelector("initWithFrame:configuration:")
+  private val SEL_ACCEPTS_FIRST_MOUSE = createSelector("acceptsFirstMouse:")
   private val SEL_FLAGS_CHANGED = createSelector("flagsChanged:")
   private val SEL_LOAD_REQUEST = createSelector("loadRequest:")
   private val SEL_LOAD_HTML_STRING_BASE_URL = createSelector("loadHTMLString:baseURL:")
@@ -197,6 +198,9 @@ internal object WKWebViewBridge {
 
   @Suppress("unused") // prevent GC
   private var webViewFlagsChangedCallback: Callback? = null
+
+  @Suppress("unused") // prevent GC
+  private var webViewAcceptsFirstMouseCallback: Callback? = null
 
   @Suppress("unused") // prevent GC
   private var nativePrimaryMouseDownCallback: Callback? = null
@@ -539,6 +543,14 @@ internal object WKWebViewBridge {
     val superclass = getObjcClass(CLS_WKWEBVIEW)
     val cls = allocateObjcClassPair(superclass, "IdeaWKWebView")
 
+    // IDE popups can temporarily make their own window key. Accept the activation click so it
+    // still reaches WebKit and the passive mouse observer on the first press.
+    val acceptsFirstMouseCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, event: ID): Byte = 1
+    }
+    webViewAcceptsFirstMouseCallback = acceptsFirstMouseCallback
+
     val flagsChangedCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
       fun callback(self: ID, selector: Pointer, event: ID) {
@@ -554,6 +566,7 @@ internal object WKWebViewBridge {
     }
     webViewFlagsChangedCallback = flagsChangedCallback
 
+    addMethod(cls, SEL_ACCEPTS_FIRST_MOUSE, acceptsFirstMouseCallback, "B@:@")
     addMethod(cls, SEL_FLAGS_CHANGED, flagsChangedCallback, "v@:@")
 
     registerObjcClassPair(cls)
