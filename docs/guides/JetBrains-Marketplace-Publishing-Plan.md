@@ -4,7 +4,7 @@ Status: planned. The repository currently publishes npm packages and GitHub Rele
 
 ## Goal
 
-Extend the existing **Publish selected build** workflow so that it uploads the already verified Runtime and Markdown Preview ZIPs to JetBrains Marketplace. The workflow must not rebuild plugin archives, and the Demo plugin must remain a GitHub Release asset only.
+Extend the existing **Publish selected build** workflow so that it uploads the already verified Runtime and Markdown Lens ZIPs to JetBrains Marketplace. The workflow must not rebuild plugin archives, and the Demo plugin must remain a GitHub Release asset only.
 
 ## Plugin Identity
 
@@ -13,7 +13,7 @@ The Marketplace listings will use the personal `nerzhulart` vendor profile and t
 | Distribution | Marketplace XML ID |
 | --- | --- |
 | WebView Runtime | `io.github.nerzhulart.webview` |
-| Markdown WebView Preview | `io.github.nerzhulart.markdown` |
+| Markdown Lens | `io.github.nerzhulart.markdown` |
 | WebView Demo | `io.github.nerzhulart.webview.demo` |
 
 Use the same `io.github.nerzhulart.webview` namespace for project-owned Kotlin and Java packages, module names, generated dependency descriptors, consumer examples, and documentation.
@@ -30,7 +30,7 @@ Each matrix entry must:
 2. Derive the version from the validated `v<version>` release tag.
 3. Find exactly one expected archive:
    - Runtime: `webview-<version>.zip`;
-   - Markdown Preview: `markdown-webview-preview-<version>.zip`.
+   - Markdown Lens: `markdown-webview-preview-<version>.zip`.
 4. Select the Marketplace channel from the version:
    - stable SemVer versions use the default channel;
    - prerelease versions use the `eap` channel.
@@ -47,7 +47,7 @@ Create a protected GitHub environment named `marketplace`, restrict it to the `m
 JetBrains Marketplace requires the first version of each plugin to be uploaded manually. Bootstrap publishing as follows:
 
 1. Create the `nerzhulart` Marketplace vendor profile.
-2. Run **Build plugins** for the first release version and download its Runtime and Markdown Preview ZIPs.
+2. Run **Build plugins** for the first release version and download its Runtime and Markdown Lens ZIPs.
 3. Use **Upload plugin** to create both listings with the XML IDs above, the repository's Apache 2.0 license, the source repository URL, and the names and categories from their descriptors.
 4. Use the `eap` custom channel when the bootstrap version is a prerelease; otherwise use the default channel.
 5. Wait until both versions are visible in the corresponding repository feed.
@@ -66,8 +66,8 @@ All later releases use the same two-workflow release process and require no manu
 ## Acceptance Criteria
 
 - All three built plugins contain the new XML IDs and correct Runtime dependency references.
-- A prerelease publishes Runtime and Markdown Preview to `eap`; Demo appears only in the GitHub Release.
-- A stable release publishes Runtime and Markdown Preview to the default Marketplace channel.
+- A prerelease publishes Runtime and Markdown Lens to `eap`; Demo appears only in the GitHub Release.
+- A stable release publishes Runtime and Markdown Lens to the default Marketplace channel.
 - The Marketplace jobs use the exact ZIPs produced by the selected build run and never rebuild them.
 - A repeated run skips versions already present in the selected channel.
 - One failed plugin upload can be retried independently.
