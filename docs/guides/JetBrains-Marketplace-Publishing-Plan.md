@@ -13,10 +13,10 @@ The Marketplace listings will use the personal `nerzhulart` vendor profile and t
 | Distribution | Marketplace XML ID |
 | --- | --- |
 | WebView Runtime | `io.github.nerzhulart.webview` |
-| Markdown WebView Preview | `io.github.nerzhulart.webview.markdown.preview` |
+| Markdown WebView Preview | `io.github.nerzhulart.markdown` |
 | WebView Demo | `io.github.nerzhulart.webview.demo` |
 
-Use the same `io.github.nerzhulart.webview` namespace for project-owned Kotlin and Java packages, Gradle groups, module names, generated dependency descriptors, consumer examples, and documentation.
+Use the same `io.github.nerzhulart.webview` namespace for project-owned Kotlin and Java packages, module names, generated dependency descriptors, consumer examples, and documentation.
 
 The Demo XML ID is renamed to keep distributed metadata under the same personal namespace, but its ZIP is not uploaded to Marketplace.
 
