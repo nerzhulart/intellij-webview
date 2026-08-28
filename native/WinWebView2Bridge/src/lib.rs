@@ -44,7 +44,7 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v16";
+const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v18";
 const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
 /// Sent to the holder window to drain the command queue on AWT-Windows synchronously.
 const WM_AWT_WEBVIEW_BARRIER: u32 = WM_APP + 0x35B;
@@ -116,6 +116,11 @@ enum NativeCommand {
     ClearFocus {
         handle: jlong,
     },
+    MousePressed {
+        handle: jlong,
+        button: jint,
+        modifiers: jint,
+    },
     LoadUrl {
         handle: jlong,
         url: String,
@@ -160,6 +165,7 @@ impl NativeCommand {
             | Self::Park { handle, .. }
             | Self::Focus { handle }
             | Self::ClearFocus { handle }
+            | Self::MousePressed { handle, .. }
             | Self::LoadUrl { handle, .. }
             | Self::SetVirtualHostMapping { handle, .. }
             | Self::LoadHtml { handle, .. }
@@ -330,9 +336,49 @@ unsafe extern "system" fn webview_get_message_hook(
         if message.message == WM_AWT_WEBVIEW_COMMAND && message.hwnd.0.is_null() {
             message.message = WM_NULL;
             drain_owner_commands(unsafe { GetCurrentThreadId() });
+        } else if let Some(button) = completed_mouse_button(message.message, message.wParam) {
+            if let Some(handle) = native_view_at_window(message.hwnd) {
+                // Queue behind the input message currently being removed. The browser therefore
+                // receives its original Win32 click before Swing popup cancellation runs.
+                let _ = enqueue_command(NativeCommand::MousePressed {
+                    handle,
+                    button,
+                    modifiers: current_modifier_flags(),
+                });
+            }
         }
     }
     result
+}
+
+fn native_view_at_window(window: HWND) -> Option<jlong> {
+    if window.0.is_null() {
+        return None;
+    }
+    NATIVE_VIEWS.with(|views| {
+        views.borrow().iter().find_map(|(handle, native)| {
+            let view = native.try_borrow().ok()?;
+            if view.destroyed || view.hwnd.0.is_null() {
+                return None;
+            }
+            (window == view.hwnd || unsafe { IsChild(view.hwnd, window).as_bool() })
+                .then_some(*handle)
+        })
+    })
+}
+
+fn completed_mouse_button(message: u32, wparam: WPARAM) -> Option<jint> {
+    match message {
+        WM_LBUTTONUP => Some(1),
+        WM_MBUTTONUP => Some(2),
+        WM_RBUTTONUP => Some(3),
+        WM_XBUTTONUP => match ((wparam.0 >> 16) & 0xffff) as u16 {
+            1 => Some(4),
+            2 => Some(5),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Placement diagnostics, off unless `WEBVIEW_WIN_PAINT_TRACE=1`. One snapshot per placement
@@ -588,6 +634,18 @@ impl JavaCallbacks {
     fn on_focus_gained(&self) {
         self.with_env(|env, object| {
             env.call_method(object, "onFocusGained", "()V", &[])?;
+            Ok(())
+        });
+    }
+
+    fn on_mouse_pressed(&self, button: jint, modifiers: jint) {
+        self.with_env(|env, object| {
+            env.call_method(
+                object,
+                "onMousePressed",
+                "(II)V",
+                &[JValue::Int(button), JValue::Int(modifiers)],
+            )?;
             Ok(())
         });
     }
@@ -1458,12 +1516,17 @@ fn execute_native_command(command: NativeCommand) {
                 return Err("Canvas HWND is not owned by AWT-Windows".to_string());
             }
             {
-                let mut view = native
-                    .try_borrow_mut()
-                    .map_err(|_| "WebView2 state is busy while applying host state".to_string())?;
+                let view = native
+                    .try_borrow()
+                    .map_err(|_| "WebView2 state is busy while checking host state".to_string())?;
                 if generation < view.host_generation {
                     return Ok(());
                 }
+            }
+            {
+                let mut view = native
+                    .try_borrow_mut()
+                    .map_err(|_| "WebView2 state is busy while applying host state".to_string())?;
                 view.host_generation = generation;
                 view.width = width.max(0);
                 view.height = height.max(0);
@@ -1598,6 +1661,19 @@ fn execute_native_command(command: NativeCommand) {
                     }
                 }
             }
+            Ok(())
+        }),
+        NativeCommand::MousePressed {
+            handle,
+            button,
+            modifiers,
+        } => with_native(handle, |native| {
+            let callbacks = native
+                .try_borrow()
+                .map_err(|_| "WebView2 state is busy while forwarding mouse input".to_string())?
+                .callbacks
+                .clone();
+            callbacks.on_mouse_pressed(button, modifiers);
             Ok(())
         }),
         NativeCommand::LoadUrl { handle, url } => {
@@ -3699,7 +3775,9 @@ fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
                 .map_err(format_windows_error)?;
         }
         if visible && !applied_visible {
-            controller.SetIsVisible(true).map_err(format_windows_error)?;
+            controller
+                .SetIsVisible(true)
+                .map_err(format_windows_error)?;
         }
     }
     store_applied_placement(native, hwnd, bounds, visible);

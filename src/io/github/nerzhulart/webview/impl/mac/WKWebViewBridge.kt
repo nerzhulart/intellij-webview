@@ -30,6 +30,7 @@ import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
+import java.awt.event.MouseEvent
 
 /**
  * Low-level JNA bridge to macOS `WKWebView` via the existing [Foundation] ObjC runtime.
@@ -55,6 +56,7 @@ internal object WKWebViewBridge {
   private const val CLS_NSOBJECT = "NSObject"
   private const val CLS_NSAPPLICATION = "NSApplication"
   private const val CLS_NSVIEW = "NSView"
+  private const val CLS_NSGESTURE_RECOGNIZER = "NSGestureRecognizer"
   private const val CLS_WKUSER_SCRIPT = "WKUserScript"
   // endregion
 
@@ -74,6 +76,7 @@ internal object WKWebViewBridge {
 
   // WKWebView
   private val SEL_INIT_WITH_FRAME_CONFIGURATION = createSelector("initWithFrame:configuration:")
+  private val SEL_ACCEPTS_FIRST_MOUSE = createSelector("acceptsFirstMouse:")
   private val SEL_FLAGS_CHANGED = createSelector("flagsChanged:")
   private val SEL_LOAD_REQUEST = createSelector("loadRequest:")
   private val SEL_LOAD_HTML_STRING_BASE_URL = createSelector("loadHTMLString:baseURL:")
@@ -112,6 +115,17 @@ internal object WKWebViewBridge {
   private val SEL_SET_WANTS_LAYER = createSelector("setWantsLayer:")
   private val SEL_LAYER = createSelector("layer")
   private val SEL_SET_MASKS_TO_BOUNDS = createSelector("setMasksToBounds:")
+  private val SEL_ADD_GESTURE_RECOGNIZER = createSelector("addGestureRecognizer:")
+  private val SEL_REMOVE_GESTURE_RECOGNIZER = createSelector("removeGestureRecognizer:")
+
+  // NSGestureRecognizer
+  private val SEL_SET_DELAYS_PRIMARY_MOUSE_BUTTON_EVENTS = createSelector("setDelaysPrimaryMouseButtonEvents:")
+  private val SEL_SET_DELAYS_SECONDARY_MOUSE_BUTTON_EVENTS = createSelector("setDelaysSecondaryMouseButtonEvents:")
+  private val SEL_SET_DELAYS_OTHER_MOUSE_BUTTON_EVENTS = createSelector("setDelaysOtherMouseButtonEvents:")
+  private val SEL_SET_STATE = createSelector("setState:")
+  private val SEL_MOUSE_DOWN = createSelector("mouseDown:")
+  private val SEL_RIGHT_MOUSE_DOWN = createSelector("rightMouseDown:")
+  private val SEL_OTHER_MOUSE_DOWN = createSelector("otherMouseDown:")
 
   // NSObject
   private val SEL_RESPONDS_TO_SELECTOR = createSelector("respondsToSelector:")
@@ -146,6 +160,7 @@ internal object WKWebViewBridge {
 
   // NSEvent
   private val SEL_MODIFIER_FLAGS = createSelector("modifierFlags")
+  private val SEL_BUTTON_NUMBER = createSelector("buttonNumber")
   private val SEL_KEY_CODE = createSelector("keyCode")
   // endregion
 
@@ -170,6 +185,7 @@ internal object WKWebViewBridge {
   private var urlSchemeHandlerClass: ID = ID.NIL
   private var uiDelegateClass: ID = ID.NIL
   private var webViewClass: ID = ID.NIL
+  private var nativeMouseRecognizerClass: ID = ID.NIL
 
   @Suppress("unused") // prevent GC
   private var urlSchemeStartCallback: Callback? = null
@@ -182,6 +198,18 @@ internal object WKWebViewBridge {
 
   @Suppress("unused") // prevent GC
   private var webViewFlagsChangedCallback: Callback? = null
+
+  @Suppress("unused") // prevent GC
+  private var webViewAcceptsFirstMouseCallback: Callback? = null
+
+  @Suppress("unused") // prevent GC
+  private var nativePrimaryMouseDownCallback: Callback? = null
+
+  @Suppress("unused") // prevent GC
+  private var nativeSecondaryMouseDownCallback: Callback? = null
+
+  @Suppress("unused") // prevent GC
+  private var nativeOtherMouseDownCallback: Callback? = null
 
   /**
    * Per-webview callback registry. Key = the ObjC `self` pointer of the handler instance.
@@ -198,6 +226,7 @@ internal object WKWebViewBridge {
   // by the native WebView pointer.
   private val modifierKeyCallbacks = java.util.concurrent.ConcurrentHashMap<Long, (ModifierKeyEvent) -> Unit>()
   private val modifierStateByWebView = java.util.concurrent.ConcurrentHashMap<Long, Int>()
+  private val nativeMousePressedCallbacks = java.util.concurrent.ConcurrentHashMap<Long, (NativeMousePressedEvent) -> Unit>()
 
   // AWT-shaped payload produced by the native layer. Posting to AWT is intentionally left to the host peer,
   // which owns Swing component lifecycle and can choose the correct event source.
@@ -208,12 +237,18 @@ internal object WKWebViewBridge {
     val keyLocation: Int,
   )
 
+  internal data class NativeMousePressedEvent(
+    val button: Int,
+    val modifiersEx: Int,
+  )
+
   /**
    * Creates and configures a new `WKWebView` instance.
    *
    * @param onMessage callback invoked on the main thread when JS calls `postMessage`
    * @param resolveAssetUrl callback invoked by the private URL scheme handler.
    * @param onNewWindowRequested callback invoked when WebKit asks for a secondary WebView.
+   * @param onNativeMousePressed callback invoked when AppKit delivers a mouse press inside the WebView.
    * @return handles that must be passed to [release].
    */
   fun createWKWebView(
@@ -221,6 +256,7 @@ internal object WKWebViewBridge {
     resolveAssetUrl: (String) -> WebViewAssetResponse?,
     onNewWindowRequested: (String) -> Unit,
     onModifierKeyEvent: (ModifierKeyEvent) -> Unit,
+    onNativeMousePressed: (NativeMousePressedEvent) -> Unit,
     documentStartScripts: List<WebViewScript> = emptyList(),
   ): WebViewHandles {
     // 1. Create WKWebViewConfiguration
@@ -250,6 +286,8 @@ internal object WKWebViewBridge {
                                     NSRect(0.0, 0.0, 0.0, 0.0), configuration)
     modifierKeyCallbacks[initializedWebView.toLong()] = onModifierKeyEvent
     configureWebViewApplicationMode(initializedWebView)
+    val nativeMouseRecognizer = createAndRegisterNativeMouseRecognizer(onNativeMousePressed)
+    invoke(initializedWebView, SEL_ADD_GESTURE_RECOGNIZER, nativeMouseRecognizer)
     val uiDelegateInstance = createAndRegisterUiDelegate(onNewWindowRequested)
     invoke(initializedWebView, SEL_SET_UI_DELEGATE, uiDelegateInstance)
 
@@ -265,6 +303,7 @@ internal object WKWebViewBridge {
       messageHandler = handlerInstance,
       urlSchemeHandler = urlSchemeHandlerInstance,
       uiDelegate = uiDelegateInstance,
+      nativeMouseRecognizer = nativeMouseRecognizer,
     )
   }
 
@@ -425,6 +464,7 @@ internal object WKWebViewBridge {
     val ucc = invoke(configuration, SEL_USER_CONTENT_CONTROLLER)
     invoke(ucc, SEL_REMOVE_SCRIPT_MESSAGE_HANDLER, nsString(IPC_HANDLER_NAME))
     invoke(handles.webView, SEL_SET_UI_DELEGATE, ID.NIL)
+    invoke(handles.webView, SEL_REMOVE_GESTURE_RECOGNIZER, handles.nativeMouseRecognizer)
 
     // 2. Detach from superview
     invoke(handles.webView, SEL_REMOVE_FROM_SUPERVIEW)
@@ -435,12 +475,58 @@ internal object WKWebViewBridge {
     newWindowCallbacks.remove(handles.uiDelegate.toLong())
     modifierKeyCallbacks.remove(handles.webView.toLong())
     modifierStateByWebView.remove(handles.webView.toLong())
+    nativeMousePressedCallbacks.remove(handles.nativeMouseRecognizer.toLong())
 
     // 4. Release native objects
     invoke(handles.messageHandler, SEL_RELEASE)
     invoke(handles.urlSchemeHandler, SEL_RELEASE)
     invoke(handles.uiDelegate, SEL_RELEASE)
+    invoke(handles.nativeMouseRecognizer, SEL_RELEASE)
     invoke(handles.webView, SEL_RELEASE)
+  }
+
+  private fun createAndRegisterNativeMouseRecognizer(onMousePressed: (NativeMousePressedEvent) -> Unit): ID {
+    val recognizerClass = ensureNativeMouseRecognizerClassRegistered()
+    val recognizer = invoke(invoke(recognizerClass, SEL_ALLOC), SEL_INIT)
+    nativeMousePressedCallbacks[recognizer.toLong()] = onMousePressed
+    invoke(recognizer, SEL_SET_DELAYS_PRIMARY_MOUSE_BUTTON_EVENTS, false)
+    invoke(recognizer, SEL_SET_DELAYS_SECONDARY_MOUSE_BUTTON_EVENTS, false)
+    invoke(recognizer, SEL_SET_DELAYS_OTHER_MOUSE_BUTTON_EVENTS, false)
+    return recognizer
+  }
+
+  @Synchronized
+  private fun ensureNativeMouseRecognizerClassRegistered(): ID {
+    if (!ID.NIL.equals(nativeMouseRecognizerClass)) return nativeMouseRecognizerClass
+
+    val superclass = getObjcClass(CLS_NSGESTURE_RECOGNIZER)
+    val cls = allocateObjcClassPair(superclass, "IdeaWKNativeMouseRecognizer")
+    nativePrimaryMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_MOUSE_DOWN)
+    nativeSecondaryMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_RIGHT_MOUSE_DOWN)
+    nativeOtherMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_OTHER_MOUSE_DOWN)
+    addMethod(cls, SEL_MOUSE_DOWN, nativePrimaryMouseDownCallback, "v@:@")
+    addMethod(cls, SEL_RIGHT_MOUSE_DOWN, nativeSecondaryMouseDownCallback, "v@:@")
+    addMethod(cls, SEL_OTHER_MOUSE_DOWN, nativeOtherMouseDownCallback, "v@:@")
+    registerObjcClassPair(cls)
+    nativeMouseRecognizerClass = cls
+    return cls
+  }
+
+  private fun createNativeMouseDownCallback(superclass: ID, mouseDownSelector: Pointer): Callback {
+    return object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, event: ID) {
+        invokeSuperMouseEvent(self, superclass, mouseDownSelector, event)
+        // This recognizer only observes the press. Failing immediately keeps it out of WebKit's
+        // gesture arbitration while the original down/drag/up stream continues to the WebView.
+        invoke(self, SEL_SET_STATE, NS_GESTURE_RECOGNIZER_STATE_FAILED)
+
+        val button = macMouseButton(invoke(event, SEL_BUTTON_NUMBER).toInt()) ?: return
+        val modifiersEx = macModifierFlagsToJavaModifiers(invoke(event, SEL_MODIFIER_FLAGS).toLong())
+        WebViewLogger.LOG.debug("Observed WKWebView native mouse down: button=$button, modifiersEx=$modifiersEx")
+        nativeMousePressedCallbacks[self.toLong()]?.invoke(NativeMousePressedEvent(button, modifiersEx))
+      }
+    }
   }
 
   // region WKWebView subclass registration
@@ -457,6 +543,14 @@ internal object WKWebViewBridge {
     val superclass = getObjcClass(CLS_WKWEBVIEW)
     val cls = allocateObjcClassPair(superclass, "IdeaWKWebView")
 
+    // IDE popups can temporarily make their own window key. Accept the activation click so it
+    // still reaches WebKit and the passive mouse observer on the first press.
+    val acceptsFirstMouseCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, event: ID): Byte = 1
+    }
+    webViewAcceptsFirstMouseCallback = acceptsFirstMouseCallback
+
     val flagsChangedCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
       fun callback(self: ID, selector: Pointer, event: ID) {
@@ -472,6 +566,7 @@ internal object WKWebViewBridge {
     }
     webViewFlagsChangedCallback = flagsChangedCallback
 
+    addMethod(cls, SEL_ACCEPTS_FIRST_MOUSE, acceptsFirstMouseCallback, "B@:@")
     addMethod(cls, SEL_FLAGS_CHANGED, flagsChangedCallback, "v@:@")
 
     registerObjcClassPair(cls)
@@ -529,11 +624,27 @@ internal object WKWebViewBridge {
     var result = 0
     if (flags and NSEVENT_MODIFIER_FLAG_SHIFT != 0L) result = result or InputEvent.SHIFT_DOWN_MASK
     if (flags and NSEVENT_MODIFIER_FLAG_CONTROL != 0L) result = result or InputEvent.CTRL_DOWN_MASK
+    if (flags and NSEVENT_MODIFIER_FLAG_OPTION != 0L) result = result or InputEvent.ALT_DOWN_MASK
+    if (flags and NSEVENT_MODIFIER_FLAG_COMMAND != 0L) result = result or InputEvent.META_DOWN_MASK
     return result
+  }
+
+  private fun macMouseButton(buttonNumber: Int): Int? {
+    return when (buttonNumber) {
+      0 -> MouseEvent.BUTTON1
+      1 -> MouseEvent.BUTTON3
+      2 -> MouseEvent.BUTTON2
+      in 3..19 -> buttonNumber + 1
+      else -> null
+    }
   }
 
   private fun invokeSuperFlagsChanged(receiver: ID, superclass: ID, event: ID) {
     OBJC_MSG_SEND_SUPER.invokeVoid(arrayOf(ObjcSuper(receiver.toLong(), superclass.toLong()), SEL_FLAGS_CHANGED, event))
+  }
+
+  private fun invokeSuperMouseEvent(receiver: ID, superclass: ID, mouseSelector: Pointer, event: ID) {
+    OBJC_MSG_SEND_SUPER.invokeVoid(arrayOf(ObjcSuper(receiver.toLong(), superclass.toLong()), mouseSelector, event))
   }
 
   // JNA passes this structure directly to objc_msgSendSuper. Fields must stay public JVM fields so the
@@ -833,10 +944,13 @@ internal object WKWebViewBridge {
 
   private const val NSEVENT_MODIFIER_FLAG_SHIFT = 1L shl 17
   private const val NSEVENT_MODIFIER_FLAG_CONTROL = 1L shl 18
+  private const val NSEVENT_MODIFIER_FLAG_OPTION = 1L shl 19
+  private const val NSEVENT_MODIFIER_FLAG_COMMAND = 1L shl 20
   private const val MAC_KEY_LEFT_SHIFT = 56
   private const val MAC_KEY_LEFT_CONTROL = 59
   private const val MAC_KEY_RIGHT_SHIFT = 60
   private const val MAC_KEY_RIGHT_CONTROL = 62
+  private const val NS_GESTURE_RECOGNIZER_STATE_FAILED = 5L
   private val OBJC_MSG_SEND_SUPER: Function = NativeLibrary.getInstance("objc").getFunction("objc_msgSendSuper")
 
   // endregion
@@ -846,5 +960,6 @@ internal object WKWebViewBridge {
     val messageHandler: ID,
     val urlSchemeHandler: ID,
     val uiDelegate: ID,
+    val nativeMouseRecognizer: ID,
   )
 }

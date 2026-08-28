@@ -2,6 +2,7 @@
 package io.github.nerzhulart.webview.impl
 
 import com.intellij.ide.KeyboardAwareFocusOwner
+import com.intellij.ide.IdeEventQueue
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.Disposer
@@ -11,7 +12,9 @@ import com.intellij.util.ui.EDT
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
 import io.github.nerzhulart.webview.impl.engine.WebViewFocusDirection
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.jetbrains.annotations.ApiStatus
 import java.awt.AWTEvent
 import java.awt.BorderLayout
@@ -20,6 +23,7 @@ import java.awt.Container
 import java.awt.FocusTraversalPolicy
 import java.awt.Graphics
 import java.awt.KeyboardFocusManager
+import java.awt.MouseInfo
 import java.awt.Point
 import java.awt.Toolkit
 import java.awt.event.AWTEventListener
@@ -33,6 +37,7 @@ import java.awt.event.HierarchyBoundsAdapter
 import java.awt.event.HierarchyBoundsListener
 import java.awt.event.HierarchyEvent
 import java.awt.event.HierarchyListener
+import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -42,6 +47,7 @@ import javax.swing.JPanel
 import javax.swing.JRootPane
 import javax.swing.RootPaneContainer
 import javax.swing.SwingUtilities
+import kotlin.time.Duration.Companion.milliseconds
 
 private val LOG = logger<SwingWebViewHostPanel>()
 
@@ -79,6 +85,8 @@ class SwingWebViewHostPanel internal constructor(
   )
 
   internal companion object {
+    private val NATIVE_CLICK_SETTLE_DELAY = 100.milliseconds
+
     fun calculateHostBounds(host: Component, anchor: Component): NativeBounds {
       val hostOrigin = SwingUtilities.convertPoint(host, 0, 0, anchor)
       return NativeBounds(
@@ -178,6 +186,8 @@ class SwingWebViewHostPanel internal constructor(
   private var focusInsideHost = false
   private var pendingExitDirection: WebViewFocusDirection? = null
   private var focusSyncInProgress = false
+  /** EDT-only guard: the mirrored press must not re-enter the host's ordinary mouse-focus path. */
+  private var nativeMousePressDispatchInProgress = false
   private var engineAttached = false
   private var heavyweightRegistration: Disposable? = null
   private val focusLogId = Integer.toHexString(System.identityHashCode(this))
@@ -357,24 +367,65 @@ class SwingWebViewHostPanel internal constructor(
     }
   }
 
-  internal fun activateWebViewFocusFromNativeMouse() {
-    // Windows sends mouse activation to the native WebView2 child before Swing sees a normal AWT
-    // focus event. Run the Swing host activation synchronously on EDT while the native window proc
-    // is still handling that mouse activation, so Swing's focus owner is correct before WebView2
-    // dispatches the page pointer event. This must not request native focus; the click already does.
-    if (EDT.isCurrentThreadEdt()) {
-      logFocus("native.mouseActivation", "thread=edt, ${focusDiagnostics()}")
-      applyNativeWebViewActivationOnEdt()
-    }
-    else {
-      SwingUtilities.invokeAndWait {
-        logFocus(
-          "native.mouseActivation",
-          "thread=invokeAndWait, ${focusDiagnostics()}",
-        )
-        applyNativeWebViewActivationOnEdt()
+  internal fun nativeWebViewMousePressed(button: Int, modifiersEx: Int) {
+    val screenLocation = runCatching { MouseInfo.getPointerInfo()?.location }.getOrNull()
+    logFocus(
+      "native.mousePressed.received",
+      "button=$button, modifiersEx=$modifiersEx, screenLocation=$screenLocation, scopeActive=${scope.isActive}",
+    )
+
+    // Native WebViews receive pointer input outside AWT, so Swing menus and IDE popups never see
+    // the click-outside press they use for cancellation. Let the native click finish propagating
+    // first: closing a popup releases the toolkit mouse grab and can otherwise steal the WebView's
+    // native mouse-up/click. The owner scope makes this delayed handoff attachment-safe.
+    scope.launch {
+      delay(NATIVE_CLICK_SETTLE_DELAY)
+      SwingUtilities.invokeLater {
+        if (scope.isActive) {
+          dispatchNativeWebViewMousePressedOnEdt(button, modifiersEx, screenLocation)
+        }
       }
     }
+  }
+
+  @RequiresEdt
+  private fun dispatchNativeWebViewMousePressedOnEdt(button: Int, modifiersEx: Int, screenLocation: Point?) {
+    if (!isShowing || !engineAttached) {
+      logFocus("native.mousePressed.ignored", "reason=host-inactive")
+      return
+    }
+
+    val numberOfButtons = runCatching { MouseInfo.getNumberOfButtons() }.getOrDefault(0)
+    if (screenLocation == null || button !in MouseEvent.BUTTON1..numberOfButtons) {
+      logFocus("native.mousePressed.ignored", "reason=invalid-input, button=$button")
+      return
+    }
+
+    val localLocation = Point(screenLocation)
+    SwingUtilities.convertPointFromScreen(localLocation, this)
+    val event = MouseEvent(
+      this,
+      MouseEvent.MOUSE_PRESSED,
+      System.currentTimeMillis(),
+      modifiersEx or InputEvent.getMaskForButton(button),
+      localLocation.x,
+      localLocation.y,
+      screenLocation.x,
+      screenLocation.y,
+      1,
+      false,
+      button,
+    )
+    event.consume()
+    nativeMousePressDispatchInProgress = true
+    try {
+      IdeEventQueue.getInstance().dispatchEvent(event)
+    }
+    finally {
+      nativeMousePressDispatchInProgress = false
+    }
+
+    logFocus("native.mousePressed", "button=$button, modifiersEx=$modifiersEx, ${focusDiagnostics()}")
   }
 
   internal fun syncWebViewFocusWithSwingFocusOwner() {
@@ -493,7 +544,7 @@ class SwingWebViewHostPanel internal constructor(
       val hostWindow = SwingUtilities.getWindowAncestor(this) ?: return@AWTEventListener
       if (SwingUtilities.getWindowAncestor(source) != hostWindow) return@AWTEventListener
       if (source === this) {
-        activateWebViewFocusFromHostMouse()
+        if (!nativeMousePressDispatchInProgress) activateWebViewFocusFromHostMouse()
         return@AWTEventListener
       }
       if (SwingUtilities.isDescendingFrom(source, this)) return@AWTEventListener
