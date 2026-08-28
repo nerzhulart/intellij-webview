@@ -615,7 +615,7 @@ internal class MacWebViewEngine(
   ) {
     val currentAttachment = isCurrentAttachment(generation)
     WebViewLogger.LOG.debug(
-      "Received WKWebView native mouse up: event=$event, currentAttachment=$currentAttachment, hostShowing=${host.isShowing}",
+      "Received WKWebView native mouse down: event=$event, currentAttachment=$currentAttachment, hostShowing=${host.isShowing}",
     )
     if (!currentAttachment || !host.isShowing) return
     (host as? SwingWebViewHostPanel)?.nativeWebViewMousePressed(event.button, event.modifiersEx)
