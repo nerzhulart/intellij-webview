@@ -1,5 +1,5 @@
 <idea-plugin allow-bundled-update="true">
-  <id>io.github.nerzhulart.webview.markdown.preview</id>
+  <id>io.github.nerzhulart.markdown</id>
   <name>Markdown Preview</name>
   <vendor>nerzhulart</vendor>
   <category>Languages</category>

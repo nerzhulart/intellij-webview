@@ -10,7 +10,7 @@ plugins {
   id("io.github.nerzhulart.webview.frontend")
 }
 
-group = "io.github.nerzhulart.webview.markdown.preview"
+group = "io.github.nerzhulart.markdown"
 version = providers.gradleProperty("pluginVersion").get()
 
 base {
