@@ -230,7 +230,7 @@ internal class MarkdownPreviewPathLinkResolver(
 
     private fun navigationOffset(file: VirtualFile): Int {
       val line = line ?: return 0
-      val document = FileDocumentManager.getInstance().getDocument(file, project) ?: return 0
+      val document = FileDocumentManager.getInstance().getDocument(file) ?: return 0
       if (document.lineCount == 0) return 0
 
       val lineIndex = (line - 1).coerceIn(0, document.lineCount - 1)

@@ -37,7 +37,6 @@ import kotlinx.coroutines.withContext
 import org.intellij.plugins.markdown.MarkdownBundle
 import org.intellij.plugins.markdown.extensions.jcef.commandRunner.RunnerPlace
 import org.intellij.plugins.markdown.settings.MarkdownPreviewSettings
-import org.intellij.plugins.markdown.ui.preview.MarkdownContentPanel
 import org.intellij.plugins.markdown.ui.preview.MarkdownHtmlPanel
 import org.intellij.plugins.markdown.ui.preview.PreviewLAFThemeStyles
 import org.intellij.plugins.markdown.ui.preview.accessor.MarkdownLinkOpener
@@ -53,7 +52,7 @@ private val LOG = logger<WebViewMarkdownPreviewPanel>()
 class WebViewMarkdownPreviewPanel(
   private val project: Project?,
   private val virtualFile: VirtualFile?,
-) : MarkdownContentPanel, UserDataHolder by UserDataHolderBase() {
+) : MarkdownHtmlPanel, UserDataHolder by UserDataHolderBase() {
   constructor() : this(project = null, virtualFile = null)
 
   private val coroutineScope = service<ScopeHolder>()
@@ -92,14 +91,14 @@ class WebViewMarkdownPreviewPanel(
   override fun getComponent(): JComponent = rootComponent
 
   override fun setHtml(html: String, initialScrollOffset: Int, document: VirtualFile?) {
-    LOG.error("WebView Markdown preview expects raw Markdown content through MarkdownContentPanel.setMarkdown(...); setHtml(...) should not be called")
+    updateMarkdown(html, lineNumberAtOffset(html, initialScrollOffset), document)
   }
 
   override fun setHtml(html: String, initialScrollOffset: Int, initialScrollLineNumber: Int, document: VirtualFile?) {
-    LOG.error("WebView Markdown preview expects raw Markdown content through MarkdownContentPanel.setMarkdown(...); setHtml(...) should not be called")
+    updateMarkdown(html, initialScrollLineNumber, document)
   }
 
-  override fun setMarkdown(markdown: String, initialScrollOffset: Int, initialScrollLineNumber: Int, document: VirtualFile?) {
+  private fun updateMarkdown(markdown: String, initialScrollLineNumber: Int, document: VirtualFile?) {
     val update = MarkdownUpdate(
       markdown = markdown,
       initialScrollLineNumber = initialScrollLineNumber,
@@ -108,7 +107,7 @@ class WebViewMarkdownPreviewPanel(
     )
     lastUpdate = update
     lastCommandSession = MarkdownRunCommandSession.EMPTY
-    LOG.trace { "markdown.webview.setMarkdown - ${update.diagnosticDetails()}" }
+    LOG.trace { "markdown.webview.updateMarkdown - ${update.diagnosticDetails()}" }
     sendContentUpdate(update)
   }
 
@@ -361,9 +360,6 @@ class WebViewMarkdownPreviewPanel(
   }
 
   override fun removeScrollListener(listener: MarkdownHtmlPanel.ScrollListener) {
-  }
-
-  override fun scrollBy(horizontalUnits: Int, verticalUnits: Int) {
   }
 
   @ApiStatus.Experimental

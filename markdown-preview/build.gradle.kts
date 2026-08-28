@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.PublishPluginTask
 
 plugins {
   kotlin("jvm")
@@ -65,9 +66,23 @@ intellijPlatform {
       sinceBuild = "262.8665"
     }
   }
+  publishing {
+    channels.set(
+      providers.gradleProperty("pluginVersion").map { pluginVersion ->
+        listOf(if ('-' in pluginVersion.substringBefore('+')) "eap" else "default")
+      },
+    )
+  }
 }
 
 tasks {
+  named<PublishPluginTask>("publishPlugin") {
+    providers.gradleProperty("pluginArchiveFile").orNull?.let {
+      archiveFile.set(rootProject.layout.projectDirectory.file(it))
+      setDependsOn(emptyList<Any>())
+    }
+  }
+
   buildPlugin {
     archiveFileName.set("markdown-webview-preview-${providers.gradleProperty("pluginVersion").get()}.zip")
   }

@@ -210,6 +210,12 @@ jobs:
             exit 1
           fi
 
+          mapfile -d '' markdown_archives < <(find release-assets -type f -name "markdown-webview-preview-$VERSION.zip" -print0)
+          if [[ "${#markdown_archives[@]}" -ne 1 ]]; then
+            echo "::error::Expected one markdown-webview-preview-$VERSION.zip, found ${#markdown_archives[@]}."
+            exit 1
+          fi
+
           manifest="release-npm/npm-packages.json"
           jq -e \
             --arg version "$VERSION" \
@@ -258,6 +264,7 @@ jobs:
           fi
           echo "dist_tag=$dist_tag" >>"$GITHUB_OUTPUT"
           echo "plugin_archive=${root_archives[0]}" >>"$GITHUB_OUTPUT"
+          echo "markdown_plugin_archive=${markdown_archives[0]}" >>"$GITHUB_OUTPUT"
 
       - name: Create or update GitHub release
         shell: bash
@@ -405,9 +412,10 @@ jobs:
             publish_or_verify "$published_name" "$file" "$integrity"
           done < <(jq -r '.packages | sort_by(.publishedName)[] | [.publishedName, .file, .integrity] | @tsv' release-npm/npm-packages.json)
 
-      - name: Publish WebView plugin to JetBrains Marketplace
+      - name: Publish plugins to JetBrains Marketplace
         shell: bash
         env:
+          MARKDOWN_PLUGIN_ARCHIVE: ${{ steps.artifacts.outputs.markdown_plugin_archive }}
           PLUGIN_ARCHIVE: ${{ steps.artifacts.outputs.plugin_archive }}
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           VERSION: ${{ inputs.version }}
@@ -421,5 +429,11 @@ jobs:
             -PpluginArchiveFile="$PLUGIN_ARCHIVE" \
             -PpluginVersion="$VERSION" \
             :publishPlugin \
+            --stacktrace \
+            --no-configuration-cache
+          gradle \
+            -PpluginArchiveFile="$MARKDOWN_PLUGIN_ARCHIVE" \
+            -PpluginVersion="$VERSION" \
+            :markdown-preview:publishPlugin \
             --stacktrace \
             --no-configuration-cache
