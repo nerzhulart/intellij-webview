@@ -596,23 +596,21 @@ internal class WebViewRuntimeSmokeTest {
         }
       }
 
-      if (SystemInfo.isMac) {
-        withContext(Dispatchers.EDT) {
-          popupMenu.show(popupAnchor, 0, popupAnchor.height)
-        }
-        assertTrue(waitUntil { popupMenu.isVisible }, "Swing popup menu did not reopen")
-        awtEvents.add("checkpoint.before-drag ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
-
-        clickPoint = dragCenter(robot, panel.component)
-        val popupClosedAfterDrag = waitUntil { !popupMenu.isVisible }
-        awtEvents.add("checkpoint.after-drag ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
-        val dragFailureDiagnostics = if (popupClosedAfterDrag) "" else "; " +
-          popupSmokeDiagnostics(frame!!, panel, popupMenu, clickPoint, awtEvents)
-        assertTrue(
-          popupClosedAfterDrag,
-          "Dragging inside the WebView must close an open Swing popup menu$dragFailureDiagnostics",
-        )
+      withContext(Dispatchers.EDT) {
+        popupMenu.show(popupAnchor, 0, popupAnchor.height)
       }
+      assertTrue(waitUntil { popupMenu.isVisible }, "Swing popup menu did not reopen")
+      awtEvents.add("checkpoint.before-drag ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
+
+      clickPoint = dragCenter(robot, panel.component)
+      val popupClosedAfterDrag = waitUntil { !popupMenu.isVisible }
+      awtEvents.add("checkpoint.after-drag ${popupSmokeSwingState(frame!!, panel.component, popupMenu)}")
+      val dragFailureDiagnostics = if (popupClosedAfterDrag) "" else "; " +
+        popupSmokeDiagnostics(frame!!, panel, popupMenu, clickPoint, awtEvents)
+      assertTrue(
+        popupClosedAfterDrag,
+        "Dragging inside the WebView must close an open Swing popup menu$dragFailureDiagnostics",
+      )
     }
     finally {
       Toolkit.getDefaultToolkit().removeAWTEventListener(awtListener)
