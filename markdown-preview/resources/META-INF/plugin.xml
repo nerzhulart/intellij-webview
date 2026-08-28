@@ -1,14 +1,18 @@
 <idea-plugin allow-bundled-update="true">
   <id>io.github.nerzhulart.webview.markdown.preview</id>
-  <name>Markdown WebView Preview (Experimental)</name>
+  <name>Markdown Preview</name>
   <vendor>nerzhulart</vendor>
   <category>Languages</category>
   <description><![CDATA[
-    Provides a Markdown preview powered by an embedded WebView panel.
+    A polished, feature-rich Markdown preview that keeps up with your document as you edit.
     <ul>
-      <li>Renders Markdown content in the same kind of browser surface used by WebView-based IDE UI.</li>
-      <li>Uses browser engines: WKWebView on macOS, Microsoft Edge WebView2 on Windows, and JCEF on Linux.</li>
-      <li>Fits the WebView frontend workflow where UI and preview assets can be authored with HTML, CSS, TypeScript, frontend frameworks, Vite, and typed Kotlin/TypeScript interop.</li>
+      <li>GitHub Flavored Markdown with tables, task lists, strikethrough, and syntax-highlighted code blocks.</li>
+      <li>Mermaid diagrams and LaTeX math for rich technical documentation.</li>
+      <li>Interactive zoom and pan controls for diagrams and standalone images.</li>
+      <li>Automatic table of contents, in-document anchor navigation, and clickable project file paths.</li>
+      <li>YAML and TOML frontmatter presented as clean, collapsible metadata.</li>
+      <li>Editor-synchronized scrolling for effortless navigation between source and preview.</li>
+      <li>Light and dark themes with adjustable preview font size.</li>
     </ul>
   ]]></description>
   <resource-bundle>messages.MarkdownWebViewPreviewBundle</resource-bundle>
