@@ -44,7 +44,6 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.condition.DisabledIfSystemProperty
-import org.junit.jupiter.api.condition.DisabledOnOs
 import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
@@ -493,11 +492,6 @@ internal class WebViewRuntimeSmokeTest {
 
   @Test
   @EnabledOnOs(OS.MAC, OS.WINDOWS)
-  @DisabledOnOs(
-    value = [OS.WINDOWS],
-    architectures = ["aarch64"],
-    disabledReason = "AWT Robot does not deliver native pointer input on Windows ARM64",
-  )
   fun clickingWebView_closesOpenSwingPopupMenu(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
     val popupMenu = JPopupMenu().apply {
@@ -628,11 +622,6 @@ internal class WebViewRuntimeSmokeTest {
 
   @Test
   @EnabledOnOs(OS.MAC, OS.WINDOWS)
-  @DisabledOnOs(
-    value = [OS.WINDOWS],
-    architectures = ["aarch64"],
-    disabledReason = "AWT Robot does not deliver native pointer input on Windows ARM64",
-  )
   fun clickingWebView_closesFocusedIdePopupOnFirstClick(): Unit = runSmokeTest {
     val panel = createPanel(scope!!)
     val popupAnchor = JButton("Popup anchor")
@@ -749,10 +738,7 @@ internal class WebViewRuntimeSmokeTest {
       }
     }
 
-    val robot = Robot().apply {
-      autoDelay = 20
-      isAutoWaitForIdle = true
-    }
+    val robot = createRobotOrSkip()
     val initialPreviewWidth = withContext(Dispatchers.EDT) { panel.component.width }
 
     dragDivider(robot, splitter, deltaX = -150)
@@ -835,6 +821,10 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   private fun createRobotOrSkip(): Robot {
+    assumeTrue(
+      System.getenv("CI") != "true" || System.getProperty("os.arch") != "aarch64",
+      "AWT Robot does not deliver native pointer input on hosted ARM64 runners",
+    )
     return runCatching {
       Robot().apply {
         autoDelay = 20

@@ -58,7 +58,6 @@ internal object WKWebViewBridge {
   private const val CLS_NSAPPLICATION = "NSApplication"
   private const val CLS_NSVIEW = "NSView"
   private const val CLS_NSGESTURE_RECOGNIZER = "NSGestureRecognizer"
-  private const val CLS_WKCONTENT_VIEW = "WKContentView"
   private const val CLS_WKUSER_SCRIPT = "WKUserScript"
   // endregion
 
@@ -113,14 +112,8 @@ internal object WKWebViewBridge {
   // NSView
   private val SEL_INIT_WITH_FRAME = createSelector("initWithFrame:")
   private val SEL_ADD_SUBVIEW = createSelector("addSubview:")
-  private val SEL_SUBVIEWS = createSelector("subviews")
   private val SEL_IS_DESCENDANT_OF = createSelector("isDescendantOf:")
-  private val SEL_IS_KIND_OF_CLASS = createSelector("isKindOfClass:")
   private val SEL_SET_WANTS_LAYER = createSelector("setWantsLayer:")
-
-  // NSArray
-  private val SEL_COUNT = createSelector("count")
-  private val SEL_OBJECT_AT_INDEX = createSelector("objectAtIndex:")
   private val SEL_LAYER = createSelector("layer")
   private val SEL_SET_MASKS_TO_BOUNDS = createSelector("setMasksToBounds:")
   private val SEL_ADD_GESTURE_RECOGNIZER = createSelector("addGestureRecognizer:")
@@ -193,7 +186,6 @@ internal object WKWebViewBridge {
   private var urlSchemeHandlerClass: ID = ID.NIL
   private var uiDelegateClass: ID = ID.NIL
   private var webViewClass: ID = ID.NIL
-  private var webContentViewClass: ID = ID.NIL
   private var nativeMouseRecognizerClass: ID = ID.NIL
 
   @Suppress("unused") // prevent GC
@@ -293,7 +285,6 @@ internal object WKWebViewBridge {
     val webView = invoke(ensureWebViewClassRegistered(), SEL_ALLOC)
     val initializedWebView = invoke(webView, SEL_INIT_WITH_FRAME_CONFIGURATION,
                                     NSRect(0.0, 0.0, 0.0, 0.0), configuration)
-    installContentViewFirstMouseAcceptance(initializedWebView)
     modifierKeyCallbacks[initializedWebView.toLong()] = onModifierKeyEvent
     configureWebViewApplicationMode(initializedWebView)
     val nativeMouseRecognizer = createAndRegisterNativeMouseRecognizer(onNativeMousePressed)
@@ -557,9 +548,9 @@ internal object WKWebViewBridge {
     // still reaches WebKit and the passive mouse observer on the first press.
     val acceptsFirstMouseCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
-      fun callback(self: ID, selector: Pointer, event: ID): Boolean {
-        WebViewLogger.LOG.debug("WKWebView native view accepted first mouse: view=${describeResponder(self)}, event=$event")
-        return true
+      fun callback(self: ID, selector: Pointer, event: ID): Byte {
+        WebViewLogger.LOG.debug("WKWebView accepted first mouse: event=$event")
+        return 1
       }
     }
     webViewAcceptsFirstMouseCallback = acceptsFirstMouseCallback
@@ -585,48 +576,6 @@ internal object WKWebViewBridge {
     registerObjcClassPair(cls)
     webViewClass = cls
     return cls
-  }
-
-  private fun installContentViewFirstMouseAcceptance(webView: ID) {
-    val contentViewClass = getObjcClass(CLS_WKCONTENT_VIEW)
-    if (isNil(contentViewClass)) {
-      WebViewLogger.LOG.debug("WKContentView is unavailable; first mouse acceptance stays on WKWebView")
-      return
-    }
-
-    val contentViewSubclass = ensureWebContentViewClassRegistered(contentViewClass)
-    var installed = 0
-    visitNativeViewHierarchy(webView) { view ->
-      if (invoke(view, SEL_IS_KIND_OF_CLASS, contentViewClass).booleanValue()) {
-        OBJECT_SET_CLASS.invokePointer(arrayOf(view, contentViewSubclass))
-        installed += 1
-      }
-    }
-    WebViewLogger.LOG.debug("Installed first mouse acceptance on $installed WKContentView instance(s)")
-  }
-
-  private fun ensureWebContentViewClassRegistered(contentViewClass: ID): ID {
-    if (!ID.NIL.equals(webContentViewClass)) return webContentViewClass
-
-    val cls = allocateObjcClassPair(contentViewClass, "IdeaWKContentView")
-    addMethod(
-      cls,
-      SEL_ACCEPTS_FIRST_MOUSE,
-      checkNotNull(webViewAcceptsFirstMouseCallback),
-      "${objectiveCBooleanType()}@:@",
-    )
-    registerObjcClassPair(cls)
-    webContentViewClass = cls
-    return cls
-  }
-
-  private fun visitNativeViewHierarchy(view: ID, visitor: (ID) -> Unit) {
-    visitor(view)
-    val subviews = invoke(view, SEL_SUBVIEWS)
-    val count = invoke(subviews, SEL_COUNT).toLong()
-    for (index in 0 until count) {
-      visitNativeViewHierarchy(invoke(subviews, SEL_OBJECT_AT_INDEX, index), visitor)
-    }
   }
 
   private fun handleFlagsChanged(webView: ID, event: ID) {
@@ -1007,7 +956,6 @@ internal object WKWebViewBridge {
   private const val MAC_KEY_RIGHT_CONTROL = 62
   private const val NS_GESTURE_RECOGNIZER_STATE_FAILED = 5L
   private val OBJC_MSG_SEND_SUPER: Function = NativeLibrary.getInstance("objc").getFunction("objc_msgSendSuper")
-  private val OBJECT_SET_CLASS: Function = NativeLibrary.getInstance("objc").getFunction("object_setClass")
 
   private fun objectiveCBooleanType(): String = if (CpuArch.isIntel64()) "c" else "B"
 
