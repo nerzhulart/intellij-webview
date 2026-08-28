@@ -5,11 +5,14 @@ import com.intellij.jna.JnaLoader
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.impl.IdeGlassPaneImpl
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.ui.OnePixelSplitter
+import com.intellij.ui.components.JBList
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewNotification
 import io.github.nerzhulart.webview.api.WebViewPanel
@@ -614,6 +617,97 @@ internal class WebViewRuntimeSmokeTest {
     }
     finally {
       Toolkit.getDefaultToolkit().removeAWTEventListener(awtListener)
+    }
+  }
+
+  @Test
+  @EnabledOnOs(OS.MAC, OS.WINDOWS)
+  fun clickingWebView_closesFocusedIdePopupOnFirstClick(): Unit = runSmokeTest {
+    val panel = createPanel(scope!!)
+    val popupAnchor = JButton("Popup anchor")
+
+    withContext(Dispatchers.EDT) {
+      frame!!.contentPane.removeAll()
+      frame!!.contentPane.add(popupAnchor, BorderLayout.NORTH)
+      frame!!.contentPane.add(panel.component, BorderLayout.CENTER)
+      frame!!.size = Dimension(640, 420)
+      frame!!.setLocation(80, 80)
+      frame!!.validate()
+      runCatching { Desktop.getDesktop().requestForeground(true) }
+      frame!!.isAlwaysOnTop = true
+      frame!!.toFront()
+      frame!!.requestFocus()
+      frame!!.isAlwaysOnTop = false
+    }
+
+    panel.webView.loadHtml(/*language=HTML*/ "<html><body>Click target</body></html>")
+    waitForJavaScript(
+      panel.webView,
+      "document.body?.textContent?.trim() === 'Click target'",
+      "true",
+      "IDE popup smoke page did not load",
+    )
+    assertEquals(
+      "true",
+      javaScriptResultContent(
+        panel.webView.evaluateJavaScript(
+          /*language=JavaScript*/
+          "window.__idePopupSmokeClickCount = 0; document.addEventListener('click', () => window.__idePopupSmokeClickCount += 1); true",
+        ).value,
+      ),
+      "IDE popup smoke diagnostics were not installed",
+    )
+    assertTrue(waitUntilShowing(popupAnchor), "IDE popup anchor did not become showing")
+    assertTrue(waitUntilShowing(panel.component), "WebView host component did not become showing")
+    assumeTrue(waitUntil({ frame!!.isActive && frame!!.isFocused }), "AWT Robot test window could not be activated")
+
+    val robot = createRobotOrSkip()
+    val popupRegistryDisposable = Disposer.newDisposable("IDE popup smoke registry override")
+    try {
+      Registry.get("allow.dialog.based.popups").setValue(true, popupRegistryDisposable)
+      val popup = withContext(Dispatchers.EDT) {
+        val popupContent = JBList("Popup item")
+        JBPopupFactory.getInstance()
+          .createComponentPopupBuilder(popupContent, popupContent)
+          .setFocusable(true)
+          .setRequestFocus(true)
+          .setCancelOnClickOutside(true)
+          .setMayBeParent(true)
+          .createPopup()
+          .also { it.showUnderneathOf(popupAnchor) }
+      }
+      try {
+        assertTrue(
+          waitUntil {
+            popup.isVisible && SwingUtilities.isDescendingFrom(
+              KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner,
+              popup.content,
+            )
+          },
+          "IDE popup did not become focused",
+        )
+
+        moveToCenter(robot, panel.component)
+        clickCurrentPointer(robot)
+
+        assertTrue(waitUntil { !popup.isVisible }, "The first WebView click must close a focused IDE popup")
+        if (panel.webView.runtimeInfo.engineId != WebViewEngineId.JCEF) {
+          waitForJavaScript(
+            panel.webView,
+            "window.__idePopupSmokeClickCount === 1",
+            "true",
+            "Robot click did not reach the WebView page exactly once",
+          )
+        }
+      }
+      finally {
+        withContext(Dispatchers.EDT) {
+          popup.cancel()
+        }
+      }
+    }
+    finally {
+      Disposer.dispose(popupRegistryDisposable)
     }
   }
 
