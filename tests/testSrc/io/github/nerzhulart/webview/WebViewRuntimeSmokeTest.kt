@@ -738,10 +738,7 @@ internal class WebViewRuntimeSmokeTest {
       }
     }
 
-    val robot = Robot().apply {
-      autoDelay = 20
-      isAutoWaitForIdle = true
-    }
+    val robot = createRobotOrSkip()
     val initialPreviewWidth = withContext(Dispatchers.EDT) { panel.component.width }
 
     dragDivider(robot, splitter, deltaX = -150)
@@ -824,6 +821,10 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   private fun createRobotOrSkip(): Robot {
+    assumeTrue(
+      System.getenv("CI") != "true" || System.getProperty("os.arch") != "aarch64",
+      "AWT Robot does not deliver native pointer input on hosted ARM64 runners",
+    )
     return runCatching {
       Robot().apply {
         autoDelay = 20
