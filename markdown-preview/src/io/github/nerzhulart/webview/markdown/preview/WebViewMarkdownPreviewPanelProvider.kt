@@ -20,6 +20,6 @@ class WebViewMarkdownPreviewPanelProvider : MarkdownHtmlPanelProvider() {
   }
 
   override fun getProviderInfo(): ProviderInfo {
-    return ProviderInfo("WebView (Experimental)", WebViewMarkdownPreviewPanelProvider::class.java.name)
+    return ProviderInfo("Markdown Lens", WebViewMarkdownPreviewPanelProvider::class.java.name)
   }
 }
