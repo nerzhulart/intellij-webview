@@ -195,6 +195,7 @@ internal class WinWebViewOverlayBoundsTest {
       userDataDir: String,
       documentStartScript: String,
       backgroundColor: Int,
+      features: Int,
       callbacks: WinWebView2Bridge.Callbacks,
     ): Long {
       this.callbacks = callbacks
@@ -230,6 +231,18 @@ internal class WinWebViewOverlayBoundsTest {
     }
 
     override fun loadUrl(handle: Long, url: String) {
+    }
+
+    override fun goBack(handle: Long) {
+    }
+
+    override fun goForward(handle: Long) {
+    }
+
+    override fun reload(handle: Long) {
+    }
+
+    override fun stop(handle: Long) {
     }
 
     override fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String) {

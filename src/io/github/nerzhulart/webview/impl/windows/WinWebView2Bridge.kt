@@ -45,7 +45,7 @@ private class WinWebView2BridgePluginAnchor
  */
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v18"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v19"
 
   init {
     if (SystemInfo.isWindows) {
@@ -69,6 +69,7 @@ internal object WinWebView2Bridge {
     userDataDir: String,
     documentStartScript: String,
     backgroundColor: Int,
+    features: Int,
     callbacks: Callbacks,
   ): Long
 
@@ -100,6 +101,15 @@ internal object WinWebView2Bridge {
 
   @JvmStatic
   private external fun loadUrlNative(handle: Long, url: String)
+
+  @JvmStatic
+  private external fun goBackNative(handle: Long)
+  @JvmStatic
+  private external fun goForwardNative(handle: Long)
+  @JvmStatic
+  private external fun reloadNative(handle: Long)
+  @JvmStatic
+  private external fun stopNative(handle: Long)
 
   @JvmStatic
   private external fun setVirtualHostNameToFolderMappingNative(handle: Long, hostName: String, folderPath: String)
@@ -139,8 +149,9 @@ internal object WinWebView2Bridge {
     userDataDir: String,
     documentStartScript: String,
     backgroundColor: Int,
+    features: Int,
     callbacks: Callbacks,
-  ): Long = createNative(parentHwnd, generation, userDataDir, documentStartScript, backgroundColor, callbacks)
+  ): Long = createNative(parentHwnd, generation, userDataDir, documentStartScript, backgroundColor, features, callbacks)
 
   /**
    * Marks the route closing before returning, so nothing else can be queued for this handle, and
@@ -201,6 +212,11 @@ internal object WinWebView2Bridge {
    * @param url absolute URL, including the virtual host origin of bundled assets.
    */
   fun loadUrl(handle: Long, url: String) = loadUrlNative(handle, url)
+
+  fun goBack(handle: Long) = goBackNative(handle)
+  fun goForward(handle: Long) = goForwardNative(handle)
+  fun reload(handle: Long) = reloadNative(handle)
+  fun stop(handle: Long) = stopNative(handle)
 
   /**
    * Queues the virtual host mapping. It has to be applied before the navigation that relies on it,
@@ -279,6 +295,17 @@ internal object WinWebView2Bridge {
    * block: the same thread drives the Windows input queue of the whole IDE frame.
    */
   internal interface Callbacks {
+    /** Main-frame navigation starts, including redirects. */
+    fun onNavigationStarting(url: String)
+    /** Network result; HTTP status codes alone are not failures. */
+    fun onNavigationCompleted(isSuccess: Boolean, webErrorStatus: Int)
+    /** Current source, including same-document history changes. */
+    fun onSourceChanged(url: String)
+    /** The top-level document title changed. */
+    fun onDocumentTitleChanged(title: String)
+    /** Native history availability changed. */
+    fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
+
     /**
      * The controller exists on the Canvas it was created for; commands for this handle are live from now on.
      *
@@ -471,6 +498,7 @@ internal interface WinWebView2BridgeApi {
     userDataDir: String,
     documentStartScript: String,
     backgroundColor: Int,
+    features: Int,
     callbacks: WinWebView2Bridge.Callbacks,
   ): Long
 
@@ -544,6 +572,11 @@ internal interface WinWebView2BridgeApi {
    */
   fun loadUrl(handle: Long, url: String)
 
+  fun goBack(handle: Long)
+  fun goForward(handle: Long)
+  fun reload(handle: Long)
+  fun stop(handle: Long)
+
   /**
    * Serves a local folder under a virtual host name, which is how bundled assets get a real https
    * origin instead of `file://`.
@@ -613,8 +646,9 @@ internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
     userDataDir: String,
     documentStartScript: String,
     backgroundColor: Int,
+    features: Int,
     callbacks: WinWebView2Bridge.Callbacks,
-  ): Long = WinWebView2Bridge.create(parentHwnd, generation, userDataDir, documentStartScript, backgroundColor, callbacks)
+  ): Long = WinWebView2Bridge.create(parentHwnd, generation, userDataDir, documentStartScript, backgroundColor, features, callbacks)
 
   override fun destroy(handle: Long) = WinWebView2Bridge.destroy(handle)
   override fun setHostState(
@@ -631,6 +665,10 @@ internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
   override fun focus(handle: Long) = WinWebView2Bridge.focus(handle)
   override fun clearFocus(handle: Long) = WinWebView2Bridge.clearFocus(handle)
   override fun loadUrl(handle: Long, url: String) = WinWebView2Bridge.loadUrl(handle, url)
+  override fun goBack(handle: Long) = WinWebView2Bridge.goBack(handle)
+  override fun goForward(handle: Long) = WinWebView2Bridge.goForward(handle)
+  override fun reload(handle: Long) = WinWebView2Bridge.reload(handle)
+  override fun stop(handle: Long) = WinWebView2Bridge.stop(handle)
   override fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String) =
     WinWebView2Bridge.setVirtualHostNameToFolderMapping(handle, hostName, folderPath)
 

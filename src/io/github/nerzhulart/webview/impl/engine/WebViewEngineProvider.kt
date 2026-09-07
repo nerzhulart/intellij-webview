@@ -32,7 +32,9 @@ interface WebViewEngineProvider {
 @ApiStatus.Experimental
 data class WebViewEngineCreationOptions(
   val debugName: String?,
-  val documentStartScripts: List<WebViewScript> = listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT),
+  val features: WebViewFeatures = WebViewFeatures.APPLICATION,
+  val documentStartScripts: List<WebViewScript> =
+    if (features.applicationModeScript) listOf(WebViewApplicationModeScripts.DOCUMENT_START_SCRIPT) else emptyList(),
 ) {
   fun withDocumentStartScript(script: WebViewScript): WebViewEngineCreationOptions {
     return copy(documentStartScripts = documentStartScripts + script)

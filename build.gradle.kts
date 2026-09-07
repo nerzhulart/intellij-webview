@@ -153,7 +153,7 @@ tasks {
   }
 
   named<RunIdeTask>("runIde") {
-    val allPluginsSandbox = project(":demo").tasks.named<PrepareSandboxTask>("prepareSandbox")
+    val allPluginsSandbox = project(":samples:embedded-browser").tasks.named<PrepareSandboxTask>("prepareSandbox")
     sandboxDirectory.set(allPluginsSandbox.flatMap { it.sandboxDirectory })
     sandboxConfigDirectory.set(allPluginsSandbox.flatMap { it.sandboxConfigDirectory })
     sandboxPluginsDirectory.set(allPluginsSandbox.flatMap { it.sandboxPluginsDirectory })

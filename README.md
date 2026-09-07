@@ -77,6 +77,8 @@ await webView.callable(editorHostApiId).openFile({ path: "src/Main.kt" })
 
 See the [WebView UI Authoring Guide](docs/guides/WebView-UI-Authoring-Guide.md) for complete lifecycle, build, protocol, preview, and testing guidance.
 
+For arbitrary URLs without bundled assets or production JavaScript, see the [Embedded Browser Guide](docs/guides/Embedded-Browser-Guide.md): `WebBrowserPanel` exposes the real WebView component and browser commands; the factory-created `EmbeddedBrowserPanel` adds a Swing toolbar. The guide includes backend limits, the required Windows ABI v19 DLL rebuild, and a manual sample checklist.
+
 ## Install and Depend on the Runtime
 
 Build or download the WebView Runtime ZIP, install it in the target IDE, and declare the external plugin dependency in the consumer plugin descriptor:

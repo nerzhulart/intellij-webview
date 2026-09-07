@@ -9,6 +9,7 @@ import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefClient
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
+import io.github.nerzhulart.webview.api.WebViewBrowserError
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
@@ -17,6 +18,8 @@ import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
 import com.intellij.util.ui.EDT
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
+import io.github.nerzhulart.webview.impl.engine.WebViewFeatures
+import io.github.nerzhulart.webview.impl.engine.WebViewNavigationListener
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +38,7 @@ import org.cef.callback.CefMenuModel
 import org.cef.callback.CefQueryCallback
 import org.cef.callback.CefRunContextMenuCallback
 import org.cef.handler.CefContextMenuHandlerAdapter
+import org.cef.handler.CefDisplayHandlerAdapter
 import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefLoadHandlerAdapter
@@ -47,6 +51,7 @@ import org.cef.misc.BoolRef
 import org.cef.network.CefRequest
 import org.intellij.lang.annotations.Language
 import java.awt.Component
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.util.ArrayDeque
@@ -64,6 +69,7 @@ internal class JcefWebViewEngine(
   parentScope: CoroutineScope,
   jbCefApp: JBCefApp,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
+  features: WebViewFeatures = WebViewFeatures.APPLICATION,
 ) : WebViewEngine {
   private companion object {
     private const val INITIAL_URL = "about:blank"
@@ -95,6 +101,9 @@ internal class JcefWebViewEngine(
   @Volatile
   private var messageReceiver: WebViewJsMessageReceiver? = null
 
+  @Volatile
+  private var navigationListener: WebViewNavigationListener? = null
+
   private val jbCefClient: JBCefClient = jbCefApp.createClient()
   private val messageRouter: CefMessageRouter
   private val messageRouterHandler: CefMessageRouterHandlerAdapter
@@ -110,11 +119,19 @@ internal class JcefWebViewEngine(
   private val cefBrowser: CefBrowser
     get() = jbCefBrowser.cefBrowser
 
+  private val requestHandler = createRequestHandler()
+  private val loadHandler = createLoadHandler()
+  private val displayHandler = createDisplayHandler()
+  private val lifeSpanHandler = createLifeSpanHandler()
+  private val contextMenuHandler = if (!features.contextMenu) createContextMenuHandler() else null
+
   init {
-    jbCefClient.addRequestHandler(createRequestHandler(), cefBrowser)
-    jbCefClient.addLoadHandler(createLoadHandler(), cefBrowser)
-    jbCefClient.addLifeSpanHandler(createLifeSpanHandler(), cefBrowser)
-    jbCefClient.addContextMenuHandler(createContextMenuHandler(), cefBrowser)
+    jbCefClient.addRequestHandler(requestHandler, cefBrowser)
+    jbCefClient.addLoadHandler(loadHandler, cefBrowser)
+    jbCefClient.addDisplayHandler(displayHandler, cefBrowser)
+    jbCefClient.addLifeSpanHandler(lifeSpanHandler, cefBrowser)
+    contextMenuHandler?.let { jbCefClient.addContextMenuHandler(it, cefBrowser) }
+    LOG.debug("JCEF: zoom, elasticScrolling, swipeNavigation, browserAcceleratorKeys, builtInErrorPage and autofill are not applicable; scripts and page focus interop are configured by the runtime")
 
     val routerConfig = CefMessageRouter.CefMessageRouterConfig(QUERY_FUNCTION, QUERY_CANCEL_FUNCTION)
     messageRouterHandler = createMessageRouterHandler()
@@ -136,6 +153,54 @@ internal class JcefWebViewEngine(
   override suspend fun loadFile(file: Path) {
     clearActiveAssetResolver()
     navigate(file.toUri().toString())
+  }
+
+  override suspend fun loadUrl(url: URI) {
+    if (closed.get()) return
+    clearActiveAssetResolver()
+    navigate(url.toString())
+  }
+
+  override suspend fun goBack() {
+    runOnEdt {
+      if (closed.get() || !browserReadyForNavigation.get() || !cefBrowser.canGoBack()) return@runOnEdt
+      resetPageStateForNavigation()
+      cefBrowser.goBack()
+    }
+  }
+
+  override suspend fun goForward() {
+    runOnEdt {
+      if (closed.get() || !browserReadyForNavigation.get() || !cefBrowser.canGoForward()) return@runOnEdt
+      resetPageStateForNavigation()
+      cefBrowser.goForward()
+    }
+  }
+
+  override suspend fun reload() {
+    runOnEdt {
+      if (closed.get() || !browserReadyForNavigation.get()) return@runOnEdt
+      resetPageStateForNavigation()
+      cefBrowser.reload()
+    }
+  }
+
+  override suspend fun stop() {
+    pendingNavigationUrl.set(null)
+    runOnEdt {
+      if (!closed.get() && browserReadyForNavigation.get()) cefBrowser.stopLoad()
+    }
+  }
+
+  override fun setNavigationListener(listener: WebViewNavigationListener?) {
+    navigationListener = listener.takeUnless { closed.get() }
+  }
+
+  private fun notifyNavigationListener(action: (WebViewNavigationListener) -> Unit) {
+    if (closed.get()) return
+    val listener = navigationListener ?: return
+    // Navigation listeners only update state; keep notification order on the CEF UI thread.
+    action(listener)
   }
 
   override suspend fun loadAsset(root: WebViewAssetRoot, entry: WebViewAssetPath, query: String?) {
@@ -213,6 +278,8 @@ internal class JcefWebViewEngine(
   override suspend fun close() {
     if (!closed.compareAndSet(false, true)) return
 
+    navigationListener = null
+    pendingNavigationUrl.set(null)
     scope.cancel(CancellationException("JCEF WebView engine closed"))
     pendingEvals.values.forEach { it.complete(null) }
     pendingEvals.clear()
@@ -225,6 +292,16 @@ internal class JcefWebViewEngine(
     deliveryRetryScheduled.set(false)
 
     runOnEdtAndWait {
+      runCatching { jbCefClient.removeLoadHandler(loadHandler, cefBrowser) }
+        .onFailure { LOG.warn("Failed to remove JCEF load handler", it) }
+      runCatching { jbCefClient.removeDisplayHandler(displayHandler, cefBrowser) }
+        .onFailure { LOG.warn("Failed to remove JCEF display handler", it) }
+      runCatching { jbCefClient.removeRequestHandler(requestHandler, cefBrowser) }
+        .onFailure { LOG.warn("Failed to remove JCEF request handler", it) }
+      runCatching { jbCefClient.removeLifeSpanHandler(lifeSpanHandler, cefBrowser) }
+        .onFailure { LOG.warn("Failed to remove JCEF life span handler", it) }
+      runCatching { contextMenuHandler?.let { jbCefClient.removeContextMenuHandler(it, cefBrowser) } }
+        .onFailure { LOG.warn("Failed to remove JCEF context menu handler", it) }
       runCatching { messageRouter.removeHandler(messageRouterHandler) }
         .onFailure { LOG.warn("Failed to remove JCEF message router handler", it) }
       runCatching { jbCefClient.cefClient.removeMessageRouter(messageRouter) }
@@ -352,14 +429,38 @@ internal class JcefWebViewEngine(
 
   private fun createLoadHandler(): CefLoadHandlerAdapter {
     return object : CefLoadHandlerAdapter() {
+      // Confined to the CEF UI thread along with navigation notifications.
+      private var navigationError: WebViewBrowserError? = null
+
+      override fun onLoadingStateChange(browser: CefBrowser?, isLoading: Boolean, canGoBack: Boolean, canGoForward: Boolean) {
+        if (closed.get() || browser !== cefBrowser) return
+        notifyNavigationListener { it.onHistoryChanged(canGoBack, canGoForward) }
+      }
+
       override fun onLoadStart(browser: CefBrowser?, frame: CefFrame?, transitionType: CefRequest.TransitionType?) {
+        if (closed.get()) return
         injectDocumentStartScripts(browser, frame)
         resetDeliveryReadiness(browser, frame)
+        if (browser !== cefBrowser || frame?.isMain != true) return
+        navigationError = null
+        val url = frame.url
+        notifyNavigationListener {
+          it.onNavigationStarted(url)
+          it.onProgressChanged(0.1)
+        }
       }
 
       override fun onLoadEnd(browser: CefBrowser?, frame: CefFrame?, httpStatusCode: Int) {
+        if (closed.get() || browser !== cefBrowser || frame?.isMain != true) return
         markReadyForNavigation(browser, frame)
         markPageLoaded(browser, frame)
+        // CEF may report onLoadEnd after onLoadError for the same navigation.
+        val error = navigationError
+        val url = error?.url ?: frame.url
+        notifyNavigationListener {
+          it.onProgressChanged(1.0)
+          it.onNavigationFinished(url, error)
+        }
       }
 
       override fun onLoadError(
@@ -369,11 +470,32 @@ internal class JcefWebViewEngine(
         errorText: String?,
         failedUrl: String?,
       ) {
+        if (closed.get() || browser !== cefBrowser || frame?.isMain != true) return
         markReadyForNavigation(browser, frame)
         markPageLoaded(browser, frame)
-        if (frame?.isMain == true && errorCode != CefLoadHandler.ErrorCode.ERR_ABORTED) {
-          LOG.warn("JCEF WebView load failed: url=$failedUrl, error=$errorCode, text=$errorText")
+        if (errorCode == CefLoadHandler.ErrorCode.ERR_ABORTED) return
+        val url = failedUrl ?: frame.url
+        val error = WebViewBrowserError(url, errorText ?: errorCode?.toString() ?: "JCEF navigation failed", errorCode?.code)
+        navigationError = error
+        LOG.warn("JCEF WebView load failed: url=$failedUrl, error=$errorCode, text=$errorText")
+        notifyNavigationListener {
+          it.onProgressChanged(1.0)
+          it.onNavigationFinished(url, error)
         }
+      }
+    }
+  }
+
+  private fun createDisplayHandler(): CefDisplayHandlerAdapter {
+    return object : CefDisplayHandlerAdapter() {
+      override fun onAddressChange(browser: CefBrowser?, frame: CefFrame?, url: String?) {
+        if (closed.get() || browser !== cefBrowser || frame?.isMain != true) return
+        notifyNavigationListener { it.onUrlChanged(url) }
+      }
+
+      override fun onTitleChange(browser: CefBrowser?, title: String?) {
+        if (closed.get() || browser !== cefBrowser) return
+        notifyNavigationListener { it.onTitleChanged(title) }
       }
     }
   }
@@ -585,6 +707,7 @@ internal class JcefWebViewEngine(
 internal fun createJcefWebViewEngine(
   parentScope: CoroutineScope,
   documentStartScripts: List<WebViewScript> = emptyList(),
+  features: WebViewFeatures = WebViewFeatures.APPLICATION,
 ): JcefWebViewEngine {
-  return JcefWebViewEngine(parentScope, JcefWebViewRuntime.getOrCreateJBCefApp(), documentStartScripts)
+  return JcefWebViewEngine(parentScope, JcefWebViewRuntime.getOrCreateJBCefApp(), documentStartScripts, features)
 }

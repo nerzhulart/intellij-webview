@@ -8,10 +8,13 @@ import com.intellij.testFramework.TestLoggerFactory
 import com.intellij.testFramework.runInEdtAndWait
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
+import io.github.nerzhulart.webview.api.WebViewBrowserError
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME_HOST
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_HTTPS_HOST
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
+import io.github.nerzhulart.webview.impl.engine.WebViewFeatures
+import io.github.nerzhulart.webview.impl.engine.WebViewNavigationListener
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.webViewAssetCustomSchemeUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
@@ -40,6 +43,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.awt.BorderLayout
 import java.awt.Canvas
 import java.awt.Component
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -51,6 +55,271 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration.Companion.seconds
 
 internal class WinWebViewEngineTest {
+
+  @Test
+  fun navigationCommandsWaitForCreationAndReachTheActiveHandle() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createTestEngine(scope, bridge)
+    val url = "https://example.test/a%20b/%2F?q=%2520#part%201"
+    try {
+      runInEdtAndWait { engine.syncHostState(100L) }
+      runBlocking {
+        withTimeout(5_000) {
+          val commands = listOf(
+            launch(start = CoroutineStart.UNDISPATCHED) { engine.loadUrl(URI(url)) },
+            launch(start = CoroutineStart.UNDISPATCHED) { engine.goBack() },
+            launch(start = CoroutineStart.UNDISPATCHED) { engine.goForward() },
+            launch(start = CoroutineStart.UNDISPATCHED) { engine.reload() },
+            launch(start = CoroutineStart.UNDISPATCHED) { engine.stop() },
+          )
+
+          assertTrue(bridge.urlLoads.isEmpty(), bridge.urlLoads.toString())
+          assertTrue(bridge.goBackHandles.isEmpty(), bridge.goBackHandles.toString())
+          assertTrue(bridge.goForwardHandles.isEmpty(), bridge.goForwardHandles.toString())
+          assertTrue(bridge.reloadHandles.isEmpty(), bridge.reloadHandles.toString())
+          assertTrue(bridge.stopHandles.isEmpty(), bridge.stopHandles.toString())
+
+          runInEdtAndWait { bridge.callbacks.onCreated(bridge.createdHandles.single()) }
+          commands.forEach { it.join() }
+        }
+      }
+
+      assertEquals(listOf(UrlLoad(1L, url)), bridge.urlLoads)
+      assertEquals(listOf(1L), bridge.goBackHandles)
+      assertEquals(listOf(1L), bridge.goForwardHandles)
+      assertEquals(listOf(1L), bridge.reloadHandles)
+      assertEquals(listOf(1L), bridge.stopHandles)
+
+      runBlocking {
+        engine.loadUrl(URI("https://example.test/next"))
+        engine.goBack()
+        engine.goForward()
+        engine.reload()
+        engine.stop()
+      }
+
+      assertEquals(listOf(UrlLoad(1L, url), UrlLoad(1L, "https://example.test/next")), bridge.urlLoads)
+      assertEquals(listOf(1L, 1L), bridge.goBackHandles)
+      assertEquals(listOf(1L, 1L), bridge.goForwardHandles)
+      assertEquals(listOf(1L, 1L), bridge.reloadHandles)
+      assertEquals(listOf(1L, 1L), bridge.stopHandles)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun navigationCallbacksReportRedirectTitleProgressAndHistory() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    val listener = RecordingNavigationListener()
+    val initialUrl = "https://example.test/start"
+    val finalUrl = "https://example.test/redirected"
+    try {
+      engine.setNavigationListener(listener)
+      runInEdtAndWait { bridge.callbacks.onNavigationStarting(initialUrl) }
+      assertEquals(listOf(initialUrl), listener.startedUrls)
+      assertEquals(listOf(0.0), listener.progress)
+      assertTrue(listener.finishedNavigations.isEmpty())
+
+      runInEdtAndWait {
+        bridge.callbacks.onSourceChanged(finalUrl)
+        bridge.callbacks.onDocumentTitleChanged("Redirected page")
+        bridge.callbacks.onHistoryChanged(true, false)
+        bridge.callbacks.onHistoryChanged(false, true)
+        bridge.callbacks.onHistoryChanged(false, false)
+      }
+      assertEquals(listOf(finalUrl), listener.urls)
+      assertEquals(listOf("Redirected page"), listener.titles)
+      assertEquals(listOf(true to false, false to true, false to false), listener.history)
+
+      runInEdtAndWait { bridge.callbacks.onNavigationCompleted(true, 0) }
+      assertEquals(listOf(0.0, 1.0), listener.progress)
+      assertEquals(listOf(finalUrl to null), listener.finishedNavigations)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun failedNavigationReportsNetworkErrorAndNextNavigationCanSucceed() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    val listener = RecordingNavigationListener()
+    val failedUrl = "https://missing.example.test/"
+    val nextUrl = "https://example.test/"
+    try {
+      engine.setNavigationListener(listener)
+      runInEdtAndWait {
+        bridge.callbacks.onNavigationStarting(failedUrl)
+        bridge.callbacks.onNavigationCompleted(false, 13)
+      }
+
+      val (url, error) = listener.finishedNavigations.single()
+      assertEquals(failedUrl, url)
+      assertNotNull(error)
+      assertEquals(failedUrl, error!!.url)
+      assertEquals(13, error.code)
+      assertTrue(error.message.isNotBlank(), error.message)
+      assertEquals(listOf(0.0, 1.0), listener.progress)
+
+      runInEdtAndWait {
+        bridge.callbacks.onNavigationStarting(nextUrl)
+        bridge.callbacks.onNavigationCompleted(true, 0)
+      }
+      assertEquals(listOf(failedUrl, nextUrl), listener.startedUrls)
+      assertEquals(2, listener.finishedNavigations.size)
+      assertEquals(nextUrl to null, listener.finishedNavigations.last())
+      assertEquals(listOf(0.0, 1.0, 0.0, 1.0), listener.progress)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun canceledNavigationFinishesWithoutBrowserError() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    val listener = RecordingNavigationListener()
+    val url = "https://example.test/canceled"
+    try {
+      engine.setNavigationListener(listener)
+      runInEdtAndWait {
+        bridge.callbacks.onNavigationStarting(url)
+        bridge.callbacks.onNavigationCompleted(false, 14)
+      }
+
+      assertEquals(listOf(url), listener.startedUrls)
+      assertEquals(listOf(0.0, 1.0), listener.progress)
+      assertEquals(listOf(url to null), listener.finishedNavigations)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun staleNavigationCallbacksAreIgnoredAfterRecoveryAndClose() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(scope, bridge)
+    val listener = RecordingNavigationListener()
+    val staleCallbacks = bridge.callbacks
+    val currentUrl = "https://example.test/current"
+    try {
+      engine.setNavigationListener(listener)
+      collectWarningsAndErrors {
+        runInEdtAndWait {
+          staleCallbacks.onNativeDiagnostic(4, "process-failed.fatal", "render process crashed", "exitCode=1")
+          bridge.callbacks.onCreated(bridge.createdHandles.last())
+        }
+      }
+      assertEquals(listOf(1L, 2L), bridge.createdHandles)
+      runInEdtAndWait { bridge.callbacks.onNavigationStarting(currentUrl) }
+      assertEquals(listOf(currentUrl), listener.startedUrls)
+      val eventCount = listener.eventCount
+
+      runInEdtAndWait {
+        staleCallbacks.onNavigationStarting("https://example.test/stale-start")
+        staleCallbacks.onSourceChanged("https://example.test/stale-source")
+        staleCallbacks.onDocumentTitleChanged("Stale title")
+        staleCallbacks.onHistoryChanged(true, true)
+        staleCallbacks.onNavigationCompleted(false, 13)
+      }
+      assertEquals(eventCount, listener.eventCount, "callbacks from the replaced controller must be ignored")
+
+      runInEdtAndWait { bridge.callbacks.onNavigationCompleted(true, 0) }
+      assertEquals(listOf(currentUrl to null), listener.finishedNavigations)
+      assertEquals(listOf(0.0, 1.0), listener.progress)
+
+      runBlocking { engine.close() }
+      val closedEventCount = listener.eventCount
+      runInEdtAndWait {
+        bridge.callbacks.onNavigationStarting("https://example.test/closed")
+        bridge.callbacks.onSourceChanged("https://example.test/closed-source")
+        bridge.callbacks.onDocumentTitleChanged("Closed title")
+        bridge.callbacks.onHistoryChanged(true, true)
+        bridge.callbacks.onNavigationCompleted(false, 13)
+      }
+      assertEquals(closedEventCount, listener.eventCount, "callbacks after close must be ignored")
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun featurePresetsEncodeTheNativeAbiBits() {
+    assertEquals(1, WinWebViewFeatureFlags.CONTEXT_MENU)
+    assertEquals(2, WinWebViewFeatureFlags.ZOOM)
+    assertEquals(4, WinWebViewFeatureFlags.SWIPE_NAVIGATION)
+    assertEquals(8, WinWebViewFeatureFlags.BROWSER_ACCELERATOR_KEYS)
+    assertEquals(16, WinWebViewFeatureFlags.BUILT_IN_ERROR_PAGE)
+    assertEquals(32, WinWebViewFeatureFlags.AUTOFILL)
+    assertEquals(0, WinWebViewFeatureFlags.encode(WebViewFeatures.APPLICATION))
+    assertEquals(1 or 2 or 16, WinWebViewFeatureFlags.encode(WebViewFeatures.BROWSER))
+  }
+
+  @Test
+  fun explicitFeaturesEncodeIndependentlyAndIgnoreNonNativeOptions() {
+    val application = WebViewFeatures.APPLICATION
+    val cases = listOf(
+      application.copy(contextMenu = true) to WinWebViewFeatureFlags.CONTEXT_MENU,
+      application.copy(zoom = true) to WinWebViewFeatureFlags.ZOOM,
+      application.copy(swipeNavigation = true) to WinWebViewFeatureFlags.SWIPE_NAVIGATION,
+      application.copy(browserAcceleratorKeys = true) to WinWebViewFeatureFlags.BROWSER_ACCELERATOR_KEYS,
+      application.copy(builtInErrorPage = true) to WinWebViewFeatureFlags.BUILT_IN_ERROR_PAGE,
+      application.copy(autofill = true) to WinWebViewFeatureFlags.AUTOFILL,
+    )
+    for ((features, expectedMask) in cases) {
+      assertEquals(expectedMask, WinWebViewFeatureFlags.encode(features), features.toString())
+    }
+    assertEquals(
+      0,
+      WinWebViewFeatureFlags.encode(application.copy(applicationModeScript = false, pageFocusInterop = false, elasticScrolling = true)),
+    )
+    assertEquals(
+      63,
+      WinWebViewFeatureFlags.encode(WebViewFeatures.BROWSER.copy(swipeNavigation = true, browserAcceleratorKeys = true, autofill = true)),
+    )
+  }
+
+  @Test
+  fun creationAndRecoveryPassConfiguredNativeFeatures() {
+    val cases = listOf(
+      WebViewFeatures.APPLICATION to 0,
+      WebViewFeatures.BROWSER to (1 or 2 or 16),
+      WebViewFeatures.BROWSER.copy(swipeNavigation = true, browserAcceleratorKeys = true, autofill = true) to 63,
+    )
+    for ((features, expectedMask) in cases) {
+      val bridge = FakeWinWebView2Bridge()
+      val scope = testScope()
+      val engine = createActiveEngine(scope, bridge, features = features)
+      try {
+        assertEquals(expectedMask, bridge.lastFeatures, features.toString())
+        assertEquals(listOf(expectedMask), bridge.createdFeatures)
+        collectWarningsAndErrors {
+          runInEdtAndWait {
+            bridge.callbacks.onNativeDiagnostic(4, "process-failed.fatal", "render process crashed", "exitCode=1")
+            bridge.callbacks.onCreated(bridge.createdHandles.last())
+          }
+        }
+        assertEquals(listOf(1L, 2L), bridge.createdHandles)
+        assertEquals(listOf(1L), bridge.destroyedHandles)
+        assertEquals(listOf(expectedMask, expectedMask), bridge.createdFeatures, features.toString())
+      }
+      finally {
+        closeEngine(engine, scope)
+      }
+    }
+  }
 
   @Test
   fun nativeDiagnosticLevelsMapToLoggerLevels() {
@@ -785,6 +1054,7 @@ internal class WinWebViewEngineTest {
     devToolsCpuProfilingEnabled: Boolean = false,
     customSchemeAssetLoadingEnabled: Boolean = true,
     componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
+    features: WebViewFeatures = WebViewFeatures.APPLICATION,
   ): WinWebViewEngine {
     val engine = createTestEngine(
       scope,
@@ -794,6 +1064,7 @@ internal class WinWebViewEngineTest {
       devToolsCpuProfilingEnabled = { devToolsCpuProfilingEnabled },
       customSchemeAssetLoadingEnabled = { customSchemeAssetLoadingEnabled },
       componentHwndResolver = componentHwndResolver,
+      features = features,
     )
     runInEdtAndWait {
       engine.syncHostState(parentHwnd)
@@ -897,6 +1168,7 @@ internal class WinWebViewEngineTest {
     devToolsCpuProfilingEnabled: () -> Boolean = { false },
     customSchemeAssetLoadingEnabled: () -> Boolean = { true },
     componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
+    features: WebViewFeatures = WebViewFeatures.APPLICATION,
   ): WinWebViewEngine {
     return WinWebViewEngine(
       scope,
@@ -907,7 +1179,43 @@ internal class WinWebViewEngineTest {
       devToolsCpuProfilingEnabled = devToolsCpuProfilingEnabled,
       customSchemeAssetLoadingEnabled = customSchemeAssetLoadingEnabled,
       componentHwndResolver = componentHwndResolver,
+      features = features,
     )
+  }
+
+  private class RecordingNavigationListener : WebViewNavigationListener {
+    val startedUrls = mutableListOf<String?>()
+    val urls = mutableListOf<String?>()
+    val titles = mutableListOf<String?>()
+    val progress = mutableListOf<Double>()
+    val history = mutableListOf<Pair<Boolean, Boolean>>()
+    val finishedNavigations = mutableListOf<Pair<String?, WebViewBrowserError?>>()
+    val eventCount: Int
+      get() = startedUrls.size + urls.size + titles.size + progress.size + history.size + finishedNavigations.size
+
+    override fun onNavigationStarted(url: String?) {
+      startedUrls.add(url)
+    }
+
+    override fun onUrlChanged(url: String?) {
+      urls.add(url)
+    }
+
+    override fun onTitleChanged(title: String?) {
+      titles.add(title)
+    }
+
+    override fun onProgressChanged(progress: Double) {
+      this.progress.add(progress)
+    }
+
+    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+      history.add(canGoBack to canGoForward)
+    }
+
+    override fun onNavigationFinished(url: String?, error: WebViewBrowserError?) {
+      finishedNavigations.add(url to error)
+    }
   }
 
   private fun collectWarningsAndErrors(action: () -> Unit): LoggedMessages {
@@ -991,11 +1299,18 @@ internal class WinWebViewEngineTest {
     val visibility = mutableListOf<Visibility>()
     val htmlLoads = mutableListOf<HtmlLoad>()
     val urlLoads = mutableListOf<UrlLoad>()
+    val goBackHandles = mutableListOf<Long>()
+    val goForwardHandles = mutableListOf<Long>()
+    val reloadHandles = mutableListOf<Long>()
+    val stopHandles = mutableListOf<Long>()
     val jsTransfers = mutableListOf<JsTransfer>()
     val devToolsCalls = mutableListOf<DevToolsCall>()
     val assetCompletions = CopyOnWriteArrayList<AssetCompletion>()
     val documentStartScripts = mutableListOf<String>()
     val backgroundColors = mutableListOf<Int>()
+    val createdFeatures = mutableListOf<Int>()
+    val lastFeatures: Int?
+      get() = createdFeatures.lastOrNull()
     val focusedHandles = mutableListOf<Long>()
     val clearFocusedHandles = mutableListOf<Long>()
     val callOrder = mutableListOf<String>()
@@ -1013,10 +1328,12 @@ internal class WinWebViewEngineTest {
       userDataDir: String,
       documentStartScript: String,
       backgroundColor: Int,
+      features: Int,
       callbacks: WinWebView2Bridge.Callbacks,
     ): Long {
       this.callbacks = callbacks
       backgroundColors.add(backgroundColor)
+      createdFeatures.add(features)
       documentStartScripts.add(documentStartScript)
       createParentHwnds.add(parentHwnd)
       callOrder.add("create:$parentHwnd")
@@ -1079,6 +1396,22 @@ internal class WinWebViewEngineTest {
 
     override fun loadUrl(handle: Long, url: String) {
       urlLoads.add(UrlLoad(handle, url))
+    }
+
+    override fun goBack(handle: Long) {
+      goBackHandles.add(handle)
+    }
+
+    override fun goForward(handle: Long) {
+      goForwardHandles.add(handle)
+    }
+
+    override fun reload(handle: Long) {
+      reloadHandles.add(handle)
+    }
+
+    override fun stop(handle: Long) {
+      stopHandles.add(handle)
     }
 
     override fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String) {

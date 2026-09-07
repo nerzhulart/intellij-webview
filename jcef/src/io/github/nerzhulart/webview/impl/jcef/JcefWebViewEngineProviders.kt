@@ -26,11 +26,11 @@ internal class JcefEngineProvider : WebViewEngineProvider {
   override suspend fun availability(): WebViewEngineAvailability = JcefWebViewRuntime.availabilityBlocking()
 
   override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
-    return createJcefWebViewEngine(parentScope = scope, documentStartScripts = options.documentStartScripts)
+    return createJcefWebViewEngine(parentScope = scope, documentStartScripts = options.documentStartScripts, features = options.features)
   }
 }
 
-private val JCEF_CAPABILITIES = WebViewEngineCapabilities(assetServing = true, messagePassing = true, interactiveInput = true)
+private val JCEF_CAPABILITIES = WebViewEngineCapabilities(assetServing = true, messagePassing = true, interactiveInput = true, navigation = true)
 private const val JCEF_EXPLICIT_PRIORITY = 10
 private const val LINUX_DEFAULT_PRIORITY = 0
 private const val SYSTEM_FALLBACK_PRIORITY = 100

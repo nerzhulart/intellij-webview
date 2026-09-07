@@ -10,6 +10,7 @@ import com.intellij.util.ui.update.DebouncedUpdates
 import com.intellij.util.ui.update.UpdateQueue
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
+import io.github.nerzhulart.webview.api.WebViewBrowserError
 import io.github.nerzhulart.webview.impl.MacMainThreadDispatcher
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
@@ -20,6 +21,8 @@ import io.github.nerzhulart.webview.impl.WebViewLogger
 import io.github.nerzhulart.webview.impl.WebViewShortcutRouter
 import io.github.nerzhulart.webview.impl.WebViewShortcutRouting
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
+import io.github.nerzhulart.webview.impl.engine.WebViewFeatures
+import io.github.nerzhulart.webview.impl.engine.WebViewNavigationListener
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.WebViewEditShortcutPolicy
 import io.github.nerzhulart.webview.impl.openWebViewPopupUrlExternally
@@ -41,6 +44,7 @@ import java.awt.Component
 import java.awt.KeyboardFocusManager
 import java.awt.Toolkit
 import java.awt.event.KeyEvent
+import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -63,6 +67,7 @@ private val LOG = logger<MacWebViewEngine>()
 internal class MacWebViewEngine(
   parentScope: CoroutineScope,
   private val documentStartScripts: List<WebViewScript> = emptyList(),
+  private val features: WebViewFeatures = WebViewFeatures.APPLICATION,
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
   // TODO: should we return some wrapper component for it?
@@ -86,6 +91,22 @@ internal class MacWebViewEngine(
 
   @Volatile
   private var inboundMessageHandler: (String) -> Unit = {}
+
+  @Volatile
+  private var navigationListener: WebViewNavigationListener? = null
+
+  private val navigationCallbacks = object : WebViewNavigationListener {
+    override fun onNavigationStarted(url: String?) { navigationListener?.onNavigationStarted(url) }
+    override fun onUrlChanged(url: String?) { navigationListener?.onUrlChanged(url) }
+    override fun onTitleChanged(title: String?) { navigationListener?.onTitleChanged(title) }
+    override fun onProgressChanged(progress: Double) { navigationListener?.onProgressChanged(progress) }
+    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+      navigationListener?.onHistoryChanged(canGoBack, canGoForward)
+    }
+    override fun onNavigationFinished(url: String?, error: WebViewBrowserError?) {
+      navigationListener?.onNavigationFinished(url, error)
+    }
+  }
 
   // Attachment-scoped callback. The native bridge only observes AppKit events; the host decides when
   // they may be forwarded to AWT and clears the callback on detach.
@@ -124,6 +145,8 @@ internal class MacWebViewEngine(
                   onModifierKeyEvent = { event -> modifierKeyHandler(event) },
                   onNativeMousePressed = { event -> nativeMousePressedHandler(event) },
                   documentStartScripts = documentStartScripts,
+                  features = features,
+                  navigationListener = navigationCallbacks,
                 )
               }
 
@@ -155,6 +178,29 @@ internal class MacWebViewEngine(
 
   override fun setFromJsHandler(handler: WebViewJsMessageReceiver) {
     inboundMessageHandler = handler::transferFromJs
+  }
+
+  override fun setNavigationListener(listener: WebViewNavigationListener?) {
+    navigationListener = listener
+  }
+
+  override suspend fun loadUrl(url: URI) {
+    clearActiveAssetResolver()
+    loadUrlInternal(url.toString())
+  }
+
+  override suspend fun goBack() { enqueueNavigation(WKWebViewBridge::goBack) }
+  override suspend fun goForward() { enqueueNavigation(WKWebViewBridge::goForward) }
+  override suspend fun reload() { enqueueNavigation(WKWebViewBridge::reload) }
+  override suspend fun stop() { enqueueNavigation(WKWebViewBridge::stopLoading) }
+
+  private fun enqueueNavigation(command: (ID) -> Unit) {
+    ensureInitialized()
+    if (state.get() != State.Active) return
+    scope.launch(MacMainThreadDispatcher) {
+      val wv = awaitWebViewId() ?: return@launch
+      if (state.get() == State.Active) command(wv)
+    }
   }
 
   internal fun setModifierKeyHandler(handler: ((WKWebViewBridge.ModifierKeyEvent) -> Unit)?) {
@@ -247,6 +293,7 @@ internal class MacWebViewEngine(
   }
 
   override suspend fun close() {
+    navigationListener = null
     clearActiveAssetResolver()
     setModifierKeyHandler(null)
     setNativeMousePressedHandler(null)
@@ -689,8 +736,9 @@ internal class MacWebViewEngine(
 internal fun createMacWebViewEngine(
   parentScope: CoroutineScope,
   documentStartScripts: List<WebViewScript> = emptyList(),
+  features: WebViewFeatures = WebViewFeatures.APPLICATION,
 ): MacWebViewEngine {
-  return MacWebViewEngine(parentScope, documentStartScripts)
+  return MacWebViewEngine(parentScope, documentStartScripts, features)
 }
 
 @ApiStatus.Internal

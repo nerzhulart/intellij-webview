@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.registry.Registry
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
+import io.github.nerzhulart.webview.api.WebViewBrowserError
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
@@ -16,6 +17,8 @@ import io.github.nerzhulart.webview.impl.webViewAssetCustomSchemeUrl
 import io.github.nerzhulart.webview.impl.webViewAssetHttpsUrl
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.engine.WebViewEngine
+import io.github.nerzhulart.webview.impl.engine.WebViewFeatures
+import io.github.nerzhulart.webview.impl.engine.WebViewNavigationListener
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
 import io.github.nerzhulart.webview.impl.traceWebViewPerfSince
@@ -39,6 +42,7 @@ import java.awt.BorderLayout
 import java.awt.Canvas
 import java.awt.Component
 import java.awt.Dimension
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -68,8 +72,13 @@ internal class WinWebViewEngine(
   private val devToolsCpuProfilingEnabled: () -> Boolean = { Registry.get(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY).asBoolean() },
   private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
   private val componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
+  private val features: WebViewFeatures = WebViewFeatures.APPLICATION,
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
+
+  init {
+    LOG.debug("WebView2: elasticScrolling is not applicable; scripts and page focus interop are configured by the runtime")
+  }
 
   private val canvas = object : Canvas() {
     init {
@@ -193,6 +202,10 @@ internal class WinWebViewEngine(
   @Volatile
   private var inboundMessageHandler: (String) -> Unit = {}
 
+  @Volatile
+  private var navigationListener: WebViewNavigationListener? = null
+  private val callbackGeneration = AtomicLong(0)
+
   private val pendingLoad = AtomicReference<PendingLoad?>(null)
   private val loadScheduled = AtomicBoolean(false)
 
@@ -222,7 +235,42 @@ internal class WinWebViewEngine(
 
   private var consecutiveRenderUnresponsiveCount = 0
 
-  private val callbacks = object : WinWebView2Bridge.Callbacks {
+  private fun callbacks() = object : WinWebView2Bridge.Callbacks {
+    private val generation = callbackGeneration.incrementAndGet()
+    private var navigationUrl: String? = null
+
+    private fun isCurrentNavigationSource(): Boolean =
+      generation == callbackGeneration.get() && state.get() == State.Active
+
+    override fun onNavigationStarting(url: String) {
+      if (!isCurrentNavigationSource()) return
+      navigationUrl = url
+      navigationListener?.onNavigationStarted(url)
+      navigationListener?.onProgressChanged(0.0)
+    }
+
+    override fun onNavigationCompleted(isSuccess: Boolean, webErrorStatus: Int) {
+      if (!isCurrentNavigationSource()) return
+      val error = if (isSuccess || webErrorStatus == 14) null else
+        WebViewBrowserError(navigationUrl, "WebView2 navigation failed (status $webErrorStatus)", webErrorStatus)
+      navigationListener?.onProgressChanged(1.0)
+      navigationListener?.onNavigationFinished(navigationUrl, error)
+    }
+
+    override fun onSourceChanged(url: String) {
+      if (!isCurrentNavigationSource()) return
+      navigationUrl = url
+      navigationListener?.onUrlChanged(url)
+    }
+
+    override fun onDocumentTitleChanged(title: String) {
+      if (isCurrentNavigationSource()) navigationListener?.onTitleChanged(title)
+    }
+
+    override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
+      if (isCurrentNavigationSource()) navigationListener?.onHistoryChanged(canGoBack, canGoForward)
+    }
+
     override fun onCreated(handle: Long) {
       val currentState = state.get()
       if (currentState != State.Creating || (nativeHandle != 0L && nativeHandle != handle)) {
@@ -352,6 +400,28 @@ internal class WinWebViewEngine(
     inboundMessageHandler = handler::transferFromJs
   }
 
+  override fun setNavigationListener(listener: WebViewNavigationListener?) {
+    navigationListener = listener
+  }
+
+  override suspend fun loadUrl(url: URI) {
+    clearActiveAssetResolver()
+    loadUrlInternal(url.toString())
+  }
+
+  override suspend fun goBack() { navigate(bridge::goBack) }
+  override suspend fun goForward() { navigate(bridge::goForward) }
+  override suspend fun reload() { navigate(bridge::reload) }
+  override suspend fun stop() { navigate(bridge::stop) }
+
+  private suspend fun navigate(command: (Long) -> Unit) {
+    if (state.get() == State.Closing || state.get() == State.Closed) return
+    val handle = awaitHandle() ?: return
+    invokeOnWebView {
+      if (state.get() == State.Active && nativeHandle == handle) command(handle)
+    }
+  }
+
   /**
    * The single placement request. Everything downstream is derived from [desired]: the native side
    * is told the whole state and reconciles it, so the caller never sequences attach/bounds/visibility.
@@ -472,6 +542,7 @@ internal class WinWebViewEngine(
   }
 
   override suspend fun close() {
+    navigationListener = null
     logConsoleStartupSummary("close", force = false)
     loop@ while (true) {
       when (val current = state.get()) {
@@ -563,7 +634,8 @@ internal class WinWebViewEngine(
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       val generation = hostGeneration.incrementAndGet()
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", diagnosticDetails()) {
-        bridge.create(desired.parentHwnd, generation, userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
+        bridge.create(desired.parentHwnd, generation, userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB,
+                      WinWebViewFeatureFlags.encode(features), callbacks())
       }
       // The controller is born on this parent, so only the geometry part of the snapshot is left.
       lastApplied = desired
@@ -736,7 +808,8 @@ internal class WinWebViewEngine(
       LOG.webViewLifecycle("win-webview2-recovery", "recreating after $event${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", "recovery=true, ${diagnosticDetails()}") {
-        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
+        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB,
+                      WinWebViewFeatureFlags.encode(features), callbacks())
       }
       lastApplied = placement
       placement?.let {
@@ -1169,8 +1242,27 @@ internal fun createWinWebViewEngine(
   parentScope: CoroutineScope,
   debugName: String? = null,
   documentStartScripts: List<WebViewScript> = emptyList(),
+  features: WebViewFeatures = WebViewFeatures.APPLICATION,
 ): WinWebViewEngine {
-  return WinWebViewEngine(parentScope, debugName = debugName, documentStartScripts = documentStartScripts)
+  return WinWebViewEngine(parentScope, debugName = debugName, documentStartScripts = documentStartScripts, features = features)
+}
+
+internal object WinWebViewFeatureFlags {
+  const val CONTEXT_MENU = 1
+  const val ZOOM = 2
+  const val SWIPE_NAVIGATION = 4
+  const val BROWSER_ACCELERATOR_KEYS = 8
+  const val BUILT_IN_ERROR_PAGE = 16
+  const val AUTOFILL = 32
+
+  fun encode(features: WebViewFeatures): Int {
+    return (if (features.contextMenu) CONTEXT_MENU else 0) or
+           (if (features.zoom) ZOOM else 0) or
+           (if (features.swipeNavigation) SWIPE_NAVIGATION else 0) or
+           (if (features.browserAcceleratorKeys) BROWSER_ACCELERATOR_KEYS else 0) or
+           (if (features.builtInErrorPage) BUILT_IN_ERROR_PAGE else 0) or
+           (if (features.autofill) AUTOFILL else 0)
+  }
 }
 
 private object ImmediateWebViewDispatcher : CoroutineDispatcher() {
