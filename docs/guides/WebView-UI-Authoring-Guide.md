@@ -2,6 +2,8 @@
 
 Use this guide to add a local WebView page to an IntelliJ plugin that depends on the external WebView Runtime plugin.
 
+To embed an arbitrary URL without bundled assets or production JavaScript, use the [Embedded Browser Guide](Embedded-Browser-Guide.md). It covers the bare `WebBrowserPanel`, the factory-created `EmbeddedBrowserPanel` with a Swing toolbar, and backend feature limits; the bundled-asset `WebViewPanel` API is unchanged.
+
 ## Use the Supported Stack
 
 - Kotlin host: `createWebViewPanel(...)`, `WebViewPanelOptions`, and `WebViewAssetRoot.forView(...)`.

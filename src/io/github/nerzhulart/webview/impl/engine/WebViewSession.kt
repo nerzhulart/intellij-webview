@@ -8,6 +8,7 @@ import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewInterop
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
 import io.github.nerzhulart.webview.impl.traceWebViewPerf
+import java.net.URI
 import javax.swing.JComponent
 
 private val LOG = logger<WebViewSession>()
@@ -19,7 +20,40 @@ internal class WebViewSession(
     override val interop: WebViewInterop,
     override val runtimeInfo: WebViewRuntimeInfo,
     private val debugName: String?,
+    private val tracker: WebViewNavigationStateTracker,
 ) : WebView {
+  override val browserState get() = tracker.state
+  override val isBrowserNavigationSupported: Boolean get() = runtimeInfo.capabilities.navigation
+
+  override suspend fun loadUrl(url: URI) {
+    if (!ensureSupported("loadUrl")) return
+    require(url.isAbsolute) { "WebView requires an absolute URL: $url" }
+    consoleCapture.setViewId(null)
+    engine.loadUrl(url)
+  }
+
+  override suspend fun goBack() {
+    if (ensureSupported("goBack") && browserState.value.canGoBack) engine.goBack()
+  }
+
+  override suspend fun goForward() {
+    if (ensureSupported("goForward") && browserState.value.canGoForward) engine.goForward()
+  }
+
+  override suspend fun reload() {
+    if (ensureSupported("reload")) engine.reload()
+  }
+
+  override suspend fun stop() {
+    if (ensureSupported("stop")) engine.stop()
+  }
+
+  private fun ensureSupported(command: String): Boolean {
+    if (isBrowserNavigationSupported) return true
+    LOG.warn("WebView browser command $command is not supported by ${runtimeInfo.engineId}")
+    return false
+  }
+
   override suspend fun loadFile(file: VirtualFile) {
     consoleCapture.setViewId(null)
     val path = file.toNioPathOrNull() ?: error("WebView can load only local files: ${file.presentableUrl}")

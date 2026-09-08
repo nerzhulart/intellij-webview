@@ -2,6 +2,10 @@
 
 #![cfg(target_os = "windows")]
 
+mod navigation;
+
+use navigation::NavigationState;
+
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -21,7 +25,7 @@ use jni::{
 };
 use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
 use windows::{
-    core::{w, Interface, HSTRING, PCWSTR, PWSTR},
+    core::{w, Interface, BOOL, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::*,
         Graphics::Gdi::HBRUSH,
@@ -44,7 +48,13 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v18";
+const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v19";
+const FEATURE_CONTEXT_MENU: u32 = 1;
+const FEATURE_ZOOM: u32 = 2;
+const FEATURE_SWIPE: u32 = 4;
+const FEATURE_ACCELERATORS: u32 = 8;
+const FEATURE_ERROR_PAGE: u32 = 16;
+const FEATURE_AUTOFILL: u32 = 32;
 const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
 /// Sent to the holder window to drain the command queue on AWT-Windows synchronously.
 const WM_AWT_WEBVIEW_BARRIER: u32 = WM_APP + 0x35B;
@@ -89,6 +99,7 @@ enum NativeCommand {
         user_data_dir: String,
         document_start_script: String,
         background_color: u32,
+        features: u32,
         callbacks: Arc<JavaCallbacks>,
     },
     Destroy {
@@ -124,6 +135,18 @@ enum NativeCommand {
     LoadUrl {
         handle: jlong,
         url: String,
+    },
+    GoBack {
+        handle: jlong,
+    },
+    GoForward {
+        handle: jlong,
+    },
+    Reload {
+        handle: jlong,
+    },
+    Stop {
+        handle: jlong,
     },
     SetVirtualHostMapping {
         handle: jlong,
@@ -167,6 +190,10 @@ impl NativeCommand {
             | Self::ClearFocus { handle }
             | Self::MousePressed { handle, .. }
             | Self::LoadUrl { handle, .. }
+            | Self::GoBack { handle }
+            | Self::GoForward { handle }
+            | Self::Reload { handle }
+            | Self::Stop { handle }
             | Self::SetVirtualHostMapping { handle, .. }
             | Self::LoadHtml { handle, .. }
             | Self::Evaluate { handle, .. }
@@ -533,6 +560,75 @@ impl JavaCallbacks {
     fn on_destroyed(&self, handle: jlong) {
         self.with_env(|env, object| {
             env.call_method(object, "onDestroyed", "(J)V", &[JValue::Long(handle)])?;
+            Ok(())
+        });
+    }
+
+    fn on_navigation_starting(&self, url: String) {
+        self.with_env(|env, object| {
+            let url = JObject::from(env.new_string(url)?);
+            env.call_method(
+                object,
+                "onNavigationStarting",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&url)],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn on_navigation_completed(&self, is_success: bool, web_error_status: jint) {
+        self.with_env(|env, object| {
+            env.call_method(
+                object,
+                "onNavigationCompleted",
+                "(ZI)V",
+                &[
+                    JValue::Bool(is_success.into()),
+                    JValue::Int(web_error_status),
+                ],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn on_source_changed(&self, url: String) {
+        self.with_env(|env, object| {
+            let url = JObject::from(env.new_string(url)?);
+            env.call_method(
+                object,
+                "onSourceChanged",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&url)],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn on_document_title_changed(&self, title: String) {
+        self.with_env(|env, object| {
+            let title = JObject::from(env.new_string(title)?);
+            env.call_method(
+                object,
+                "onDocumentTitleChanged",
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&title)],
+            )?;
+            Ok(())
+        });
+    }
+
+    fn on_history_changed(&self, can_go_back: bool, can_go_forward: bool) {
+        self.with_env(|env, object| {
+            env.call_method(
+                object,
+                "onHistoryChanged",
+                "(ZZ)V",
+                &[
+                    JValue::Bool(can_go_back.into()),
+                    JValue::Bool(can_go_forward.into()),
+                ],
+            )?;
             Ok(())
         });
     }
@@ -923,6 +1019,8 @@ struct NativeWebView {
     controller_completed_handler: Option<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>,
     controller_create_started_at: Option<Instant>,
     last_navigation_requested_at: Option<Instant>,
+    navigation_state: NavigationState,
+    navigation_events: Option<NavigationEventSubscriptions>,
     navigation_timings: HashMap<u64, NavigationTiming>,
     unidentified_navigation_timing: Option<NavigationTiming>,
     add_script_handlers: Vec<(
@@ -947,6 +1045,7 @@ struct NativeWebView {
     /// Host background as ARGB, applied to the controller so that a frame without page content
     /// looks exactly like the Canvas behind it.
     background_color: u32,
+    features: u32,
     /// Parent last pushed to the controller, so `put_ParentWindow` fires only on a real reparent.
     applied_parent: HWND,
     /// Bounds last pushed to the controller, so a repeated snapshot never becomes a resize.
@@ -964,6 +1063,7 @@ struct DestroyResources {
     accelerator_token: Option<EventRegistrationToken>,
     got_focus_token: Option<EventRegistrationToken>,
     web_resource_token: Option<EventRegistrationToken>,
+    navigation_events: Option<NavigationEventSubscriptions>,
     pending_asset_requests: HashMap<u64, PendingAssetRequest>,
 }
 
@@ -982,6 +1082,7 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
             accelerator_token: view.accelerator_key_pressed_token.take(),
             got_focus_token: view.got_focus_token.take(),
             web_resource_token: view.web_resource_requested_token.take(),
+            navigation_events: view.navigation_events.take(),
             pending_asset_requests: std::mem::take(&mut view.pending_asset_requests),
         };
         view.controller_completed_handler = None;
@@ -994,6 +1095,7 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
         resources
     };
 
+    drop(resources.navigation_events);
     if let (Some(controller), Some(token)) = (&resources.controller, resources.accelerator_token) {
         unsafe {
             let _ = controller.remove_AcceleratorKeyPressed(token);
@@ -1038,6 +1140,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     user_data_dir: JString<'_>,
     document_start_script: JString<'_>,
     background_color: jint,
+    features: jint,
     callbacks: JObject<'_>,
 ) -> jlong {
     let result = (|| {
@@ -1055,6 +1158,7 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
             user_data_dir,
             document_start_script,
             background_color: background_color as u32,
+            features: features as u32,
             callbacks,
         }) {
             remove_route(handle);
@@ -1183,6 +1287,42 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
         return;
     };
     enqueue_or_throw(&mut env, NativeCommand::LoadUrl { handle, url });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_goBackNative(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) {
+    enqueue_or_throw(&mut env, NativeCommand::GoBack { handle });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_goForwardNative(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) {
+    enqueue_or_throw(&mut env, NativeCommand::GoForward { handle });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_reloadNative(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) {
+    enqueue_or_throw(&mut env, NativeCommand::Reload { handle });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_stopNative(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+) {
+    enqueue_or_throw(&mut env, NativeCommand::Stop { handle });
 }
 
 #[no_mangle]
@@ -1481,6 +1621,7 @@ fn execute_native_command(command: NativeCommand) {
             user_data_dir,
             document_start_script,
             background_color,
+            features,
             callbacks,
         } => {
             let result = create_native_on_owner(
@@ -1490,6 +1631,7 @@ fn execute_native_command(command: NativeCommand) {
                 user_data_dir,
                 document_start_script,
                 background_color,
+                features,
                 callbacks.clone(),
             );
             if let Err(message) = &result {
@@ -1679,6 +1821,28 @@ fn execute_native_command(command: NativeCommand) {
         NativeCommand::LoadUrl { handle, url } => {
             with_native(handle, |native| load_url(&native, url))
         }
+        NativeCommand::GoBack { handle } => with_native_webview(handle, |webview| unsafe {
+            let mut can_go_back = BOOL::default();
+            webview.CanGoBack(&mut can_go_back)?;
+            if can_go_back.as_bool() {
+                webview.GoBack()?;
+            }
+            Ok(())
+        }),
+        NativeCommand::GoForward { handle } => with_native_webview(handle, |webview| unsafe {
+            let mut can_go_forward = BOOL::default();
+            webview.CanGoForward(&mut can_go_forward)?;
+            if can_go_forward.as_bool() {
+                webview.GoForward()?;
+            }
+            Ok(())
+        }),
+        NativeCommand::Reload { handle } => {
+            with_native_webview(handle, |webview| unsafe { webview.Reload() })
+        }
+        NativeCommand::Stop { handle } => {
+            with_native_webview(handle, |webview| unsafe { webview.Stop() })
+        }
         NativeCommand::SetVirtualHostMapping {
             handle,
             host_name,
@@ -1743,6 +1907,21 @@ fn with_native(
         .with(|views| views.borrow().get(&action_handle).cloned())
         .ok_or_else(|| format!("Unknown WebView2 native handle on AWT-Windows: {action_handle}"))?;
     action(native)
+}
+
+fn with_native_webview(
+    handle: jlong,
+    action: impl FnOnce(ICoreWebView2) -> windows::core::Result<()>,
+) -> BridgeResult<()> {
+    with_native(handle, |native| {
+        let webview = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while navigating".to_string())?
+            .webview
+            .clone()
+            .ok_or_else(|| "WebView2 is not ready".to_string())?;
+        action(webview).map_err(format_windows_error)
+    })
 }
 
 fn destroy_native_on_owner(handle: jlong) -> BridgeResult<()> {
@@ -1947,6 +2126,7 @@ fn create_native_on_owner(
     user_data_dir: String,
     document_start_script: String,
     background_color: u32,
+    features: u32,
     callbacks: Arc<JavaCallbacks>,
 ) -> BridgeResult<()> {
     unsafe {
@@ -1970,6 +2150,8 @@ fn create_native_on_owner(
         controller_completed_handler: None,
         controller_create_started_at: None,
         last_navigation_requested_at: None,
+        navigation_state: NavigationState::default(),
+        navigation_events: None,
         navigation_timings: HashMap::new(),
         unidentified_navigation_timing: None,
         add_script_handlers: Vec::new(),
@@ -1987,6 +2169,7 @@ fn create_native_on_owner(
         destroyed: false,
         visible: false,
         background_color,
+        features,
         applied_parent: HWND::default(),
         applied_bounds: RECT::default(),
         applied_visible: true,
@@ -2322,11 +2505,12 @@ fn finish_create(
         || unsafe { controller.CoreWebView2().map_err(format_windows_error) },
     )?;
 
+    let features = native.borrow().features;
     measure_perf(
         &native,
         "perf.webview2.finish.settings",
         vec![("generation", generation.to_string())],
-        || configure_webview_application_settings(&webview),
+        || configure_webview_application_settings(&webview, features),
     )?;
 
     let script_count = native
@@ -2405,9 +2589,12 @@ fn finish_create(
         view.accelerator_key_pressed_token = Some(accelerator_token);
         view.got_focus_token = Some(got_focus_token);
         view.controller = Some(controller.clone());
-        view.webview = Some(webview);
+        view.webview = Some(webview.clone());
         (view.callbacks.clone(), view.handle)
     };
+
+    let navigation_events = attach_navigation_handlers(&webview, native.clone())?;
+    native.borrow_mut().navigation_events = Some(navigation_events);
 
     // Swing keeps its own snapshot, so the latest state is applied once here and every later
     // change arrives as its own SetHostState command.
@@ -2460,7 +2647,10 @@ fn apply_default_background_color(native: &NativeHandle, controller: &ICoreWebVi
     }
 }
 
-fn configure_webview_application_settings(webview: &ICoreWebView2) -> BridgeResult<()> {
+fn configure_webview_application_settings(
+    webview: &ICoreWebView2,
+    features: u32,
+) -> BridgeResult<()> {
     let settings = unsafe { webview.Settings().map_err(format_windows_error)? };
     unsafe {
         settings
@@ -2480,40 +2670,40 @@ fn configure_webview_application_settings(webview: &ICoreWebView2) -> BridgeResu
             .SetAreDevToolsEnabled(false)
             .map_err(format_windows_error)?;
         settings
-            .SetAreDefaultContextMenusEnabled(false)
+            .SetAreDefaultContextMenusEnabled(features & FEATURE_CONTEXT_MENU != 0)
             .map_err(format_windows_error)?;
         settings
             .SetAreHostObjectsAllowed(false)
             .map_err(format_windows_error)?;
         settings
-            .SetIsZoomControlEnabled(false)
+            .SetIsZoomControlEnabled(features & FEATURE_ZOOM != 0)
             .map_err(format_windows_error)?;
         settings
-            .SetIsBuiltInErrorPageEnabled(false)
+            .SetIsBuiltInErrorPageEnabled(features & FEATURE_ERROR_PAGE != 0)
             .map_err(format_windows_error)?;
     }
 
     if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
         unsafe {
             settings3
-                .SetAreBrowserAcceleratorKeysEnabled(false)
+                .SetAreBrowserAcceleratorKeysEnabled(features & FEATURE_ACCELERATORS != 0)
                 .map_err(format_windows_error)?;
         }
     }
     if let Ok(settings4) = settings.cast::<ICoreWebView2Settings4>() {
         unsafe {
             settings4
-                .SetIsGeneralAutofillEnabled(false)
+                .SetIsGeneralAutofillEnabled(features & FEATURE_AUTOFILL != 0)
                 .map_err(format_windows_error)?;
             settings4
-                .SetIsPasswordAutosaveEnabled(false)
+                .SetIsPasswordAutosaveEnabled(features & FEATURE_AUTOFILL != 0)
                 .map_err(format_windows_error)?;
         }
     }
     if let Ok(settings6) = settings.cast::<ICoreWebView2Settings6>() {
         unsafe {
             settings6
-                .SetIsSwipeNavigationEnabled(false)
+                .SetIsSwipeNavigationEnabled(features & FEATURE_SWIPE != 0)
                 .map_err(format_windows_error)?;
         }
     }
@@ -2725,7 +2915,6 @@ fn attach_environment_diagnostics(
 
 fn attach_webview_diagnostics(webview: &ICoreWebView2, native: NativeHandle) -> BridgeResult<()> {
     attach_process_failed_handler(webview, native.clone())?;
-    attach_navigation_handlers(webview, native.clone())?;
     attach_trace_webview_handlers(webview, native)?;
     Ok(())
 }
@@ -2749,18 +2938,86 @@ fn attach_process_failed_handler(
     Ok(())
 }
 
-fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> BridgeResult<()> {
+#[derive(Default)]
+struct NavigationEventSubscriptions {
+    webview: Option<ICoreWebView2>,
+    starting: Option<EventRegistrationToken>,
+    completed: Option<EventRegistrationToken>,
+    content_loading: Option<EventRegistrationToken>,
+    dom_content_loaded: Option<EventRegistrationToken>,
+    source_changed: Option<EventRegistrationToken>,
+    title_changed: Option<EventRegistrationToken>,
+    history_changed: Option<EventRegistrationToken>,
+}
+
+impl Drop for NavigationEventSubscriptions {
+    fn drop(&mut self) {
+        let Some(webview) = &self.webview else {
+            return;
+        };
+        unsafe {
+            if let Some(token) = self.starting.take() {
+                let _ = webview.remove_NavigationStarting(token);
+            }
+            if let Some(token) = self.completed.take() {
+                let _ = webview.remove_NavigationCompleted(token);
+            }
+            if let Some(token) = self.content_loading.take() {
+                let _ = webview.remove_ContentLoading(token);
+            }
+            if let Some(token) = self.dom_content_loaded.take() {
+                if let Ok(webview2) = webview.cast::<ICoreWebView2_2>() {
+                    let _ = webview2.remove_DOMContentLoaded(token);
+                }
+            }
+            if let Some(token) = self.source_changed.take() {
+                let _ = webview.remove_SourceChanged(token);
+            }
+            if let Some(token) = self.title_changed.take() {
+                let _ = webview.remove_DocumentTitleChanged(token);
+            }
+            if let Some(token) = self.history_changed.take() {
+                let _ = webview.remove_HistoryChanged(token);
+            }
+        }
+    }
+}
+
+fn navigation_callbacks(native: &NativeHandle) -> Option<Arc<JavaCallbacks>> {
+    let view = native.try_borrow().ok()?;
+    (!view.destroyed).then(|| view.callbacks.clone())
+}
+
+fn attach_navigation_handlers(
+    webview: &ICoreWebView2,
+    native: NativeHandle,
+) -> BridgeResult<NavigationEventSubscriptions> {
+    // Dropping a partially populated subscription also removes handlers if creation fails.
+    let mut subscriptions = NavigationEventSubscriptions {
+        webview: Some(webview.clone()),
+        ..Default::default()
+    };
     let native_for_start = native.clone();
     let starting_handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
         if let Some(args) = args {
+            if is_native_destroyed(&native_for_start) {
+                return Ok(());
+            }
             let mut data = Vec::new();
-            if let Some(uri) = unsafe { get_pwstr(|value| args.Uri(value)) } {
-                data.push(("uri", uri));
+            let uri = unsafe { get_pwstr(|value| args.Uri(value)) };
+            if let Some(uri) = &uri {
+                data.push(("uri", uri.clone()));
             }
             let navigation_id = unsafe { get_u64(|value| args.NavigationId(value)) };
             if let Some(navigation_id) = navigation_id {
                 data.push(("navigationId", navigation_id.to_string()));
             }
+            let callbacks = {
+                let mut view = native_for_start.borrow_mut();
+                view.navigation_state.start(navigation_id);
+                view.callbacks.clone()
+            };
+            callbacks.on_navigation_starting(uri.unwrap_or_default());
             record_navigation_start(&native_for_start, navigation_id, &mut data);
             emit_diagnostic(
                 &native_for_start,
@@ -2778,6 +3035,7 @@ fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> 
             .add_NavigationStarting(&starting_handler, &mut token)
             .map_err(format_windows_error)?;
     }
+    subscriptions.starting = Some(token);
 
     let native_for_completed = native.clone();
     let completed_handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
@@ -2792,6 +3050,7 @@ fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> 
             .add_NavigationCompleted(&completed_handler, &mut token)
             .map_err(format_windows_error)?;
     }
+    subscriptions.completed = Some(token);
 
     let native_for_content = native.clone();
     let content_handler = ContentLoadingEventHandler::create(Box::new(move |_, args| {
@@ -2821,6 +3080,7 @@ fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> 
             .add_ContentLoading(&content_handler, &mut token)
             .map_err(format_windows_error)?;
     }
+    subscriptions.content_loading = Some(token);
 
     if let Ok(webview2) = webview.cast::<ICoreWebView2_2>() {
         let native_for_dom = native.clone();
@@ -2848,10 +3108,19 @@ fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> 
                 .add_DOMContentLoaded(&handler, &mut token)
                 .map_err(format_windows_error)?;
         }
+        subscriptions.dom_content_loaded = Some(token);
     }
 
     let native_for_source = native.clone();
-    let source_handler = SourceChangedEventHandler::create(Box::new(move |_, args| {
+    let source_handler = SourceChangedEventHandler::create(Box::new(move |sender, args| {
+        let Some(callbacks) = navigation_callbacks(&native_for_source) else {
+            return Ok(());
+        };
+        if let Some(sender) = sender {
+            if let Some(url) = unsafe { get_pwstr(|value| sender.Source(value)) } {
+                callbacks.on_source_changed(url);
+            }
+        }
         if let Some(args) = args {
             let mut data = Vec::new();
             if let Some(is_new_document) = unsafe { get_bool(|value| args.IsNewDocument(value)) } {
@@ -2874,9 +3143,40 @@ fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> 
             .add_SourceChanged(&source_handler, &mut token)
             .map_err(format_windows_error)?;
     }
+    subscriptions.source_changed = Some(token);
+
+    let native_for_title = native.clone();
+    let title_handler = DocumentTitleChangedEventHandler::create(Box::new(move |sender, _| {
+        let Some(callbacks) = navigation_callbacks(&native_for_title) else {
+            return Ok(());
+        };
+        if let Some(sender) = sender {
+            if let Some(title) = unsafe { get_pwstr(|value| sender.DocumentTitle(value)) } {
+                callbacks.on_document_title_changed(title);
+            }
+        }
+        Ok(())
+    }));
+    let mut token = EventRegistrationToken::default();
+    unsafe {
+        webview
+            .add_DocumentTitleChanged(&title_handler, &mut token)
+            .map_err(format_windows_error)?;
+    }
+    subscriptions.title_changed = Some(token);
 
     let native_for_history = native.clone();
-    let history_handler = HistoryChangedEventHandler::create(Box::new(move |_, _| {
+    let history_handler = HistoryChangedEventHandler::create(Box::new(move |sender, _| {
+        let Some(callbacks) = navigation_callbacks(&native_for_history) else {
+            return Ok(());
+        };
+        if let Some(sender) = sender {
+            let can_go_back = unsafe { get_bool(|value| sender.CanGoBack(value)) };
+            let can_go_forward = unsafe { get_bool(|value| sender.CanGoForward(value)) };
+            if let (Some(can_go_back), Some(can_go_forward)) = (can_go_back, can_go_forward) {
+                callbacks.on_history_changed(can_go_back, can_go_forward);
+            }
+        }
         emit_diagnostic(
             &native_for_history,
             DIAGNOSTIC_DEBUG,
@@ -2892,8 +3192,9 @@ fn attach_navigation_handlers(webview: &ICoreWebView2, native: NativeHandle) -> 
             .add_HistoryChanged(&history_handler, &mut token)
             .map_err(format_windows_error)?;
     }
+    subscriptions.history_changed = Some(token);
 
-    Ok(())
+    Ok(subscriptions)
 }
 
 fn attach_trace_webview_handlers(
@@ -3048,6 +3349,9 @@ fn handle_navigation_completed(
     native: &NativeHandle,
     args: &ICoreWebView2NavigationCompletedEventArgs,
 ) {
+    if is_native_destroyed(native) {
+        return;
+    }
     let mut data = Vec::new();
     let is_success = unsafe { get_bool(|value| args.IsSuccess(value)) }.unwrap_or(false);
     data.push(("isSuccess", is_success.to_string()));
@@ -3055,9 +3359,8 @@ fn handle_navigation_completed(
     if let Some(navigation_id) = navigation_id {
         data.push(("navigationId", navigation_id.to_string()));
     }
-    if let Some(web_error_status) =
-        unsafe { get_web_error_status(|value| args.WebErrorStatus(value)) }
-    {
+    let web_error_status = unsafe { get_web_error_status(|value| args.WebErrorStatus(value)) };
+    if let Some(web_error_status) = web_error_status {
         data.push(("webErrorStatus", format!("{web_error_status:?}")));
         data.push(("webErrorStatusCode", web_error_status.0.to_string()));
     }
@@ -3067,9 +3370,26 @@ fn handle_navigation_completed(
         }
     }
     complete_navigation_timings(native, navigation_id, &mut data);
+    let callbacks = {
+        let mut view = native.borrow_mut();
+        view.navigation_state
+            .complete(navigation_id)
+            .then(|| view.callbacks.clone())
+    };
+    data.push(("isCurrentNavigation", callbacks.is_some().to_string()));
+    if let Some(callbacks) = callbacks {
+        // Preserve OPERATION_CANCELED (14) for Kotlin to finish loading without a network error.
+        callbacks.on_navigation_completed(
+            is_success,
+            web_error_status
+                .unwrap_or(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN)
+                .0,
+        );
+    }
+    let is_cancelled = web_error_status == Some(COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED);
     emit_diagnostic(
         native,
-        if is_success {
+        if is_success || is_cancelled {
             DIAGNOSTIC_INFO
         } else {
             DIAGNOSTIC_WARN
@@ -3077,6 +3397,8 @@ fn handle_navigation_completed(
         "navigation.completed",
         if is_success {
             "WebView2 navigation completed".to_string()
+        } else if is_cancelled {
+            "WebView2 navigation cancelled".to_string()
         } else {
             "WebView2 navigation failed".to_string()
         },

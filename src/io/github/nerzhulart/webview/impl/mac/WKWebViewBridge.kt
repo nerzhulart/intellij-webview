@@ -16,10 +16,13 @@ import com.intellij.ui.mac.foundation.Foundation.registerObjcClassPair
 import com.intellij.ui.mac.foundation.Foundation.toStringViaUTF8
 import com.intellij.ui.mac.foundation.ID
 import com.intellij.util.system.CpuArch
+import io.github.nerzhulart.webview.api.WebViewBrowserError
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
 import io.github.nerzhulart.webview.impl.WebViewLogger
+import io.github.nerzhulart.webview.impl.engine.WebViewFeatures
+import io.github.nerzhulart.webview.impl.engine.WebViewNavigationListener
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import com.sun.jna.Callback
 import com.sun.jna.Function
@@ -40,7 +43,8 @@ import java.awt.event.MouseEvent
  * The caller (typically [MacWebViewEngine]) is responsible for dispatching via
  * [io.github.nerzhulart.webview.impl.MacMainThreadDispatcher].
  *
- * Uses `Foundation.invoke()` for all Objective-C message sends — no separate native library.
+ * Uses `Foundation.invoke()` for Objective-C message sends, with typed JNA calls for floating-point
+ * returns and superclass dispatch — no separate native library.
  */
 @ApiStatus.Internal
 @Suppress("JSUnresolvedVariable")
@@ -80,6 +84,16 @@ internal object WKWebViewBridge {
   private val SEL_ACCEPTS_FIRST_MOUSE = createSelector("acceptsFirstMouse:")
   private val SEL_FLAGS_CHANGED = createSelector("flagsChanged:")
   private val SEL_LOAD_REQUEST = createSelector("loadRequest:")
+  private val SEL_GO_BACK = createSelector("goBack")
+  private val SEL_GO_FORWARD = createSelector("goForward")
+  private val SEL_RELOAD = createSelector("reload")
+  private val SEL_STOP_LOADING = createSelector("stopLoading")
+  private val SEL_CAN_GO_BACK = createSelector("canGoBack")
+  private val SEL_CAN_GO_FORWARD = createSelector("canGoForward")
+  private val SEL_TITLE = createSelector("title")
+  private val SEL_ESTIMATED_PROGRESS = createSelector("estimatedProgress")
+  private val SEL_NAVIGATION_DELEGATE = createSelector("navigationDelegate")
+  private val SEL_SET_NAVIGATION_DELEGATE = createSelector("setNavigationDelegate:")
   private val SEL_LOAD_HTML_STRING_BASE_URL = createSelector("loadHTMLString:baseURL:")
   private val SEL_EVALUATE_JAVASCRIPT = createSelector("evaluateJavaScript:completionHandler:")
   private val SEL_WINDOW = createSelector("window")
@@ -131,6 +145,14 @@ internal object WKWebViewBridge {
   // NSObject
   private val SEL_RESPONDS_TO_SELECTOR = createSelector("respondsToSelector:")
   private val SEL_DESCRIPTION = createSelector("description")
+  private val SEL_ADD_OBSERVER = createSelector("addObserver:forKeyPath:options:context:")
+  private val SEL_REMOVE_OBSERVER = createSelector("removeObserver:forKeyPath:")
+
+  // NSError / NSDictionary
+  private val SEL_CODE = createSelector("code")
+  private val SEL_LOCALIZED_DESCRIPTION = createSelector("localizedDescription")
+  private val SEL_USER_INFO = createSelector("userInfo")
+  private val SEL_OBJECT_FOR_KEY = createSelector("objectForKey:")
 
   // NSURL / NSURLRequest
   private val SEL_URL_WITH_STRING = createSelector("URLWithString:")
@@ -169,7 +191,10 @@ internal object WKWebViewBridge {
   const val IPC_HANDLER_NAME = "webviewIpc"
 
   private const val WK_RECT_EDGE_NONE = 0L
+  private const val WK_RECT_EDGE_ALL = 15L
   private const val WK_USER_SCRIPT_INJECTION_TIME_AT_DOCUMENT_START = 0L
+  private const val NS_URL_ERROR_CANCELLED = -999
+  private val NAVIGATION_KEY_PATHS = listOf("title", "URL", "estimatedProgress", "canGoBack", "canGoForward")
 
   /**
    * Registered ObjC class acting as WKScriptMessageHandler. Created once, reused across instances.
@@ -185,6 +210,9 @@ internal object WKWebViewBridge {
 
   private var urlSchemeHandlerClass: ID = ID.NIL
   private var uiDelegateClass: ID = ID.NIL
+  private var navigationDelegateClass: ID = ID.NIL
+  // ObjC classes outlive individual WebViews, so their JNA function pointers must stay alive too.
+  private val navigationDelegateCallbacks = mutableListOf<Callback>()
   private var webViewClass: ID = ID.NIL
   private var nativeMouseRecognizerClass: ID = ID.NIL
 
@@ -221,6 +249,11 @@ internal object WKWebViewBridge {
   private val urlSchemeHandlerCallbacks = java.util.concurrent.ConcurrentHashMap<Long, (String) -> WebViewAssetResponse?>()
 
   private val newWindowCallbacks = java.util.concurrent.ConcurrentHashMap<Long, (String) -> Unit>()
+  private val navigationCallbacks = java.util.concurrent.ConcurrentHashMap<Long, MacNavigationCallbacks>()
+
+  private class MacNavigationCallbacks(val listener: WebViewNavigationListener) {
+    var activeNavigation: Long? = null
+  }
 
   // AppKit delivers bare modifier key transitions through `flagsChanged:` instead of `keyDown:`/`keyUp:`.
   // One ObjC subclass is shared by all WKWebView instances, so callbacks and last modifier state are keyed
@@ -250,6 +283,7 @@ internal object WKWebViewBridge {
    * @param resolveAssetUrl callback invoked by the private URL scheme handler.
    * @param onNewWindowRequested callback invoked when WebKit asks for a secondary WebView.
    * @param onNativeMousePressed callback invoked when AppKit delivers a mouse press inside the WebView.
+   * @param navigationListener main-thread navigation listener; use a forwarding adapter for dynamic listeners.
    * @return handles that must be passed to [release].
    */
   fun createWKWebView(
@@ -259,6 +293,8 @@ internal object WKWebViewBridge {
     onModifierKeyEvent: (ModifierKeyEvent) -> Unit,
     onNativeMousePressed: (NativeMousePressedEvent) -> Unit,
     documentStartScripts: List<WebViewScript> = emptyList(),
+    features: WebViewFeatures = WebViewFeatures.APPLICATION,
+    navigationListener: WebViewNavigationListener? = null,
   ): WebViewHandles {
     // 1. Create WKWebViewConfiguration
     val configuration = invoke(invoke(getObjcClass(CLS_WKWEBVIEW_CONFIGURATION), SEL_ALLOC), SEL_INIT)
@@ -286,11 +322,17 @@ internal object WKWebViewBridge {
     val initializedWebView = invoke(webView, SEL_INIT_WITH_FRAME_CONFIGURATION,
                                     NSRect(0.0, 0.0, 0.0, 0.0), configuration)
     modifierKeyCallbacks[initializedWebView.toLong()] = onModifierKeyEvent
-    configureWebViewApplicationMode(initializedWebView)
+    configureWebViewFeatures(initializedWebView, features)
     val nativeMouseRecognizer = createAndRegisterNativeMouseRecognizer(onNativeMousePressed)
     invoke(initializedWebView, SEL_ADD_GESTURE_RECOGNIZER, nativeMouseRecognizer)
     val uiDelegateInstance = createAndRegisterUiDelegate(onNewWindowRequested)
     invoke(initializedWebView, SEL_SET_UI_DELEGATE, uiDelegateInstance)
+    val navigationDelegateInstance = if (navigationListener != null) {
+      createAndRegisterNavigationDelegate(initializedWebView, navigationListener)
+    }
+    else {
+      ID.NIL
+    }
 
     // 5. Keep Swing host geometry as the only frame source. The WebView is attached
     // to a host-owned clipping view, so AppKit autoresizing must not change its local frame.
@@ -305,6 +347,7 @@ internal object WKWebViewBridge {
       urlSchemeHandler = urlSchemeHandlerInstance,
       uiDelegate = uiDelegateInstance,
       nativeMouseRecognizer = nativeMouseRecognizer,
+      navigationDelegate = navigationDelegateInstance,
     )
   }
 
@@ -342,6 +385,33 @@ internal object WKWebViewBridge {
     val nsUrl = invoke(getObjcClass(CLS_NSURL), SEL_URL_WITH_STRING, nsString(url))
     val request = invoke(getObjcClass(CLS_NSURLREQUEST), SEL_REQUEST_WITH_URL, nsUrl)
     invoke(webView, SEL_LOAD_REQUEST, request)
+  }
+
+  fun goBack(webView: ID) {
+    if (invoke(webView, SEL_CAN_GO_BACK).booleanValue()) {
+      invoke(webView, SEL_GO_BACK)
+    }
+  }
+
+  fun goForward(webView: ID) {
+    if (invoke(webView, SEL_CAN_GO_FORWARD).booleanValue()) {
+      invoke(webView, SEL_GO_FORWARD)
+    }
+  }
+
+  fun reload(webView: ID) {
+    invoke(webView, SEL_RELOAD)
+  }
+
+  fun stopLoading(webView: ID) {
+    val delegate = invoke(webView, SEL_NAVIGATION_DELEGATE)
+    val callbacks = navigationCallbacks[delegate.toLong()]
+    val navigation = callbacks?.activeNavigation
+    invoke(webView, SEL_STOP_LOADING)
+    // A stop need not produce a delegate callback if the load has already been cancelled by WebKit.
+    if (navigation != null) {
+      withNavigationCallbacks(delegate) { finishNavigation(it, webView, navigation, null) }
+    }
   }
 
   fun loadHtml(webView: ID, html: String, baseUrl: String?) {
@@ -460,6 +530,15 @@ internal object WKWebViewBridge {
    * Must be called on the macOS main thread.
    */
   fun release(handles: WebViewHandles) {
+    if (!isNil(handles.navigationDelegate)) {
+      navigationCallbacks.remove(handles.navigationDelegate.toLong())
+      for (keyPath in NAVIGATION_KEY_PATHS) {
+        invoke(handles.webView, SEL_REMOVE_OBSERVER, handles.navigationDelegate, nsString(keyPath))
+      }
+      invoke(handles.webView, SEL_SET_NAVIGATION_DELEGATE, ID.NIL)
+    }
+    invoke(handles.webView, SEL_STOP_LOADING)
+
     // 1. Remove the message handler from user content controller to break retain cycle
     val configuration = invoke(handles.webView, "configuration")
     val ucc = invoke(configuration, SEL_USER_CONTENT_CONTROLLER)
@@ -482,6 +561,7 @@ internal object WKWebViewBridge {
     invoke(handles.messageHandler, SEL_RELEASE)
     invoke(handles.urlSchemeHandler, SEL_RELEASE)
     invoke(handles.uiDelegate, SEL_RELEASE)
+    invoke(handles.navigationDelegate, SEL_RELEASE)
     invoke(handles.nativeMouseRecognizer, SEL_RELEASE)
     invoke(handles.webView, SEL_RELEASE)
   }
@@ -683,13 +763,15 @@ internal object WKWebViewBridge {
     invoke(userScript, SEL_RELEASE)
   }
 
-  private fun configureWebViewApplicationMode(webView: ID) {
-    invoke(webView, SEL_SET_ALLOWS_BACK_FORWARD_NAVIGATION_GESTURES, false)
-    invoke(webView, SEL_SET_ALLOWS_MAGNIFICATION, false)
+  private fun configureWebViewFeatures(webView: ID, features: WebViewFeatures) {
+    invoke(webView, SEL_SET_ALLOWS_BACK_FORWARD_NAVIGATION_GESTURES, features.swipeNavigation)
+    invoke(webView, SEL_SET_ALLOWS_MAGNIFICATION, features.zoom)
     invokeIfResponds(webView, SEL_SET_PAGE_ZOOM, 1.0, "setPageZoom:")
     invokeIfResponds(webView, SEL_SET_INSPECTABLE, true, "setInspectable:")
-    invokeIfResponds(webView, SEL_SET_CAN_USE_CREDENTIAL_STORAGE, false, "_setCanUseCredentialStorage:")
-    invokeIfResponds(webView, SEL_SET_RUBBER_BANDING_ENABLED, WK_RECT_EDGE_NONE, "_setRubberBandingEnabled:")
+    invokeIfResponds(webView, SEL_SET_CAN_USE_CREDENTIAL_STORAGE, features.autofill, "_setCanUseCredentialStorage:")
+    invokeIfResponds(webView, SEL_SET_RUBBER_BANDING_ENABLED,
+                     if (features.elasticScrolling) WK_RECT_EDGE_ALL else WK_RECT_EDGE_NONE, "_setRubberBandingEnabled:")
+    WebViewLogger.LOG.debug("WKWebView has no native contextMenu, browserAcceleratorKeys or builtInErrorPage feature settings")
   }
 
   private fun invokeIfResponds(target: ID, selector: Pointer, value: Any, settingName: String) {
@@ -698,7 +780,7 @@ internal object WKWebViewBridge {
       invoke(target, selector, value)
     }
     catch (t: Throwable) {
-      WebViewLogger.LOG.debug("Failed to apply WKWebView application-mode setting $settingName", t)
+      WebViewLogger.LOG.debug("Failed to apply WKWebView feature setting $settingName", t)
     }
   }
 
@@ -745,6 +827,144 @@ internal object WKWebViewBridge {
 
     registerObjcClassPair(cls)
     messageHandlerClass = cls
+  }
+
+  // endregion
+
+  // region Navigation delegate class registration
+
+  private fun createAndRegisterNavigationDelegate(webView: ID, listener: WebViewNavigationListener): ID {
+    ensureNavigationDelegateClassRegistered()
+    val instance = invoke(invoke(navigationDelegateClass, SEL_ALLOC), SEL_INIT)
+    navigationCallbacks[instance.toLong()] = MacNavigationCallbacks(listener)
+    invoke(webView, SEL_SET_NAVIGATION_DELEGATE, instance)
+    for (keyPath in NAVIGATION_KEY_PATHS) {
+      invoke(webView, SEL_ADD_OBSERVER, instance, nsString(keyPath), 0L, ID.NIL)
+    }
+    return instance
+  }
+
+  @Synchronized
+  private fun ensureNavigationDelegateClassRegistered() {
+    if (!isNil(navigationDelegateClass)) return
+
+    val cls = allocateObjcClassPair(getObjcClass(CLS_NSOBJECT), "IdeaWKNavigationDelegate")
+    val protocol = getProtocol("WKNavigationDelegate")
+    if (!isNil(protocol)) {
+      addProtocol(cls, protocol)
+    }
+
+    val startCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, webView: ID, navigation: ID) {
+        withNavigationCallbacks(self) { callbacks ->
+          callbacks.activeNavigation = navigation.toLong()
+          callbacks.listener.onNavigationStarted(urlFromWebView(webView))
+        }
+      }
+    }
+    val commitCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, webView: ID, navigation: ID) {
+        withNavigationCallbacks(self) { callbacks ->
+          if (callbacks.activeNavigation == navigation.toLong()) {
+            callbacks.listener.onUrlChanged(urlFromWebView(webView))
+            notifyHistoryChanged(callbacks.listener, webView)
+          }
+        }
+      }
+    }
+    val finishCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, webView: ID, navigation: ID) {
+        withNavigationCallbacks(self) { finishNavigation(it, webView, navigation.toLong(), null) }
+      }
+    }
+    val failureCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, webView: ID, navigation: ID, error: ID) {
+        withNavigationCallbacks(self) { callbacks ->
+          if (callbacks.activeNavigation != navigation.toLong()) return@withNavigationCallbacks
+          val code = invoke(error, SEL_CODE).toInt()
+          // Cancellation ends the current load without an error; a superseded load is ignored above.
+          val browserError = if (code == NS_URL_ERROR_CANCELLED) null else WebViewBrowserError(
+            url = failingUrlFromError(error) ?: urlFromWebView(webView),
+            message = toStringViaUTF8(invoke(error, SEL_LOCALIZED_DESCRIPTION)) ?: "Navigation failed ($code)",
+            code = code,
+          )
+          finishNavigation(callbacks, webView, navigation.toLong(), browserError)
+        }
+      }
+    }
+    val observerCallback = object : Callback {
+      @Suppress("unused", "UNUSED_PARAMETER") // called from native
+      fun callback(self: ID, selector: Pointer, keyPath: ID, webView: ID, change: ID, context: Pointer?) {
+        withNavigationCallbacks(self) { callbacks ->
+          when (toStringViaUTF8(keyPath)) {
+            "title" -> callbacks.listener.onTitleChanged(toStringViaUTF8(invoke(webView, SEL_TITLE)))
+            "URL" -> callbacks.listener.onUrlChanged(urlFromWebView(webView))
+            "estimatedProgress" -> if (callbacks.activeNavigation != null) {
+              // Both arm64 and x86_64 return double from objc_msgSend in a floating-point register,
+              // not the integer/pointer register read by Foundation.invoke(). No fpret variant is needed.
+              val progress = OBJC_MSG_SEND.invokeDouble(arrayOf(webView, SEL_ESTIMATED_PROGRESS))
+              if (progress.isFinite()) callbacks.listener.onProgressChanged(progress.coerceIn(0.0, 1.0))
+            }
+            "canGoBack", "canGoForward" -> notifyHistoryChanged(callbacks.listener, webView)
+          }
+        }
+      }
+    }
+    navigationDelegateCallbacks.addAll(listOf(startCallback, commitCallback, finishCallback, failureCallback, observerCallback))
+
+    addMethod(cls, createSelector("webView:didStartProvisionalNavigation:"), startCallback, "v@:@@")
+    addMethod(cls, createSelector("webView:didCommitNavigation:"), commitCallback, "v@:@@")
+    addMethod(cls, createSelector("webView:didReceiveServerRedirectForProvisionalNavigation:"), commitCallback, "v@:@@")
+    addMethod(cls, createSelector("webView:didFinishNavigation:"), finishCallback, "v@:@@")
+    addMethod(cls, createSelector("webView:didFailProvisionalNavigation:withError:"), failureCallback, "v@:@@@")
+    addMethod(cls, createSelector("webView:didFailNavigation:withError:"), failureCallback, "v@:@@@")
+    addMethod(cls, createSelector("observeValueForKeyPath:ofObject:change:context:"), observerCallback, "v@:@@@^v")
+    registerObjcClassPair(cls)
+    navigationDelegateClass = cls
+  }
+
+  private fun withNavigationCallbacks(delegate: ID, action: (MacNavigationCallbacks) -> Unit) {
+    val callbacks = navigationCallbacks[delegate.toLong()] ?: return
+    try {
+      action(callbacks)
+    }
+    catch (t: Throwable) {
+      WebViewLogger.LOG.warn("Failed to deliver WKWebView navigation event", t)
+    }
+  }
+
+  private fun finishNavigation(callbacks: MacNavigationCallbacks, webView: ID, navigation: Long, error: WebViewBrowserError?) {
+    if (callbacks.activeNavigation != navigation) return
+    callbacks.activeNavigation = null
+    callbacks.listener.onTitleChanged(toStringViaUTF8(invoke(webView, SEL_TITLE)))
+    notifyHistoryChanged(callbacks.listener, webView)
+    callbacks.listener.onProgressChanged(1.0)
+    callbacks.listener.onNavigationFinished(error?.url ?: urlFromWebView(webView), error)
+  }
+
+  private fun notifyHistoryChanged(listener: WebViewNavigationListener, webView: ID) {
+    listener.onHistoryChanged(invoke(webView, SEL_CAN_GO_BACK).booleanValue(), invoke(webView, SEL_CAN_GO_FORWARD).booleanValue())
+  }
+
+  private fun urlFromWebView(webView: ID): String? {
+    val url = invoke(webView, SEL_URL)
+    return if (isNil(url)) null else toStringViaUTF8(invoke(url, SEL_ABSOLUTE_STRING))
+  }
+
+  private fun failingUrlFromError(error: ID): String? {
+    val userInfo = invoke(error, SEL_USER_INFO)
+    // These are the Foundation values of NSURLErrorFailingURLErrorKey / NSURLErrorFailingURLStringErrorKey.
+    // WKWebView.URL can still point at the previous document when provisional navigation fails.
+    val url = invoke(userInfo, SEL_OBJECT_FOR_KEY, nsString("NSErrorFailingURLKey"))
+    if (respondsTo(url, SEL_ABSOLUTE_STRING)) {
+      val absoluteUrl = toStringViaUTF8(invoke(url, SEL_ABSOLUTE_STRING))
+      if (absoluteUrl != null) return absoluteUrl
+    }
+    return toStringViaUTF8(invoke(userInfo, SEL_OBJECT_FOR_KEY, nsString("NSErrorFailingURLStringKey")))
   }
 
   // endregion
@@ -956,6 +1176,7 @@ internal object WKWebViewBridge {
   private const val MAC_KEY_RIGHT_CONTROL = 62
   private const val NS_GESTURE_RECOGNIZER_STATE_FAILED = 5L
   private val OBJC_MSG_SEND_SUPER: Function = NativeLibrary.getInstance("objc").getFunction("objc_msgSendSuper")
+  private val OBJC_MSG_SEND: Function = NativeLibrary.getInstance("objc").getFunction("objc_msgSend")
 
   private fun objectiveCBooleanType(): String = if (CpuArch.isIntel64()) "c" else "B"
 
@@ -967,5 +1188,6 @@ internal object WKWebViewBridge {
     val urlSchemeHandler: ID,
     val uiDelegate: ID,
     val nativeMouseRecognizer: ID,
+    val navigationDelegate: ID = ID.NIL,
   )
 }

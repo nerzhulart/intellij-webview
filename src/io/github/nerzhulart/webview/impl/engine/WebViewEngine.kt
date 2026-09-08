@@ -14,6 +14,7 @@ import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.awt.Component
 import java.awt.event.KeyEvent
+import java.net.URI
 import java.nio.file.Path
 import javax.swing.JComponent
 
@@ -36,12 +37,20 @@ interface WebViewEngine {
   @RequiresEdt
   fun createHostComponent(
     scope: CoroutineScope,
-    focusEntrySink: WebViewFocusEntrySink,
+    focusEntrySink: WebViewFocusEntrySink?,
   ): SwingWebViewHostPanel {
     return SwingWebViewHostPanel(scope, this, focusEntrySink)
   }
 
   suspend fun loadFile(file: Path)
+
+  /** Loads an absolute [URI], converting it to a string only at the native browser boundary. */
+  suspend fun loadUrl(url: URI): Unit = throw UnsupportedOperationException("loadUrl is not supported by this engine")
+  suspend fun goBack() {}
+  suspend fun goForward() {}
+  suspend fun reload() {}
+  suspend fun stop() {}
+  fun setNavigationListener(listener: WebViewNavigationListener?) {}
 
   /**
    * Loads [entry] from [root] through the platform WebView asset handler and a virtual origin.

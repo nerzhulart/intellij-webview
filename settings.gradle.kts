@@ -17,3 +17,4 @@ rootProject.name = "webview"
 include(":jcef")
 include(":demo")
 include(":markdown-preview")
+include(":samples:embedded-browser")

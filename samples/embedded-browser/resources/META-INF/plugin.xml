@@ -1,0 +1,20 @@
+<idea-plugin>
+  <id>io.github.nerzhulart.webview.samples.embeddedBrowser</id>
+  <name>WebView Embedded Browser Sample (Experimental)</name>
+  <vendor>nerzhulart</vendor>
+  <description>
+    Demonstrates an embedded browser with a native page surface and a Swing navigation toolbar.
+  </description>
+
+  <dependencies>
+    <plugin id="io.github.nerzhulart.webview"/>
+  </dependencies>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <!--suppress SplitModeXmlApiUsage -->
+    <toolWindow id="Embedded Browser"
+                factoryClass="io.github.nerzhulart.webview.samples.embeddedBrowser.EmbeddedBrowserToolWindowFactory"
+                anchor="right"
+                doNotActivateOnStart="true"/>
+  </extensions>
+</idea-plugin>

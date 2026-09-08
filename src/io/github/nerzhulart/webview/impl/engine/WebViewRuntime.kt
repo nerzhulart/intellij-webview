@@ -9,6 +9,8 @@ import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.registry.RegistryManager
 import com.intellij.platform.util.coroutines.childScope
 import com.intellij.util.concurrency.annotations.RequiresEdt
+import io.github.nerzhulart.webview.api.WebBrowserPanel
+import io.github.nerzhulart.webview.api.WebBrowserPanelOptions
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewPanel
@@ -30,6 +32,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
+import java.net.URI
 import java.util.MissingResourceException
 
 private val LOG = logger<WebViewRuntime>()
@@ -68,11 +71,32 @@ class WebViewRuntime {
           provider = provider,
           options = WebViewEngineCreationOptions(
             debugName = options.debugName,
+            features = options.features,
           ),
           consoleLogCategory = options.consoleLogCategory,
         )
       }
     }
+  }
+
+  @RequiresEdt
+  internal suspend fun createWebBrowserPanel(
+    scope: CoroutineScope,
+    options: WebBrowserPanelOptions,
+  ): WebBrowserPanel {
+    val webViewOptions = options.webViewOptions
+    val provider = selectProvider(
+      webViewOptions.engineKind,
+      webViewOptions.requirements.copy(navigation = true),
+    )
+    val session = createWebViewSession(
+      parentScope = scope,
+      provider = provider,
+      options = WebViewEngineCreationOptions(debugName = webViewOptions.debugName, features = webViewOptions.features),
+      consoleLogCategory = webViewOptions.consoleLogCategory,
+      initialUrl = options.initialUrl,
+    )
+    return WebBrowserPanel(session)
   }
 
   @RequiresEdt
@@ -116,6 +140,7 @@ class WebViewRuntime {
     options: WebViewEngineCreationOptions,
     consoleLogCategory: String,
     initialPage: InitialWebViewPage? = null,
+    initialUrl: URI? = null,
   ): WebViewSession {
     parentScope.ensureActive()
     val debugName = options.debugName ?: provider.displayName
@@ -137,6 +162,8 @@ class WebViewRuntime {
           )
         }
         try {
+          val tracker = WebViewNavigationStateTracker()
+          if (provider.capabilities.navigation) engine.setNavigationListener(tracker)
           val bus = WebViewMessageBusImpl(viewScope, engine)
           try {
             val runtimeInfo = WebViewRuntimeInfo(provider.id, provider.capabilities, provider.displayName)
@@ -149,11 +176,12 @@ class WebViewRuntime {
                 "webview.host.create",
                 "provider=${provider.id}, debugName=${options.debugName.orEmpty()}",
               ) {
-                engine.createHostComponent(viewScope, bus.interop.createWebViewFocusEntrySink())
+                val focusEntrySink = if (options.features.pageFocusInterop) bus.interop.createWebViewFocusEntrySink() else null
+                engine.createHostComponent(viewScope, focusEntrySink)
               }
             }
             try {
-              bus.interop.registerWebViewFocusExitHandler(host)
+              if (options.features.pageFocusInterop) bus.interop.registerWebViewFocusExitHandler(host)
               val session = WebViewSession(
                 engine = engine,
                 consoleCapture = consoleCapture,
@@ -161,6 +189,7 @@ class WebViewRuntime {
                 interop = bus.interop,
                 runtimeInfo = runtimeInfo,
                 debugName = options.debugName,
+                tracker = tracker,
               )
               ready.complete(session)
               awaitCancellation()
@@ -179,6 +208,8 @@ class WebViewRuntime {
         }
         finally {
           withContext(NonCancellable) {
+            runCatching { engine.setNavigationListener(null) }
+              .onFailure { LOG.warn("Failed to clear WebView navigation listener: $debugName", it) }
             runCatching { engine.close() }
               .onFailure { LOG.warn("Failed to close WebView engine: $debugName", it) }
           }
@@ -195,6 +226,7 @@ class WebViewRuntime {
       initialPage?.let { page ->
         session.loadAsset(page.root, page.entry, page.query)
       }
+      initialUrl?.let { session.loadUrl(it) }
       session
     }
     catch (failure: Throwable) {

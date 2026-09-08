@@ -16,7 +16,7 @@ import org.jetbrains.annotations.ApiStatus
 internal class MacWkWebViewEngineProvider : WebViewEngineProvider {
   override val id: WebViewEngineId = WebViewEngineId.SYSTEM_MACOS
   override val displayName: String = "WebKit"
-  override val capabilities = WebViewEngineCapabilities(assetServing = true, messagePassing = true, interactiveInput = true)
+  override val capabilities = WebViewEngineCapabilities(assetServing = true, messagePassing = true, interactiveInput = true, navigation = true)
 
   override fun selectionPriority(preference: WebViewEngineKind): Int? {
     return when (preference) {
@@ -31,7 +31,7 @@ internal class MacWkWebViewEngineProvider : WebViewEngineProvider {
 
   override fun createEngine(scope: CoroutineScope, options: WebViewEngineCreationOptions): WebViewEngine {
     check(SystemInfo.isMac) { "System WebView is supported only on macOS" }
-    val engine = createMacWebViewEngine(scope, options.documentStartScripts)
+    val engine = createMacWebViewEngine(scope, options.documentStartScripts, options.features)
     engine.initialize()
     return engine
   }
