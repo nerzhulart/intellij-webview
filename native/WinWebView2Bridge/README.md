@@ -25,6 +25,11 @@ Run from the repository root:
 pwsh -File native/WinWebView2Bridge/build.ps1 -All
 ```
 
+In IntelliJ IDEA, enable the **Shell Script** plugin, select the shared **Build Windows Native Libraries**
+run configuration, and click **Run**. It runs this script with `-All` without Java or Gradle.
+The interpreter path uses the per-user Windows app alias for PowerShell 7; if PowerShell is installed
+elsewhere, change **Interpreter path** in **Run | Edit Configurations** to your `pwsh.exe`.
+
 For one architecture:
 
 ```powershell
