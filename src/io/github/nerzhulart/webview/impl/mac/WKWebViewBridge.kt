@@ -1,20 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package io.github.nerzhulart.webview.impl.mac
 
-import com.intellij.ui.mac.foundation.Foundation
-import com.intellij.ui.mac.foundation.Foundation.NSRect
-import com.intellij.ui.mac.foundation.Foundation.addMethod
-import com.intellij.ui.mac.foundation.Foundation.addProtocol
-import com.intellij.ui.mac.foundation.Foundation.allocateObjcClassPair
-import com.intellij.ui.mac.foundation.Foundation.createSelector
-import com.intellij.ui.mac.foundation.Foundation.getObjcClass
-import com.intellij.ui.mac.foundation.Foundation.getProtocol
-import com.intellij.ui.mac.foundation.Foundation.invoke
-import com.intellij.ui.mac.foundation.Foundation.isNil
-import com.intellij.ui.mac.foundation.Foundation.nsString
-import com.intellij.ui.mac.foundation.Foundation.registerObjcClassPair
-import com.intellij.ui.mac.foundation.Foundation.toStringViaUTF8
-import com.intellij.ui.mac.foundation.ID
 import com.intellij.util.system.CpuArch
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
@@ -22,11 +8,8 @@ import io.github.nerzhulart.webview.impl.WebViewEditCommand
 import io.github.nerzhulart.webview.impl.WebViewLogger
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import com.sun.jna.Callback
-import com.sun.jna.Function
 import com.sun.jna.Memory
-import com.sun.jna.NativeLibrary
 import com.sun.jna.Pointer
-import com.sun.jna.Structure
 import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.awt.event.InputEvent
@@ -34,17 +17,30 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 
 /**
- * Low-level JNA bridge to macOS `WKWebView` via the existing [Foundation] ObjC runtime.
+ * Low-level JNA bridge to macOS `WKWebView` via the local Objective-C runtime boundary.
  *
  * All methods in this object **must** be called on the macOS main thread.
  * The caller (typically [MacWebViewEngine]) is responsible for dispatching via
  * [io.github.nerzhulart.webview.impl.MacMainThreadDispatcher].
  *
- * Uses `Foundation.invoke()` for all Objective-C message sends — no separate native library.
+ * Uses the system Objective-C runtime directly and does not depend on IntelliJ's Foundation wrapper.
  */
 @ApiStatus.Internal
 @Suppress("JSUnresolvedVariable")
 internal object WKWebViewBridge {
+  private fun getObjcClass(name: String): ID = MacObjectiveC.getObjcClass(name)
+  private fun getProtocol(name: String): ID = MacObjectiveC.getProtocol(name)
+  private fun invoke(receiver: ID, selector: String, vararg arguments: Any?): ID =
+    MacObjectiveC.invoke(receiver, selector, *arguments)
+  private fun isNil(id: ID?): Boolean = MacObjectiveC.isNil(id)
+  private fun nsString(value: String?): ID = MacObjectiveC.nsString(value)
+  private fun toStringViaUTF8(value: ID): String? = MacObjectiveC.toStringViaUTF8(value)
+  private fun allocateObjcClassPair(superclass: ID, name: String): ID =
+    MacObjectiveC.allocateObjcClassPair(superclass, name)
+  private fun registerObjcClassPair(cls: ID) = MacObjectiveC.registerObjcClassPair(cls)
+  private fun addProtocol(cls: ID, protocol: ID) = MacObjectiveC.addProtocol(cls, protocol)
+  private fun addMethod(cls: ID, selector: String, callback: Callback, encoding: String) =
+    MacObjectiveC.addMethod(cls, selector, callback, encoding)
 
   // region ObjC class names
   private const val CLS_WKWEBVIEW = "WKWebView"
@@ -62,107 +58,107 @@ internal object WKWebViewBridge {
   // endregion
 
   // region ObjC selectors (centralized, no scattered magic strings)
-  private val SEL_ALLOC = createSelector("alloc")
-  private val SEL_INIT = createSelector("init")
-  private val SEL_RELEASE = createSelector("release")
+  private const val SEL_ALLOC = "alloc"
+  private const val SEL_INIT = "init"
+  private const val SEL_RELEASE = "release"
 
   // WKWebViewConfiguration
-  private val SEL_PREFERENCES = createSelector("preferences")
-  private val SEL_USER_CONTENT_CONTROLLER = createSelector("userContentController")
-  private val SEL_SET_URL_SCHEME_HANDLER_FOR_URL_SCHEME = createSelector("setURLSchemeHandler:forURLScheme:")
+  private const val SEL_PREFERENCES = "preferences"
+  private const val SEL_USER_CONTENT_CONTROLLER = "userContentController"
+  private const val SEL_SET_URL_SCHEME_HANDLER_FOR_URL_SCHEME = "setURLSchemeHandler:forURLScheme:"
 
   // WKPreferences
-  private val SEL_SET_JAVA_SCRIPT_ENABLED = createSelector("setJavaScriptEnabled:")
-  private val SEL_SET_JAVA_SCRIPT_CAN_OPEN_WINDOWS_AUTOMATICALLY = createSelector("setJavaScriptCanOpenWindowsAutomatically:")
+  private const val SEL_SET_JAVA_SCRIPT_ENABLED = "setJavaScriptEnabled:"
+  private const val SEL_SET_JAVA_SCRIPT_CAN_OPEN_WINDOWS_AUTOMATICALLY = "setJavaScriptCanOpenWindowsAutomatically:"
 
   // WKWebView
-  private val SEL_INIT_WITH_FRAME_CONFIGURATION = createSelector("initWithFrame:configuration:")
-  private val SEL_ACCEPTS_FIRST_MOUSE = createSelector("acceptsFirstMouse:")
-  private val SEL_FLAGS_CHANGED = createSelector("flagsChanged:")
-  private val SEL_LOAD_REQUEST = createSelector("loadRequest:")
-  private val SEL_LOAD_HTML_STRING_BASE_URL = createSelector("loadHTMLString:baseURL:")
-  private val SEL_EVALUATE_JAVASCRIPT = createSelector("evaluateJavaScript:completionHandler:")
-  private val SEL_WINDOW = createSelector("window")
-  private val SEL_SET_FRAME = createSelector("setFrame:")
-  private val SEL_SET_HIDDEN = createSelector("setHidden:")
-  private val SEL_SET_AUTORESIZING_MASK = createSelector("setAutoresizingMask:")
-  private val SEL_SET_ALLOWS_BACK_FORWARD_NAVIGATION_GESTURES = createSelector("setAllowsBackForwardNavigationGestures:")
-  private val SEL_SET_ALLOWS_MAGNIFICATION = createSelector("setAllowsMagnification:")
-  private val SEL_SET_PAGE_ZOOM = createSelector("setPageZoom:")
-  private val SEL_SET_INSPECTABLE = createSelector("setInspectable:")
-  private val SEL_SET_CAN_USE_CREDENTIAL_STORAGE = createSelector("_setCanUseCredentialStorage:")
-  private val SEL_SET_RUBBER_BANDING_ENABLED = createSelector("_setRubberBandingEnabled:")
-  private val SEL_SET_UI_DELEGATE = createSelector("setUIDelegate:")
-  private val SEL_REMOVE_FROM_SUPERVIEW = createSelector("removeFromSuperview")
-  private val SEL_COPY = createSelector("copy:")
-  private val SEL_PASTE = createSelector("paste:")
-  private val SEL_CUT = createSelector("cut:")
-  private val SEL_SELECT_ALL = createSelector("selectAll:")
-  private val SEL_UNDO = createSelector("undo:")
-  private val SEL_REDO = createSelector("redo:")
+  private const val SEL_INIT_WITH_FRAME_CONFIGURATION = "initWithFrame:configuration:"
+  private const val SEL_ACCEPTS_FIRST_MOUSE = "acceptsFirstMouse:"
+  private const val SEL_FLAGS_CHANGED = "flagsChanged:"
+  private const val SEL_LOAD_REQUEST = "loadRequest:"
+  private const val SEL_LOAD_HTML_STRING_BASE_URL = "loadHTMLString:baseURL:"
+  private const val SEL_EVALUATE_JAVASCRIPT = "evaluateJavaScript:completionHandler:"
+  private const val SEL_WINDOW = "window"
+  private const val SEL_SET_FRAME = "setFrame:"
+  private const val SEL_SET_HIDDEN = "setHidden:"
+  private const val SEL_SET_AUTORESIZING_MASK = "setAutoresizingMask:"
+  private const val SEL_SET_ALLOWS_BACK_FORWARD_NAVIGATION_GESTURES = "setAllowsBackForwardNavigationGestures:"
+  private const val SEL_SET_ALLOWS_MAGNIFICATION = "setAllowsMagnification:"
+  private const val SEL_SET_PAGE_ZOOM = "setPageZoom:"
+  private const val SEL_SET_INSPECTABLE = "setInspectable:"
+  private const val SEL_SET_CAN_USE_CREDENTIAL_STORAGE = "_setCanUseCredentialStorage:"
+  private const val SEL_SET_RUBBER_BANDING_ENABLED = "_setRubberBandingEnabled:"
+  private const val SEL_SET_UI_DELEGATE = "setUIDelegate:"
+  private const val SEL_REMOVE_FROM_SUPERVIEW = "removeFromSuperview"
+  private const val SEL_COPY = "copy:"
+  private const val SEL_PASTE = "paste:"
+  private const val SEL_CUT = "cut:"
+  private const val SEL_SELECT_ALL = "selectAll:"
+  private const val SEL_UNDO = "undo:"
+  private const val SEL_REDO = "redo:"
 
   // NSWindow
-  private val SEL_FIRST_RESPONDER = createSelector("firstResponder")
-  private val SEL_MAKE_FIRST_RESPONDER = createSelector("makeFirstResponder:")
+  private const val SEL_FIRST_RESPONDER = "firstResponder"
+  private const val SEL_MAKE_FIRST_RESPONDER = "makeFirstResponder:"
 
   // NSApplication
-  private val SEL_SHARED_APPLICATION = createSelector("sharedApplication")
-  private val SEL_SEND_ACTION_TO_FROM = createSelector("sendAction:to:from:")
+  private const val SEL_SHARED_APPLICATION = "sharedApplication"
+  private const val SEL_SEND_ACTION_TO_FROM = "sendAction:to:from:"
 
   // NSView
-  private val SEL_INIT_WITH_FRAME = createSelector("initWithFrame:")
-  private val SEL_ADD_SUBVIEW = createSelector("addSubview:")
-  private val SEL_IS_DESCENDANT_OF = createSelector("isDescendantOf:")
-  private val SEL_SET_WANTS_LAYER = createSelector("setWantsLayer:")
-  private val SEL_LAYER = createSelector("layer")
-  private val SEL_SET_MASKS_TO_BOUNDS = createSelector("setMasksToBounds:")
-  private val SEL_ADD_GESTURE_RECOGNIZER = createSelector("addGestureRecognizer:")
-  private val SEL_REMOVE_GESTURE_RECOGNIZER = createSelector("removeGestureRecognizer:")
+  private const val SEL_INIT_WITH_FRAME = "initWithFrame:"
+  private const val SEL_ADD_SUBVIEW = "addSubview:"
+  private const val SEL_IS_DESCENDANT_OF = "isDescendantOf:"
+  private const val SEL_SET_WANTS_LAYER = "setWantsLayer:"
+  private const val SEL_LAYER = "layer"
+  private const val SEL_SET_MASKS_TO_BOUNDS = "setMasksToBounds:"
+  private const val SEL_ADD_GESTURE_RECOGNIZER = "addGestureRecognizer:"
+  private const val SEL_REMOVE_GESTURE_RECOGNIZER = "removeGestureRecognizer:"
 
   // NSGestureRecognizer
-  private val SEL_SET_DELAYS_PRIMARY_MOUSE_BUTTON_EVENTS = createSelector("setDelaysPrimaryMouseButtonEvents:")
-  private val SEL_SET_DELAYS_SECONDARY_MOUSE_BUTTON_EVENTS = createSelector("setDelaysSecondaryMouseButtonEvents:")
-  private val SEL_SET_DELAYS_OTHER_MOUSE_BUTTON_EVENTS = createSelector("setDelaysOtherMouseButtonEvents:")
-  private val SEL_SET_STATE = createSelector("setState:")
-  private val SEL_MOUSE_DOWN = createSelector("mouseDown:")
-  private val SEL_RIGHT_MOUSE_DOWN = createSelector("rightMouseDown:")
-  private val SEL_OTHER_MOUSE_DOWN = createSelector("otherMouseDown:")
+  private const val SEL_SET_DELAYS_PRIMARY_MOUSE_BUTTON_EVENTS = "setDelaysPrimaryMouseButtonEvents:"
+  private const val SEL_SET_DELAYS_SECONDARY_MOUSE_BUTTON_EVENTS = "setDelaysSecondaryMouseButtonEvents:"
+  private const val SEL_SET_DELAYS_OTHER_MOUSE_BUTTON_EVENTS = "setDelaysOtherMouseButtonEvents:"
+  private const val SEL_SET_STATE = "setState:"
+  private const val SEL_MOUSE_DOWN = "mouseDown:"
+  private const val SEL_RIGHT_MOUSE_DOWN = "rightMouseDown:"
+  private const val SEL_OTHER_MOUSE_DOWN = "otherMouseDown:"
 
   // NSObject
-  private val SEL_RESPONDS_TO_SELECTOR = createSelector("respondsToSelector:")
-  private val SEL_DESCRIPTION = createSelector("description")
+  private const val SEL_RESPONDS_TO_SELECTOR = "respondsToSelector:"
+  private const val SEL_DESCRIPTION = "description"
 
   // NSURL / NSURLRequest
-  private val SEL_URL_WITH_STRING = createSelector("URLWithString:")
-  private val SEL_REQUEST_WITH_URL = createSelector("requestWithURL:")
-  private val SEL_REQUEST = createSelector("request")
-  private val SEL_URL = createSelector("URL")
-  private val SEL_ABSOLUTE_STRING = createSelector("absoluteString")
+  private const val SEL_URL_WITH_STRING = "URLWithString:"
+  private const val SEL_REQUEST_WITH_URL = "requestWithURL:"
+  private const val SEL_REQUEST = "request"
+  private const val SEL_URL = "URL"
+  private const val SEL_ABSOLUTE_STRING = "absoluteString"
 
   // NSURLResponse / NSData / WKURLSchemeTask
-  private val SEL_INIT_WITH_URL_STATUS_CODE_HTTP_VERSION_HEADER_FIELDS = createSelector("initWithURL:statusCode:HTTPVersion:headerFields:")
-  private val SEL_DATA_WITH_BYTES_LENGTH = createSelector("dataWithBytes:length:")
-  private val SEL_DICTIONARY = createSelector("dictionary")
-  private val SEL_SET_OBJECT_FOR_KEY = createSelector("setObject:forKey:")
-  private val SEL_DID_RECEIVE_RESPONSE = createSelector("didReceiveResponse:")
-  private val SEL_DID_RECEIVE_DATA = createSelector("didReceiveData:")
-  private val SEL_DID_FINISH = createSelector("didFinish")
+  private const val SEL_INIT_WITH_URL_STATUS_CODE_HTTP_VERSION_HEADER_FIELDS = "initWithURL:statusCode:HTTPVersion:headerFields:"
+  private const val SEL_DATA_WITH_BYTES_LENGTH = "dataWithBytes:length:"
+  private const val SEL_DICTIONARY = "dictionary"
+  private const val SEL_SET_OBJECT_FOR_KEY = "setObject:forKey:"
+  private const val SEL_DID_RECEIVE_RESPONSE = "didReceiveResponse:"
+  private const val SEL_DID_RECEIVE_DATA = "didReceiveData:"
+  private const val SEL_DID_FINISH = "didFinish"
 
   // WKUserContentController
-  private val SEL_ADD_USER_SCRIPT = createSelector("addUserScript:")
-  private val SEL_ADD_SCRIPT_MESSAGE_HANDLER = createSelector("addScriptMessageHandler:name:")
-  private val SEL_REMOVE_SCRIPT_MESSAGE_HANDLER = createSelector("removeScriptMessageHandlerForName:")
+  private const val SEL_ADD_USER_SCRIPT = "addUserScript:"
+  private const val SEL_ADD_SCRIPT_MESSAGE_HANDLER = "addScriptMessageHandler:name:"
+  private const val SEL_REMOVE_SCRIPT_MESSAGE_HANDLER = "removeScriptMessageHandlerForName:"
 
   // WKUserScript
-  private val SEL_INIT_WITH_SOURCE_INJECTION_TIME_FOR_MAIN_FRAME_ONLY = createSelector("initWithSource:injectionTime:forMainFrameOnly:")
+  private const val SEL_INIT_WITH_SOURCE_INJECTION_TIME_FOR_MAIN_FRAME_ONLY = "initWithSource:injectionTime:forMainFrameOnly:"
 
   // WKScriptMessage
-  private val SEL_BODY = createSelector("body")
+  private const val SEL_BODY = "body"
 
   // NSEvent
-  private val SEL_MODIFIER_FLAGS = createSelector("modifierFlags")
-  private val SEL_BUTTON_NUMBER = createSelector("buttonNumber")
-  private val SEL_KEY_CODE = createSelector("keyCode")
+  private const val SEL_MODIFIER_FLAGS = "modifierFlags"
+  private const val SEL_BUTTON_NUMBER = "buttonNumber"
+  private const val SEL_KEY_CODE = "keyCode"
   // endregion
 
   /** Name used for the JS→JVM postMessage channel. JS calls: `window.webkit.messageHandlers.webviewIpc.postMessage(...)` */
@@ -310,6 +306,11 @@ internal object WKWebViewBridge {
 
   fun attachToParent(webView: ID, parentNSView: ID) {
     invoke(parentNSView, SEL_ADD_SUBVIEW, webView)
+  }
+
+  fun contentView(window: ID): ID? {
+    val contentView = invoke(window, "contentView")
+    return if (isNil(contentView)) null else contentView
   }
 
   fun createClippingContainer(parentNSView: ID): ID {
@@ -502,18 +503,21 @@ internal object WKWebViewBridge {
 
     val superclass = getObjcClass(CLS_NSGESTURE_RECOGNIZER)
     val cls = allocateObjcClassPair(superclass, "IdeaWKNativeMouseRecognizer")
-    nativePrimaryMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_MOUSE_DOWN)
-    nativeSecondaryMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_RIGHT_MOUSE_DOWN)
-    nativeOtherMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_OTHER_MOUSE_DOWN)
-    addMethod(cls, SEL_MOUSE_DOWN, nativePrimaryMouseDownCallback, "v@:@")
-    addMethod(cls, SEL_RIGHT_MOUSE_DOWN, nativeSecondaryMouseDownCallback, "v@:@")
-    addMethod(cls, SEL_OTHER_MOUSE_DOWN, nativeOtherMouseDownCallback, "v@:@")
+    val primaryMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_MOUSE_DOWN)
+    val secondaryMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_RIGHT_MOUSE_DOWN)
+    val otherMouseDownCallback = createNativeMouseDownCallback(superclass, SEL_OTHER_MOUSE_DOWN)
+    nativePrimaryMouseDownCallback = primaryMouseDownCallback
+    nativeSecondaryMouseDownCallback = secondaryMouseDownCallback
+    nativeOtherMouseDownCallback = otherMouseDownCallback
+    addMethod(cls, SEL_MOUSE_DOWN, primaryMouseDownCallback, "v@:@")
+    addMethod(cls, SEL_RIGHT_MOUSE_DOWN, secondaryMouseDownCallback, "v@:@")
+    addMethod(cls, SEL_OTHER_MOUSE_DOWN, otherMouseDownCallback, "v@:@")
     registerObjcClassPair(cls)
     nativeMouseRecognizerClass = cls
     return cls
   }
 
-  private fun createNativeMouseDownCallback(superclass: ID, mouseDownSelector: Pointer): Callback {
+  private fun createNativeMouseDownCallback(superclass: ID, mouseDownSelector: String): Callback {
     return object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
       fun callback(self: ID, selector: Pointer, event: ID) {
@@ -644,27 +648,11 @@ internal object WKWebViewBridge {
   }
 
   private fun invokeSuperFlagsChanged(receiver: ID, superclass: ID, event: ID) {
-    OBJC_MSG_SEND_SUPER.invokeVoid(arrayOf(ObjcSuper(receiver.toLong(), superclass.toLong()), SEL_FLAGS_CHANGED, event))
+    MacObjectiveC.invokeSuper(receiver, superclass, SEL_FLAGS_CHANGED, event)
   }
 
-  private fun invokeSuperMouseEvent(receiver: ID, superclass: ID, mouseSelector: Pointer, event: ID) {
-    OBJC_MSG_SEND_SUPER.invokeVoid(arrayOf(ObjcSuper(receiver.toLong(), superclass.toLong()), mouseSelector, event))
-  }
-
-  // JNA passes this structure directly to objc_msgSendSuper. Fields must stay public JVM fields so the
-  // native call can read the exact Objective-C `struct objc_super` layout.
-  @Structure.FieldOrder("receiver", "superclass")
-  internal class ObjcSuper() : Structure() {
-    @JvmField
-    var receiver: Long = 0
-
-    @JvmField
-    var superclass: Long = 0
-
-    constructor(receiver: Long, superclass: Long) : this() {
-      this.receiver = receiver
-      this.superclass = superclass
-    }
+  private fun invokeSuperMouseEvent(receiver: ID, superclass: ID, mouseSelector: String, event: ID) {
+    MacObjectiveC.invokeSuper(receiver, superclass, mouseSelector, event)
   }
 
   // endregion
@@ -692,7 +680,7 @@ internal object WKWebViewBridge {
     invokeIfResponds(webView, SEL_SET_RUBBER_BANDING_ENABLED, WK_RECT_EDGE_NONE, "_setRubberBandingEnabled:")
   }
 
-  private fun invokeIfResponds(target: ID, selector: Pointer, value: Any, settingName: String) {
+  private fun invokeIfResponds(target: ID, selector: String, value: Any, settingName: String) {
     if (!respondsTo(target, selector)) return
     try {
       invoke(target, selector, value)
@@ -702,8 +690,8 @@ internal object WKWebViewBridge {
     }
   }
 
-  private fun respondsTo(target: ID, selector: Pointer): Boolean {
-    return !isNil(target) && invoke(target, SEL_RESPONDS_TO_SELECTOR, selector).booleanValue()
+  private fun respondsTo(target: ID, selector: String): Boolean {
+    return !isNil(target) && invoke(target, SEL_RESPONDS_TO_SELECTOR, nativeSelector(selector)).booleanValue()
   }
 
   private fun createAndRegisterMessageHandler(onMessage: (String) -> Unit): ID {
@@ -730,7 +718,7 @@ internal object WKWebViewBridge {
     // Type encoding: v@:@@ (void, self, _cmd, WKUserContentController, WKScriptMessage)
     val callback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
-      fun callback(self: ID, selector: String, controller: ID, message: ID) {
+      fun callback(self: ID, selector: Pointer, controller: ID, message: ID) {
         val body = invoke(message, SEL_BODY)
         val bodyString = toStringViaUTF8(body)
         if (bodyString != null) {
@@ -741,7 +729,7 @@ internal object WKWebViewBridge {
     }
     messageHandlerCallback = callback // prevent GC
 
-    addMethod(cls, createSelector("userContentController:didReceiveScriptMessage:"), callback, "v@:@@")
+    addMethod(cls, "userContentController:didReceiveScriptMessage:", callback, "v@:@@")
 
     registerObjcClassPair(cls)
     messageHandlerClass = cls
@@ -773,7 +761,7 @@ internal object WKWebViewBridge {
 
     val createWebViewCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
-      fun callback(self: ID, selector: String, webView: ID, configuration: ID, navigationAction: ID, windowFeatures: ID): ID {
+      fun callback(self: ID, selector: Pointer, webView: ID, configuration: ID, navigationAction: ID, windowFeatures: ID): ID {
         val url = urlFromNavigationAction(navigationAction)
         if (url != null) {
           newWindowCallbacks[self.toLong()]?.invoke(url)
@@ -785,7 +773,7 @@ internal object WKWebViewBridge {
 
     addMethod(
       cls,
-      createSelector("webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:"),
+      "webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:",
       createWebViewCallback,
       "@@:@@@@",
     )
@@ -825,7 +813,7 @@ internal object WKWebViewBridge {
 
     val startCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
-      fun callback(self: ID, selector: String, webView: ID, task: ID) {
+      fun callback(self: ID, selector: Pointer, webView: ID, task: ID) {
         val response = urlFromSchemeTask(task)?.let { url -> urlSchemeHandlerCallbacks[self.toLong()]?.invoke(url) }
                        ?: WebViewAssetResponse.notFound("WebView asset URL not found")
         sendSchemeTaskResponse(task, response)
@@ -833,14 +821,14 @@ internal object WKWebViewBridge {
     }
     val stopCallback = object : Callback {
       @Suppress("unused", "UNUSED_PARAMETER") // called from native
-      fun callback(self: ID, selector: String, webView: ID, task: ID) {
+      fun callback(self: ID, selector: Pointer, webView: ID, task: ID) {
       }
     }
     urlSchemeStartCallback = startCallback
     urlSchemeStopCallback = stopCallback
 
-    addMethod(cls, createSelector("webView:startURLSchemeTask:"), startCallback, "v@:@@")
-    addMethod(cls, createSelector("webView:stopURLSchemeTask:"), stopCallback, "v@:@@")
+    addMethod(cls, "webView:startURLSchemeTask:", startCallback, "v@:@@")
+    addMethod(cls, "webView:stopURLSchemeTask:", stopCallback, "v@:@@")
 
     registerObjcClassPair(cls)
     urlSchemeHandlerClass = cls
@@ -914,12 +902,12 @@ internal object WKWebViewBridge {
 
   private fun editCommandSelector(command: WebViewEditCommand): Pointer? {
     return when (command) {
-      WebViewEditCommand.COPY -> SEL_COPY
-      WebViewEditCommand.PASTE -> SEL_PASTE
-      WebViewEditCommand.CUT -> SEL_CUT
-      WebViewEditCommand.SELECT_ALL -> SEL_SELECT_ALL
-      WebViewEditCommand.UNDO -> SEL_UNDO
-      WebViewEditCommand.REDO -> SEL_REDO
+      WebViewEditCommand.COPY -> nativeSelector(SEL_COPY)
+      WebViewEditCommand.PASTE -> nativeSelector(SEL_PASTE)
+      WebViewEditCommand.CUT -> nativeSelector(SEL_CUT)
+      WebViewEditCommand.SELECT_ALL -> nativeSelector(SEL_SELECT_ALL)
+      WebViewEditCommand.UNDO -> nativeSelector(SEL_UNDO)
+      WebViewEditCommand.REDO -> nativeSelector(SEL_REDO)
       else -> null
     }
   }
@@ -942,7 +930,7 @@ internal object WKWebViewBridge {
 
   private fun isDescendantOfWebView(responder: ID, webView: ID): Boolean {
     return responder != webView &&
-           invoke(responder, SEL_RESPONDS_TO_SELECTOR, SEL_IS_DESCENDANT_OF).booleanValue() &&
+           invoke(responder, SEL_RESPONDS_TO_SELECTOR, nativeSelector(SEL_IS_DESCENDANT_OF)).booleanValue() &&
            invoke(responder, SEL_IS_DESCENDANT_OF, webView).booleanValue()
   }
 
@@ -955,7 +943,7 @@ internal object WKWebViewBridge {
   private const val MAC_KEY_RIGHT_SHIFT = 60
   private const val MAC_KEY_RIGHT_CONTROL = 62
   private const val NS_GESTURE_RECOGNIZER_STATE_FAILED = 5L
-  private val OBJC_MSG_SEND_SUPER: Function = NativeLibrary.getInstance("objc").getFunction("objc_msgSendSuper")
+  private fun nativeSelector(name: String): Pointer = MacObjectiveC.selector(name)
 
   private fun objectiveCBooleanType(): String = if (CpuArch.isIntel64()) "c" else "B"
 

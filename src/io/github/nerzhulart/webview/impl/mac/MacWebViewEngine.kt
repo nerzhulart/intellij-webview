@@ -3,9 +3,6 @@ package io.github.nerzhulart.webview.impl.mac
 
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.trace
-import com.intellij.ui.mac.foundation.Foundation
-import com.intellij.ui.mac.foundation.ID
-import com.intellij.ui.mac.foundation.MacUtil
 import com.intellij.util.ui.update.DebouncedUpdates
 import com.intellij.util.ui.update.UpdateQueue
 import io.github.nerzhulart.webview.api.WebViewAssetPath
@@ -282,7 +279,7 @@ internal class MacWebViewEngine(
     val currentHandles = handles
     handles = null
     if (currentHandles != null) {
-      Foundation.executeOnMainThread(false, false) {
+      MacObjectiveC.executeOnMainThread {
         WKWebViewBridge.release(currentHandles)
         handlesReady.cancel(CancellationException("Engine closed"))
         state.set(State.Closed)
@@ -673,10 +670,9 @@ internal class MacWebViewEngine(
 
   private fun resolveParentContentView(host: Component): ID? {
     val window = SwingUtilities.getWindowAncestor(host) ?: return null
-    val nsWindow = MacUtil.getWindowFromJavaWindow(window)
-    if (Foundation.isNil(nsWindow)) return null
-    val contentView = Foundation.invoke(nsWindow, "contentView")
-    return if (Foundation.isNil(contentView)) null else contentView
+    val nsWindow = MacObjectiveC.windowFromAwt(window)
+    if (MacObjectiveC.isNil(nsWindow)) return null
+    return WKWebViewBridge.contentView(nsWindow)
   }
 
 
