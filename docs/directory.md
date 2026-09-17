@@ -16,6 +16,7 @@ WebView Runtime is an independently installed plugin for IntelliJ-based IDEs. Us
 - [Publish the WebView npm Packages](guides/Publish-NPM-Packages.md)
 - [Coding Guides](guides/Coding-Guides.md)
 - [Kotlin Reactive Stream Ownership](guides/kotlin-reactive-stream-ownership-guideline.md)
+- [Markdown Rendered Diff Preview](guides/Markdown-Diff-Rendered-Preview.md)
 
 ## Reference
 

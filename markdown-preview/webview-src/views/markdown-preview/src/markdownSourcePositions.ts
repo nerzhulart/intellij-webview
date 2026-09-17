@@ -50,14 +50,41 @@ const sourceDecorationBlockTagNames = new Set([
   "UL",
 ])
 const removedBlockPlaceholderClassName = "markdownRemovedBlockPlaceholder"
+const programmaticScrollQuietPeriodMs = 300
 let scheduledScrollFrame: number | undefined
+let programmaticScrollUntilMs = 0
 
 export function scrollMarkdownPreviewToLine(line: number): void {
   cancelScheduledMarkdownPreviewScroll()
+  markProgrammaticMarkdownPreviewScroll()
   scheduledScrollFrame = window.requestAnimationFrame(() => {
     scheduledScrollFrame = undefined
     scrollToSourceLine(line)
+    markProgrammaticMarkdownPreviewScroll()
   })
+}
+
+export function markProgrammaticMarkdownPreviewScroll(): void {
+  programmaticScrollUntilMs = performance.now() + programmaticScrollQuietPeriodMs
+}
+
+export function isProgrammaticMarkdownPreviewScroll(): boolean {
+  return performance.now() < programmaticScrollUntilMs
+}
+
+/**
+ * The 0-based source line of the topmost element that is still visible in the viewport.
+ */
+export function topVisibleSourceLine(): number | undefined {
+  const contentElement = markdownContentElement()
+  if (!contentElement) return undefined
+
+  for (const element of sourcePositionElements(contentElement)) {
+    if (element.element.getBoundingClientRect().bottom > 0) {
+      return Math.max(0, element.startLine - 1)
+    }
+  }
+  return undefined
 }
 
 export function cancelScheduledMarkdownPreviewScroll(): void {
