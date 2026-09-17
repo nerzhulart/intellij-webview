@@ -9,7 +9,7 @@ diff viewer, its toolbar, and its change navigation stay available.
 1. Open a diff for a `*.md` file. The diff opens in the usual text mode.
 2. Toggle **Rendered Markdown** in the diff toolbar. The diff content is replaced with two rendered previews:
    left is the "before" document, right is the "after" document.
-3. Toggle the action again to return to the text diff. The chosen mode is remembered per project.
+3. Toggle the action again to return to the text diff. The chosen mode is remembered for the next opened Markdown diff.
 
 In rendered mode:
 
@@ -43,6 +43,11 @@ Non-Markdown diffs and three-side merge diffs are never touched.
   (`DiffUtil.createTextDiffProvider(...)`), so user ignore and highlight policies are honored. That API is
   `@ApiStatus.Internal`: all usage is isolated in `MarkdownDiffPreviewController` and `MarkdownDiffChangeBlocks`, so
   a switch to the public `ComparisonManager` stays a local change.
+- The toggle state is stored by `MarkdownDiffPreviewSettings`, an application-level light service implemented as a
+  `SimplePersistentStateComponent` with the `markdown-lens.xml` storage, and is written only for an explicit user
+  toggle. Restoring the mode for a newly opened diff and resetting the panel on dispose go through
+  `MarkdownDiffPreviewController.applyRenderedMode(...)`, which does not touch the stored value, so closing a diff in
+  rendered mode keeps the setting.
 - Platform line ranges are 0-based and end-exclusive; the preview decorations use the 1-based, end-inclusive
   `data-sourcepos` scheme. The conversion lives in `MarkdownDiffChangeBlocks`.
 - Scroll positions are reported from the page through `MarkdownPreviewHostApi.previewScrolled` and translated to the

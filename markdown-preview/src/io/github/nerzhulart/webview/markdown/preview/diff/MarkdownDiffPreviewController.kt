@@ -13,7 +13,6 @@ import com.intellij.diff.tools.util.base.TextDiffSettingsHolder.TextDiffSettings
 import com.intellij.diff.tools.util.text.TwosideTextDiffProvider
 import com.intellij.diff.util.DiffUserDataKeys
 import com.intellij.diff.util.DiffUtil
-import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.DataSink
@@ -38,7 +37,6 @@ import java.awt.Component
 import javax.swing.JComponent
 import javax.swing.JPanel
 
-private const val RENDERED_MODE_PROPERTY = "markdown.webview.diff.preview.rendered"
 private const val CONTENT_UPDATE_DELAY_MS = 200
 
 private val LOG = logger<MarkdownDiffPreviewController>()
@@ -86,13 +84,20 @@ internal class MarkdownDiffPreviewController private constructor(
   val isAvailable: Boolean
     get() = diffPanel != null && textComponent != null
 
+  /**
+   * Switches the mode on a user request, so the choice is remembered for the next opened Markdown diff.
+   */
   fun setRenderedMode(rendered: Boolean) {
+    MarkdownDiffPreviewSettings.getInstance().isRenderedMode = rendered
+    applyRenderedMode(rendered)
+  }
+
+  private fun applyRenderedMode(rendered: Boolean) {
     if (isRenderedMode == rendered) return
     val diffPanel = diffPanel ?: return
     val textComponent = textComponent ?: return
 
     isRenderedMode = rendered
-    properties()?.setValue(RENDERED_MODE_PROPERTY, rendered)
 
     if (rendered) {
       renderedPanel.add(previews().component, BorderLayout.CENTER)
@@ -251,14 +256,8 @@ internal class MarkdownDiffPreviewController private constructor(
     }
   }
 
-  private fun properties(): PropertiesComponent? {
-    return if (project != null) PropertiesComponent.getInstance(project) else PropertiesComponent.getInstance()
-  }
-
   override fun dispose() {
-    if (isRenderedMode) {
-      setRenderedMode(false)
-    }
+    applyRenderedMode(false)
   }
 
   private inner class RenderedPanel : JPanel(BorderLayout()), UiCompatibleDataProvider {
@@ -314,8 +313,8 @@ internal class MarkdownDiffPreviewController private constructor(
       controller.installDocumentListeners()
       installToggleAction(request, controller)
 
-      if (controller.properties()?.getBoolean(RENDERED_MODE_PROPERTY, false) == true) {
-        controller.setRenderedMode(true)
+      if (MarkdownDiffPreviewSettings.getInstance().isRenderedMode) {
+        controller.applyRenderedMode(true)
       }
     }
 
