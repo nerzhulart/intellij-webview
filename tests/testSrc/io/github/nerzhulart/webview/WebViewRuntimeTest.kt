@@ -2,6 +2,9 @@
 package io.github.nerzhulart.webview
 
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.asContextElement
+import com.intellij.openapi.application.impl.LaterInvocator
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.testFramework.TestLoggerFactory
 import com.intellij.testFramework.junit5.RegistryKey
@@ -451,6 +454,45 @@ internal class WebViewRuntimeTest {
       closeGate.complete(Unit)
       webViewScope.cancel()
       cancellation.join()
+    }
+  }
+
+  @Test
+  fun createWebView_completesScopeUnderModalState(): Unit = runBlocking {
+    val provider = FakeEngineProvider(
+      id = WebViewEngineId.JCEF,
+      displayName = "JCEF",
+      capabilities = capabilities(assetServing = true),
+    )
+    val runtime = WebViewRuntime().apply { providers = listOf(provider) }
+    @Suppress("RAW_SCOPE_CREATION")
+    val webViewScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val modalEntity = Any()
+    var modalStateEntered = false
+    try {
+      withContext(Dispatchers.EDT) {
+        runtime.createWebView(webViewScope)
+        // Dynamic plugin unload joins the cancelled plugin scope under a modal progress, so session
+        // teardown must not wait for a dispatch that a modal state postpones.
+        LaterInvocator.enterModal(modalEntity)
+        modalStateEntered = true
+      }
+
+      withContext(Dispatchers.Default) {
+        withTimeout(5.seconds) {
+          webViewScope.coroutineContext.job.cancelAndJoin()
+        }
+      }
+
+      assertEquals(1, provider.engine.closeCount)
+    }
+    finally {
+      webViewScope.cancel()
+      if (modalStateEntered) {
+        withContext(Dispatchers.EDT + ModalityState.any().asContextElement()) {
+          LaterInvocator.leaveModal(modalEntity)
+        }
+      }
     }
   }
 
