@@ -2,6 +2,8 @@
 package io.github.nerzhulart.webview.impl.engine
 
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.asContextElement
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
@@ -13,6 +15,7 @@ import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.api.WebViewPanel
 import io.github.nerzhulart.webview.api.WebViewPanelOptions
+import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewConsoleCapture
 import io.github.nerzhulart.webview.impl.registerConsole
 import io.github.nerzhulart.webview.impl.rpc.WebViewMessageBusImpl
@@ -166,10 +169,7 @@ class WebViewRuntime {
               awaitCancellation()
             }
             finally {
-              withContext(NonCancellable + Dispatchers.EDT) {
-                runCatching { host.close() }
-                  .onFailure { LOG.warn("Failed to close WebView Swing host: $debugName", it) }
-              }
+              closeHost(host, debugName)
             }
           }
           finally {
@@ -203,6 +203,27 @@ class WebViewRuntime {
         viewScope.coroutineContext.job.join()
       }
       throw failure
+    }
+  }
+
+  /**
+   * Closes the Swing host on the EDT ignoring the current modality.
+   *
+   * [ModalityState.any] is mandatory here. `Dispatchers.EDT` falls back to a non-modal state when
+   * the context carries no modality, and such a dispatch is postponed until every modal state is
+   * left. The platform normally reschedules a postponed dispatch with [ModalityState.any] once the
+   * coroutine is cancelled, but [NonCancellable] hides the cancellation and disables that fallback.
+   * Session teardown runs exactly in that situation: dynamic plugin unload cancels the plugin scope
+   * and joins it under a modal progress, so a non-modal dispatch would never run, the plugin scope
+   * would not complete in time, and the file-based index would stay switched off.
+   *
+   * The host only touches Swing and the native peer, never the platform model, which is what
+   * [ModalityState.any] requires.
+   */
+  private suspend fun closeHost(host: SwingWebViewHostPanel, debugName: String?) {
+    withContext(NonCancellable + Dispatchers.EDT + ModalityState.any().asContextElement()) {
+      runCatching { host.close() }
+        .onFailure { LOG.warn("Failed to close WebView Swing host: $debugName", it) }
     }
   }
 
