@@ -38,6 +38,8 @@ interface MarkdownPreviewHostApi : WebViewImplementable {
 
   suspend fun setFontSize(params: MarkdownSetFontSizeParams)
 
+  suspend fun previewScrolled(params: MarkdownPreviewScrolledParams)
+
   companion object {
     val ID: WebViewApiId<MarkdownPreviewHostApi> = WebViewApiId.of("markdown.preview")
   }
@@ -188,3 +190,7 @@ data class MarkdownNavigatePathLinkParams(
 @ApiStatus.Internal
 @Serializable
 data class MarkdownSetFontSizeParams(val fontSize: Int)
+
+@ApiStatus.Internal
+@Serializable
+data class MarkdownPreviewScrolledParams(val line: Int)

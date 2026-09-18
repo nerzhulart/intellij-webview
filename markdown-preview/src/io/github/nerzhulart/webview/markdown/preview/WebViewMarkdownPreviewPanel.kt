@@ -78,6 +78,13 @@ class WebViewMarkdownPreviewPanel(
   @Volatile
   private var nextContentVersion: Int = 0
 
+  @Volatile
+  private var changedBlocks: List<MarkdownChangedBlockDescriptor> = emptyList()
+
+  @Volatile
+  @ApiStatus.Internal
+  var scrollListener: ((Int) -> Unit)? = null
+
   private val panelCreatedAt = TimeSource.Monotonic.markNow()
 
   init {
@@ -111,6 +118,13 @@ class WebViewMarkdownPreviewPanel(
     sendContentUpdate(update)
   }
 
+  @ApiStatus.Internal
+  fun setChangedBlocks(changes: List<MarkdownChangedBlockDescriptor>) {
+    if (changedBlocks == changes) return
+    changedBlocks = changes
+    sendContentUpdate()
+  }
+
   override fun reloadWithOffset(offset: Int) {
     val update = lastUpdate ?: return
     val nextUpdate = update.copy(initialScrollLineNumber = lineNumberAtOffset(update.markdown, offset))
@@ -119,6 +133,25 @@ class WebViewMarkdownPreviewPanel(
   }
 
   override suspend fun scrollTo(editor: Editor, line: Int) {
+    scrollToLine(line)
+  }
+
+  @ApiStatus.Internal
+  fun requestScrollToLine(line: Int) {
+    coroutineScope.launch {
+      try {
+        scrollToLine(line)
+      }
+      catch (e: CancellationException) {
+        throw e
+      }
+      catch (t: Throwable) {
+        LOG.warn("Failed to scroll Markdown WebView preview", t)
+      }
+    }
+  }
+
+  private suspend fun scrollToLine(line: Int) {
     lastUpdate = lastUpdate?.copy(initialScrollLineNumber = line)
     val panel = webViewPanel ?: return
     if (!pageReady) return
@@ -200,6 +233,13 @@ class WebViewMarkdownPreviewPanel(
 
       override suspend fun setFontSize(params: MarkdownSetFontSizeParams) {
         setMarkdownFontSize(params)
+      }
+
+      override suspend fun previewScrolled(params: MarkdownPreviewScrolledParams) {
+        val listener = scrollListener ?: return
+        withContext(Dispatchers.EDT) {
+          listener(params.line)
+        }
       }
     }
   }
@@ -332,6 +372,7 @@ class WebViewMarkdownPreviewPanel(
               scrollLine = actualUpdate.initialScrollLineNumber,
               settings = currentPreviewSettings(),
               contentVersion = actualUpdate.contentVersion,
+              changes = changedBlocks,
             )
           )
         }
