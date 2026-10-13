@@ -32,7 +32,7 @@ import com.intellij.ui.JBSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.panels.Wrapper
 import com.intellij.diff.util.Side
-import com.intellij.ui.ComponentUtil
+import com.intellij.openapi.diagnostic.rethrowControlFlowException
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -190,10 +190,8 @@ internal class MarkdownDiffPreviewController private constructor(
       val computed = try {
         textDiffProvider.compare(text1, text2, EmptyProgressIndicator())
       }
-      catch (e: ProcessCanceledException) {
-        null
-      }
       catch (t: Throwable) {
+        rethrowControlFlowException(t)
         LOG.warn("Failed to compute Markdown diff change blocks", t)
         null
       }
@@ -363,10 +361,16 @@ internal class MarkdownDiffPreviewController private constructor(
       }
     }
 
+    /**
+     * `DiffRequestProcessor` puts its toolbar and the viewer into the same main panel, so the right toolbar of this
+     * viewer is the one in the nearest parent that has any. Other diff processors in the same window are further away.
+     */
     private fun findRightToolbar(viewerComponent: JComponent): ActionToolbar? {
-      return UIUtil.uiTraverser(ComponentUtil.findUltimateParent(viewerComponent))
-        .filter(ActionToolbar::class.java)
-        .find { it.place == DIFF_RIGHT_TOOLBAR_PLACE && it.targetComponent === viewerComponent }
+      return UIUtil.uiParents(viewerComponent, true).firstNotNullOfOrNull { parent ->
+        UIUtil.uiTraverser(parent)
+          .filter(ActionToolbar::class.java)
+          .find { it.place == DIFF_RIGHT_TOOLBAR_PLACE }
+      }
     }
   }
 }
