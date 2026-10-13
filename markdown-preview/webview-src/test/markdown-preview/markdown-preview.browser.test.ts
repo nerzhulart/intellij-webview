@@ -206,7 +206,7 @@ test("highlights added, modified, and removed blocks of a rendered diff", async 
   await page.goto(preview.url)
   await page.waitForSelector(".markdownPreviewContent")
 
-  await page.getByRole("button", { name: "Diff markdown" }).click()
+  await page.getByRole("button", { name: "Diff markdown", exact: true }).click()
   await page.waitForFunction(() => document.querySelector(".markdownPreviewContent .is-vcs-added") != null)
 
   const diffState = await page.evaluate(() => {
@@ -263,7 +263,7 @@ test("reports the visible table row instead of the table start while scrolling t
   await page.goto(preview.url)
   await page.waitForSelector(".markdownPreviewContent")
 
-  await page.getByRole("button", { name: "Diff markdown" }).click()
+  await page.getByRole("button", { name: "Diff markdown", exact: true }).click()
   await page.waitForFunction(() => document.querySelector(".markdownPreviewContent table") != null)
   await page.evaluate(() => {
     document.querySelectorAll<HTMLElement>(".markdownPreviewContent tr").forEach(row => {

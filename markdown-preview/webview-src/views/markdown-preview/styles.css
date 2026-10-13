@@ -20,6 +20,17 @@ body {
   font-family: var(--ij-font), sans-serif;
 }
 
+/* Like the editor error stripe, the scrollbar track with change markers stays visible even for a short document. */
+html.has-change-markers body {
+  overflow-y: scroll;
+}
+
+html.is-over-change-marker,
+html.is-over-change-marker::-webkit-scrollbar-track,
+html.is-over-change-marker body::-webkit-scrollbar-track {
+  cursor: pointer;
+}
+
 .markdownPreview {
   --markdown-code-builtin: #A9B7C6;
   --markdown-code-function: #FFC66D;

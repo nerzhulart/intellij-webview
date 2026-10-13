@@ -19,6 +19,12 @@ interface MarkdownChangedBlockDescriptor {
   endLine: number
 }
 
+export interface ChangedBlockElements {
+  kind: MarkdownChangedBlockDescriptor["kind"]
+  startLine: number
+  elements: HTMLElement[]
+}
+
 const sourcePositionPattern = /^(\d+):(\d+)-(\d+):(\d+)$/
 const sourceDecorationClassNames = ["is-source-selected", "is-vcs-added", "is-vcs-modified", "is-vcs-removed"]
 const sourceDecorationClassSelector = sourceDecorationClassNames.map(className => `.${className}`).join(", ")
@@ -101,9 +107,9 @@ export function cancelScheduledMarkdownPreviewScroll(): void {
   scheduledScrollFrame = undefined
 }
 
-export function decorateSourceBlocks(selection: SourcePositionRange | undefined, changes: MarkdownChangedBlockDescriptor[]): void {
+export function decorateSourceBlocks(selection: SourcePositionRange | undefined, changes: MarkdownChangedBlockDescriptor[]): ChangedBlockElements[] {
   const contentElement = markdownContentElement()
-  if (!contentElement) return
+  if (!contentElement) return []
 
   clearSourceDecorations(contentElement)
   const elements = sourceDecorationElements(contentElement)
@@ -116,12 +122,18 @@ export function decorateSourceBlocks(selection: SourcePositionRange | undefined,
     }
   }
 
+  const changedBlocks: ChangedBlockElements[] = []
   for (const change of changes) {
     const className = changeClassName(change.kind)
-    for (const element of changedBlockElements(elements, change)) {
+    const changedElements = changedBlockElements(elements, change)
+    for (const element of changedElements) {
       element.classList.add(className)
     }
+    if (changedElements.length > 0) {
+      changedBlocks.push({ kind: change.kind, startLine: change.startLine, elements: changedElements })
+    }
   }
+  return changedBlocks
 }
 
 export function clearSourceDecorations(root: HTMLElement | null = markdownContentElement()): void {
