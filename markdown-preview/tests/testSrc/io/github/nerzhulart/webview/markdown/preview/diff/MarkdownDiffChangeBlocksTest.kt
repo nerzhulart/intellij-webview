@@ -9,18 +9,18 @@ import io.github.nerzhulart.webview.markdown.preview.MarkdownChangedBlockKind
 import junit.framework.TestCase
 
 internal class MarkdownDiffChangeBlocksTest : TestCase() {
-  fun `test added block is highlighted on the right and marked as removed placeholder on the left`() {
+  fun `test added block is highlighted on the right and left alone on the left`() {
     val fragments = listOf(fragment(startLine1 = 2, endLine1 = 2, startLine2 = 2, endLine2 = 4))
 
     assertEquals(listOf(block(MarkdownChangedBlockKind.ADDED, 3, 4)), MarkdownDiffChangeBlocks.rightBlocks(fragments))
-    assertEquals(listOf(block(MarkdownChangedBlockKind.REMOVED, 3, 3)), MarkdownDiffChangeBlocks.leftBlocks(fragments))
+    assertEquals(emptyList<MarkdownChangedBlockDescriptor>(), MarkdownDiffChangeBlocks.leftBlocks(fragments))
   }
 
-  fun `test removed block is highlighted on the left and marked as removed placeholder on the right`() {
+  fun `test removed block is highlighted on the left and left alone on the right`() {
     val fragments = listOf(fragment(startLine1 = 1, endLine1 = 3, startLine2 = 1, endLine2 = 1))
 
-    assertEquals(listOf(block(MarkdownChangedBlockKind.MODIFIED, 2, 3)), MarkdownDiffChangeBlocks.leftBlocks(fragments))
-    assertEquals(listOf(block(MarkdownChangedBlockKind.REMOVED, 2, 2)), MarkdownDiffChangeBlocks.rightBlocks(fragments))
+    assertEquals(listOf(block(MarkdownChangedBlockKind.REMOVED, 2, 3)), MarkdownDiffChangeBlocks.leftBlocks(fragments))
+    assertEquals(emptyList<MarkdownChangedBlockDescriptor>(), MarkdownDiffChangeBlocks.rightBlocks(fragments))
   }
 
   fun `test modified block is highlighted on both sides`() {
@@ -41,27 +41,25 @@ internal class MarkdownDiffChangeBlocksTest : TestCase() {
       listOf(
         block(MarkdownChangedBlockKind.MODIFIED, 1, 1),
         block(MarkdownChangedBlockKind.ADDED, 5, 6),
-        block(MarkdownChangedBlockKind.REMOVED, 11, 11),
       ),
       MarkdownDiffChangeBlocks.rightBlocks(fragments),
     )
     assertEquals(
       listOf(
         block(MarkdownChangedBlockKind.MODIFIED, 1, 1),
-        block(MarkdownChangedBlockKind.REMOVED, 5, 5),
-        block(MarkdownChangedBlockKind.MODIFIED, 9, 10),
+        block(MarkdownChangedBlockKind.REMOVED, 9, 10),
       ),
       MarkdownDiffChangeBlocks.leftBlocks(fragments),
     )
   }
 
-  fun `test whole document is added on the right and modified on the left`() {
+  fun `test whole document is added on the right and removed on the left`() {
     assertEquals(
       listOf(block(MarkdownChangedBlockKind.ADDED, 1, 4)),
       MarkdownDiffChangeBlocks.wholeDocumentBlocks(4, Side.RIGHT),
     )
     assertEquals(
-      listOf(block(MarkdownChangedBlockKind.MODIFIED, 1, 4)),
+      listOf(block(MarkdownChangedBlockKind.REMOVED, 1, 4)),
       MarkdownDiffChangeBlocks.wholeDocumentBlocks(4, Side.LEFT),
     )
   }

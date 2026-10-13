@@ -20,7 +20,7 @@ interface MarkdownChangedBlockDescriptor {
 }
 
 const sourcePositionPattern = /^(\d+):(\d+)-(\d+):(\d+)$/
-const sourceDecorationClassNames = ["is-source-selected", "is-vcs-added", "is-vcs-modified"]
+const sourceDecorationClassNames = ["is-source-selected", "is-vcs-added", "is-vcs-modified", "is-vcs-removed"]
 const sourceDecorationClassSelector = sourceDecorationClassNames.map(className => `.${className}`).join(", ")
 const sourceDecorationBlockTagNames = new Set([
   "BLOCKQUOTE",
@@ -49,7 +49,6 @@ const sourceDecorationBlockTagNames = new Set([
   "TR",
   "UL",
 ])
-const removedBlockPlaceholderClassName = "markdownRemovedBlockPlaceholder"
 const programmaticScrollQuietPeriodMs = 300
 let scheduledScrollFrame: number | undefined
 let programmaticScrollUntilMs = 0
@@ -109,15 +108,9 @@ export function decorateSourceBlocks(selection: SourcePositionRange | undefined,
   }
 
   for (const change of changes) {
-    if (change.kind === "REMOVED") {
-      insertRemovedBlockPlaceholder(contentElement, elements, change)
-      continue
-    }
-    const className = change.kind === "ADDED" ? "is-vcs-added" : "is-vcs-modified"
-    for (const element of elements) {
-      if (sourceLinesIntersect(element, change)) {
-        element.element.classList.add(className)
-      }
+    const className = changeClassName(change.kind)
+    for (const element of changedBlockElements(elements, change)) {
+      element.classList.add(className)
     }
   }
 }
@@ -126,9 +119,6 @@ export function clearSourceDecorations(root: HTMLElement | null = markdownConten
   if (!root) return
   root.querySelectorAll<HTMLElement>(sourceDecorationClassSelector).forEach(element => {
     element.classList.remove(...sourceDecorationClassNames)
-  })
-  root.querySelectorAll<HTMLElement>(`.${removedBlockPlaceholderClassName}`).forEach(placeholder => {
-    placeholder.remove()
   })
 }
 
@@ -205,22 +195,42 @@ function sourceLinesIntersect(sourcePosition: SourcePositionRange, change: Markd
   return sourcePosition.startLine <= change.endLine && change.startLine <= sourcePosition.endLine
 }
 
-function insertRemovedBlockPlaceholder(root: HTMLElement, elements: SourcePositionElement[], change: MarkdownChangedBlockDescriptor): void {
-  const placeholder = document.createElement("div")
-  placeholder.className = removedBlockPlaceholderClassName
-  placeholder.setAttribute("aria-hidden", "true")
-
-  const anchorElement = elements.find(element => element.startLine >= change.startLine)?.element
-  const insertionTarget = anchorElement ? directChildOf(root, anchorElement) : undefined
-  root.insertBefore(placeholder, insertionTarget ?? null)
+function sourceLinesContained(sourcePosition: SourcePositionRange, change: MarkdownChangedBlockDescriptor): boolean {
+  return change.startLine <= sourcePosition.startLine && sourcePosition.endLine <= change.endLine
 }
 
-function directChildOf(root: HTMLElement, element: HTMLElement): HTMLElement | undefined {
-  let current = element
-  while (current.parentElement && current.parentElement !== root && root.contains(current.parentElement)) {
-    current = current.parentElement
+/**
+ * Picks the elements that represent a changed line range without highlighting enclosing containers: an element that is
+ * only partially covered by the change (for example, a table with a couple of inserted rows) is highlighted only when
+ * none of its descendants can represent the change more precisely, and an element fully covered by the change is
+ * highlighted once at its outermost fully covered level.
+ */
+function changedBlockElements(elements: SourcePositionElement[], change: MarkdownChangedBlockDescriptor): HTMLElement[] {
+  const intersecting = elements.filter(element => sourceLinesIntersect(element, change))
+  const contained = intersecting.filter(element => sourceLinesContained(element, change))
+  return intersecting
+    .filter(element => {
+      if (sourceLinesContained(element, change)) {
+        return !contained.some(other => other !== element && other.element.contains(element.element))
+      }
+      return !intersecting.some(other => other !== element && element.element.contains(other.element))
+    })
+    .map(element => element.element)
+}
+
+/**
+ * A removed block is highlighted in the preview that still contains the text, so a two-side diff needs no placeholder
+ * in the opposite preview.
+ */
+function changeClassName(kind: MarkdownChangedBlockDescriptor["kind"]): string {
+  switch (kind) {
+    case "ADDED":
+      return "is-vcs-added"
+    case "REMOVED":
+      return "is-vcs-removed"
+    default:
+      return "is-vcs-modified"
   }
-  return current.parentElement === root ? current : undefined
 }
 
 function parseSourcePosition(sourcePosition: string | undefined): SourcePositionRange | undefined {

@@ -214,21 +214,24 @@ test("highlights added, modified, and removed blocks of a rendered diff", async 
     const textsOf = (selector: string): string[] => {
       return Array.from(content?.querySelectorAll(selector) ?? []).map(element => element.textContent ?? "")
     }
-    const placeholders = Array.from(content?.querySelectorAll(".markdownRemovedBlockPlaceholder") ?? [])
     return {
       added: textsOf(".is-vcs-added"),
+      addedTags: Array.from(content?.querySelectorAll(".is-vcs-added") ?? []).map(element => element.tagName),
       modified: textsOf(".is-vcs-modified"),
-      placeholderCount: placeholders.length,
-      textAfterPlaceholder: placeholders[0]?.nextElementSibling?.textContent ?? "",
+      removed: textsOf(".is-vcs-removed"),
+      placeholderCount: (content?.querySelectorAll(".markdownRemovedBlockPlaceholder") ?? []).length,
     }
   })
 
-  expect(diffState.added.length === 1).toBe(true)
+  expect(diffState.added.length === 2).toBe(true)
   expect(diffState.added[0] === "Added paragraph line.").toBe(true)
+  expect(diffState.addedTags[1] === "TR").toBe(true)
+  expect(diffState.added[1].includes("Added row")).toBe(true)
   expect(diffState.modified.length === 1).toBe(true)
   expect(diffState.modified[0] === "Modified paragraph line.").toBe(true)
-  expect(diffState.placeholderCount === 1).toBe(true)
-  expect(diffState.textAfterPlaceholder === "Tail paragraph after a deletion.").toBe(true)
+  expect(diffState.removed.length === 1).toBe(true)
+  expect(diffState.removed[0] === "Removed paragraph line.").toBe(true)
+  expect(diffState.placeholderCount === 0).toBe(true)
 })
 
 test("reports the visible source line to the host while scrolling", async ({ page }) => {

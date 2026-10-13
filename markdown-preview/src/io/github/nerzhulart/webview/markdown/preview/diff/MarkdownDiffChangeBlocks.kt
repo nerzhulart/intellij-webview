@@ -12,7 +12,7 @@ import io.github.nerzhulart.webview.markdown.preview.MarkdownChangedBlockKind
  */
 internal object MarkdownDiffChangeBlocks {
   fun blocks(fragments: List<LineFragment>, side: Side): List<MarkdownChangedBlockDescriptor> {
-    return fragments.map { fragment -> block(fragment, side) }
+    return fragments.mapNotNull { fragment -> block(fragment, side) }
   }
 
   fun leftBlocks(fragments: List<LineFragment>): List<MarkdownChangedBlockDescriptor> = blocks(fragments, Side.LEFT)
@@ -25,20 +25,26 @@ internal object MarkdownDiffChangeBlocks {
   fun wholeDocumentBlocks(lineCount: Int, side: Side): List<MarkdownChangedBlockDescriptor> {
     if (lineCount <= 0) return emptyList()
 
-    val kind = if (side.isLeft) MarkdownChangedBlockKind.MODIFIED else MarkdownChangedBlockKind.ADDED
+    val kind = if (side.isLeft) MarkdownChangedBlockKind.REMOVED else MarkdownChangedBlockKind.ADDED
     return listOf(MarkdownChangedBlockDescriptor(kind, 1, lineCount))
   }
 
-  private fun block(fragment: LineFragment, side: Side): MarkdownChangedBlockDescriptor {
+  /**
+   * Returns `null` for a fragment that covers no lines on [side]: such a change is already visible as added or removed
+   * content in the opposite preview, so a two-side diff does not need an empty placeholder for it.
+   */
+  private fun block(fragment: LineFragment, side: Side): MarkdownChangedBlockDescriptor? {
     val startLine = startLine(fragment, side)
     val endLine = endLine(fragment, side)
-    if (startLine == endLine) {
-      return MarkdownChangedBlockDescriptor(MarkdownChangedBlockKind.REMOVED, startLine + 1, startLine + 1)
-    }
+    if (startLine == endLine) return null
 
     val opposite = side.other()
     val oppositeIsEmpty = startLine(fragment, opposite) == endLine(fragment, opposite)
-    val kind = if (!side.isLeft && oppositeIsEmpty) MarkdownChangedBlockKind.ADDED else MarkdownChangedBlockKind.MODIFIED
+    val kind = when {
+      !oppositeIsEmpty -> MarkdownChangedBlockKind.MODIFIED
+      side.isLeft -> MarkdownChangedBlockKind.REMOVED
+      else -> MarkdownChangedBlockKind.ADDED
+    }
     return MarkdownChangedBlockDescriptor(kind, startLine + 1, endLine)
   }
 

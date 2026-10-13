@@ -67,6 +67,7 @@ const diffChanges: MarkdownChangedBlockDescriptor[] = [
   { kind: "ADDED", startLine: 5, endLine: 5 },
   { kind: "MODIFIED", startLine: 7, endLine: 7 },
   { kind: "REMOVED", startLine: 9, endLine: 9 },
+  { kind: "ADDED", startLine: 14, endLine: 14 },
 ]
 const resolvedPathLinks = new Set(["docs/guide.md:12", "src/Main.kt", "src\\WindowsPath.kt", "index.h", "index.html", "style.css", "requirements.txt", "my_django_project/", "my_django_app/"])
 const defaultFontSize = 13
@@ -354,5 +355,11 @@ Added paragraph line.
 
 Modified paragraph line.
 
-Tail paragraph after a deletion.
+Removed paragraph line.
+
+| Action | Keybinding |
+| --- | --- |
+| Stage | Ctrl+S |
+| Added row | Ctrl+A |
+| Commit | Ctrl+K |
 `

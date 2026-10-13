@@ -13,16 +13,18 @@ diff viewer, its toolbar, and its change navigation stay available.
 
 In rendered mode:
 
-- Added blocks are highlighted as added, modified blocks as modified, and deleted blocks are shown as a placeholder
-  on the opposite side. Highlighting reuses the frontend decorations `is-vcs-added`, `is-vcs-modified`, and
-  `markdownRemovedBlockPlaceholder`.
+- Added blocks are highlighted as added on the right side, deleted blocks as removed on the left side, and modified
+  blocks as modified on both sides. Highlighting reuses the frontend decorations `is-vcs-added`, `is-vcs-modified`,
+  and `is-vcs-removed`. A change that has no lines on one side, that is, a pure addition or a pure deletion, is not
+  decorated at all in the opposite preview: the other panel already shows the change, so an empty placeholder would
+  only add noise to a two-side diff.
 - **Next/Previous Difference** scrolls both previews to the next or previous changed block.
 - Scrolling one preview scrolls the other one to the matching source line.
 - If both sides are equal, the platform "contents are identical" notification is shown above the previews.
 - Editing the local side re-renders the previews and recomputes the change blocks.
 
 For a file that was added or deleted as a whole, the diff has a single non-empty side, so the rendered mode shows one
-preview with the whole document highlighted: as added for a new file and as modified for a deleted one. Scroll
+preview with the whole document highlighted: as added for a new file and as removed for a deleted one. Scroll
 synchronization and change navigation are not applicable in that case.
 
 ## Disabling the feature
@@ -49,6 +51,9 @@ Non-Markdown diffs and three-side merge diffs are never touched.
   `MarkdownDiffPreviewController.applyRenderedMode(...)`, which does not touch the stored value, so closing a diff in
   rendered mode keeps the setting.
 - Platform line ranges are 0-based and end-exclusive; the preview decorations use the 1-based, end-inclusive
-  `data-sourcepos` scheme. The conversion lives in `MarkdownDiffChangeBlocks`.
+  `data-sourcepos` scheme. The conversion lives in `MarkdownDiffChangeBlocks`, which also drops a fragment that
+  covers no lines on the requested side, so no decoration is produced for it.
+- `MarkdownChangedBlockKind.REMOVED` means "this text is present here and gone on the other side", so the frontend
+  highlights it in place through `is-vcs-removed` instead of inserting a placeholder element.
 - Scroll positions are reported from the page through `MarkdownPreviewHostApi.previewScrolled` and translated to the
   opposite side by `MarkdownDiffScrollSynchronizer`.

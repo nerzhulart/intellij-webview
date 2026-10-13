@@ -79,7 +79,8 @@ html[data-theme="light"] .markdownPreview {
 
 .markdownPreview .is-source-selected,
 .markdownPreview .is-vcs-added,
-.markdownPreview .is-vcs-modified {
+.markdownPreview .is-vcs-modified,
+.markdownPreview .is-vcs-removed {
   border-radius: 4px;
 }
 
@@ -99,6 +100,12 @@ html[data-theme="light"] .markdownPreview {
   --markdown-current-decoration-bg: var(--markdown-vcs-modified-bg);
   background: var(--markdown-vcs-modified-bg);
   box-shadow: inset 3px 0 0 var(--markdown-vcs-modified-border);
+}
+
+.markdownPreview .is-vcs-removed {
+  --markdown-current-decoration-bg: var(--markdown-vcs-removed-bg);
+  background: var(--markdown-vcs-removed-bg);
+  box-shadow: inset 3px 0 0 var(--markdown-vcs-removed-border);
 }
 
 .markdownPreview .is-source-selected code,
@@ -124,23 +131,23 @@ html[data-theme="light"] .markdownPreview {
 .markdownPreview .is-vcs-modified .frontmatterBlock,
 .markdownPreview .is-vcs-modified .markdownImageBlock,
 .markdownPreview .is-vcs-modified .mermaidBlock,
-.markdownPreview .is-vcs-modified th {
+.markdownPreview .is-vcs-modified th,
+.markdownPreview .is-vcs-removed code,
+.markdownPreview .is-vcs-removed kbd,
+.markdownPreview .is-vcs-removed pre,
+.markdownPreview .is-vcs-removed details,
+.markdownPreview .is-vcs-removed .frontmatterBlock,
+.markdownPreview .is-vcs-removed .markdownImageBlock,
+.markdownPreview .is-vcs-removed .mermaidBlock,
+.markdownPreview .is-vcs-removed th {
   background: var(--markdown-current-decoration-bg);
 }
 
 .markdownPreview .is-source-selected.is-vcs-added,
-.markdownPreview .is-source-selected.is-vcs-modified {
+.markdownPreview .is-source-selected.is-vcs-modified,
+.markdownPreview .is-source-selected.is-vcs-removed {
   outline: 1px solid var(--markdown-source-selection-border);
   outline-offset: 1px;
-}
-
-.markdownPreview .markdownRemovedBlockPlaceholder {
-  width: 100%;
-  height: 8px;
-  margin: 0 0 12px;
-  border-left: 3px solid var(--markdown-vcs-removed-border);
-  border-radius: 4px;
-  background: var(--markdown-vcs-removed-bg);
 }
 
 .markdownPreview .markdownFloatingRail,
