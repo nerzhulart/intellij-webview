@@ -19,6 +19,12 @@ interface MarkdownChangedBlockDescriptor {
   endLine: number
 }
 
+export interface ChangedBlockElements {
+  kind: MarkdownChangedBlockDescriptor["kind"]
+  startLine: number
+  elements: HTMLElement[]
+}
+
 const sourcePositionPattern = /^(\d+):(\d+)-(\d+):(\d+)$/
 const sourceDecorationClassNames = ["is-source-selected", "is-vcs-added", "is-vcs-modified", "is-vcs-removed"]
 const sourceDecorationClassSelector = sourceDecorationClassNames.map(className => `.${className}`).join(", ")
@@ -72,18 +78,27 @@ export function isProgrammaticMarkdownPreviewScroll(): boolean {
 }
 
 /**
- * The 0-based source line of the topmost element that is still visible in the viewport.
+ * The 0-based source line of the innermost block that is still visible at the top of the viewport. Containers such as
+ * tables, lists, and block quotes stay visible while any of their children is visible, so the topmost visible block is
+ * refined to its first visible nested block; otherwise scrolling through a table would report the table start until the
+ * whole table is scrolled past. Inline elements are not used for refinement, so a partially visible multi-line paragraph
+ * keeps reporting its own start line.
  */
 export function topVisibleSourceLine(): number | undefined {
   const contentElement = markdownContentElement()
   if (!contentElement) return undefined
 
+  let visibleElement: SourcePositionElement | undefined
   for (const element of sourcePositionElements(contentElement)) {
+    if (visibleElement) {
+      if (!visibleElement.element.contains(element.element)) break
+      if (!sourceDecorationBlockTagNames.has(element.element.tagName)) continue
+    }
     if (element.element.getBoundingClientRect().bottom > 0) {
-      return Math.max(0, element.startLine - 1)
+      visibleElement = element
     }
   }
-  return undefined
+  return visibleElement ? Math.max(0, visibleElement.startLine - 1) : undefined
 }
 
 export function cancelScheduledMarkdownPreviewScroll(): void {
@@ -92,9 +107,9 @@ export function cancelScheduledMarkdownPreviewScroll(): void {
   scheduledScrollFrame = undefined
 }
 
-export function decorateSourceBlocks(selection: SourcePositionRange | undefined, changes: MarkdownChangedBlockDescriptor[]): void {
+export function decorateSourceBlocks(selection: SourcePositionRange | undefined, changes: MarkdownChangedBlockDescriptor[]): ChangedBlockElements[] {
   const contentElement = markdownContentElement()
-  if (!contentElement) return
+  if (!contentElement) return []
 
   clearSourceDecorations(contentElement)
   const elements = sourceDecorationElements(contentElement)
@@ -107,12 +122,18 @@ export function decorateSourceBlocks(selection: SourcePositionRange | undefined,
     }
   }
 
+  const changedBlocks: ChangedBlockElements[] = []
   for (const change of changes) {
     const className = changeClassName(change.kind)
-    for (const element of changedBlockElements(elements, change)) {
+    const changedElements = changedBlockElements(elements, change)
+    for (const element of changedElements) {
       element.classList.add(className)
     }
+    if (changedElements.length > 0) {
+      changedBlocks.push({ kind: change.kind, startLine: change.startLine, elements: changedElements })
+    }
   }
+  return changedBlocks
 }
 
 export function clearSourceDecorations(root: HTMLElement | null = markdownContentElement()): void {

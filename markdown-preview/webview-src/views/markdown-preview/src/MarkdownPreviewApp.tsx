@@ -9,6 +9,7 @@ import rehypeSlug from "rehype-slug"
 import remarkFrontmatter from "remark-frontmatter"
 import remarkGfm from "remark-gfm"
 import { FloatingMarkdownControls } from "./FloatingMarkdownControls"
+import { setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { codeNodeFromPreNode, type HastNode } from "./markdownHastUtils"
 import { collectPathLinkCandidates, renderPathLinks } from "./markdownPathLinks"
@@ -347,7 +348,7 @@ export function MarkdownPreviewApp({
   // Deferred enhancements (path links, run commands, syntax highlighting) re-render the content and drop
   // decoration classes, so the decorations are re-applied after every render.
   useEffect(() => {
-    decorateSourceBlocks(selection, changes)
+    setScrollbarChangeMarkers(decorateSourceBlocks(selection, changes))
     return clearSourceDecorations
   })
 

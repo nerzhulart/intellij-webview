@@ -11,11 +11,13 @@ import com.intellij.diff.tools.util.base.TextDiffSettingsHolder.TextDiffSettings
 import com.intellij.diff.tools.util.side.OnesideTextDiffViewer
 import com.intellij.diff.tools.util.side.TwosideTextDiffViewer
 import com.intellij.diff.tools.util.text.TwosideTextDiffProvider
-import com.intellij.diff.util.DiffUserDataKeys
 import com.intellij.diff.util.DiffUtil
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.ActionToolbar
+import com.intellij.openapi.actionSystem.Constraints
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.event.CaretEvent
@@ -30,8 +32,10 @@ import com.intellij.ui.JBSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.panels.Wrapper
 import com.intellij.diff.util.Side
+import com.intellij.ui.ComponentUtil
 import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import io.github.nerzhulart.webview.markdown.preview.WebViewMarkdownPreviewPanel
 import java.awt.BorderLayout
 import java.awt.Component
@@ -39,6 +43,11 @@ import javax.swing.JComponent
 import javax.swing.JPanel
 
 private const val CONTENT_UPDATE_DELAY_MS = 200
+
+/**
+ * The place of the right part of the diff toolbar created by `DiffRequestProcessor`.
+ */
+private const val DIFF_RIGHT_TOOLBAR_PLACE = "DiffRightToolbar"
 
 private val LOG = logger<MarkdownDiffPreviewController>()
 
@@ -71,6 +80,10 @@ internal class MarkdownDiffPreviewController private constructor(
   private var changesRequestId: Int = 0
 
   private var isSyncingScroll: Boolean = false
+
+  private val toggleAction = ToggleMarkdownDiffPreviewAction(this)
+
+  private var rightToolbar: ActionToolbar? = null
 
   var fragments: List<LineFragment> = emptyList()
     private set
@@ -265,7 +278,37 @@ internal class MarkdownDiffPreviewController private constructor(
     }
   }
 
+  /**
+   * The diff API has no extension point for the right toolbar, so the action is added to the toolbar group
+   * after `DiffRequestProcessor` has built the toolbar for this viewer. The processor clears the group itself
+   * when it switches to another request.
+   */
+  private fun installToggleAction(viewerComponent: JComponent) {
+    val toolbar = findRightToolbar(viewerComponent)
+    val group = toolbar?.actionGroup as? DefaultActionGroup
+    if (toolbar == null || group == null) {
+      LOG.warn("Markdown diff preview toggle is not installed: the diff right toolbar is not found")
+      return
+    }
+    if (!group.containsAction(toggleAction)) {
+      group.addAction(toggleAction, Constraints.FIRST)
+    }
+    rightToolbar = toolbar
+    toolbar.updateActionsAsync()
+  }
+
+  private fun uninstallToggleAction() {
+    val toolbar = rightToolbar ?: return
+    rightToolbar = null
+    val group = toolbar.actionGroup as? DefaultActionGroup ?: return
+    if (group.containsAction(toggleAction)) {
+      group.remove(toggleAction)
+      toolbar.updateActionsAsync()
+    }
+  }
+
   override fun dispose() {
+    uninstallToggleAction()
     applyRenderedMode(false)
   }
 
@@ -300,7 +343,12 @@ internal class MarkdownDiffPreviewController private constructor(
       Disposer.register(viewer, controller)
       controller.installDocumentListeners()
       controller.installCaretListeners(editors(viewer, sides))
-      installToggleAction(request, controller)
+      // The viewer is created before the diff toolbar is built, so the toolbar is ready only on the next EDT event.
+      ApplicationManager.getApplication().invokeLater(
+        { controller.installToggleAction(viewer.component) },
+        ModalityState.any(),
+        { viewer.isDisposed },
+      )
 
       if (MarkdownDiffPreviewSettings.getInstance().isRenderedMode) {
         controller.applyRenderedMode(true)
@@ -315,14 +363,10 @@ internal class MarkdownDiffPreviewController private constructor(
       }
     }
 
-    private fun installToggleAction(request: DiffRequest, controller: MarkdownDiffPreviewController) {
-      val actions = request.getUserData(DiffUserDataKeys.CONTEXT_ACTIONS)
-        .orEmpty()
-        .filterNot { it is ToggleMarkdownDiffPreviewAction }
-      request.putUserData(
-        DiffUserDataKeys.CONTEXT_ACTIONS,
-        actions + listOf<AnAction>(ToggleMarkdownDiffPreviewAction(controller)),
-      )
+    private fun findRightToolbar(viewerComponent: JComponent): ActionToolbar? {
+      return UIUtil.uiTraverser(ComponentUtil.findUltimateParent(viewerComponent))
+        .filter(ActionToolbar::class.java)
+        .find { it.place == DIFF_RIGHT_TOOLBAR_PLACE && it.targetComponent === viewerComponent }
     }
   }
 }

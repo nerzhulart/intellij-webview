@@ -70,6 +70,7 @@ const diffChanges: MarkdownChangedBlockDescriptor[] = [
   { kind: "ADDED", startLine: 14, endLine: 14 },
 ]
 const resolvedPathLinks = new Set(["docs/guide.md:12", "src/Main.kt", "src\\WindowsPath.kt", "index.h", "index.html", "style.css", "requirements.txt", "my_django_project/", "my_django_app/"])
+const longDiff = longDiffMarkdown()
 const defaultFontSize = 13
 const fontSizeOptions = [8, 9, 10, 11, 12, defaultFontSize, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
 
@@ -112,6 +113,12 @@ export default defineWebViewMock(({ host, page, theme }) => {
   toolbar.diffMarkdownButton.addEventListener("click", () => {
     currentMarkdown = diffMarkdown
     currentChanges = diffChanges
+    updatePreview()
+  })
+
+  toolbar.longDiffMarkdownButton.addEventListener("click", () => {
+    currentMarkdown = longDiff.markdown
+    currentChanges = longDiff.changes
     updatePreview()
   })
 
@@ -179,6 +186,7 @@ function installMockToolbar(): {
   shortMarkdownButton: HTMLButtonElement,
   dollarMarkdownButton: HTMLButtonElement,
   diffMarkdownButton: HTMLButtonElement,
+  longDiffMarkdownButton: HTMLButtonElement,
   log: HTMLSpanElement,
 } {
   const content = document.getElementById("content")
@@ -210,13 +218,44 @@ function installMockToolbar(): {
   diffMarkdownButton.textContent = "Diff markdown"
   toolbar.append(diffMarkdownButton)
 
+  const longDiffMarkdownButton = document.createElement("button")
+  longDiffMarkdownButton.type = "button"
+  longDiffMarkdownButton.textContent = "Long diff markdown"
+  toolbar.append(longDiffMarkdownButton)
+
   const log = document.createElement("span")
   log.id = "mock-run-log"
   toolbar.append(log)
 
   content.before(toolbar)
   installMockToolbarStyles()
-  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, diffMarkdownButton, log }
+  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, diffMarkdownButton, longDiffMarkdownButton, log }
+}
+
+/**
+ * A document that is several screens long with changes near the top, in the middle, and near the bottom, so the
+ * scrollbar change markers have distinct positions.
+ */
+function longDiffMarkdown(): { markdown: string, changes: MarkdownChangedBlockDescriptor[] } {
+  const sectionCount = 60
+  const changedSections = new Map<number, { kind: MarkdownChangedBlockDescriptor["kind"], text: string }>([
+    [2, { kind: "ADDED", text: "Added paragraph near the top." }],
+    [30, { kind: "MODIFIED", text: "Modified paragraph in the middle." }],
+    [45, { kind: "REMOVED", text: "Removed paragraph below the middle." }],
+    [58, { kind: "ADDED", text: "Added paragraph near the bottom." }],
+  ])
+  const lines = ["# Long Diff Markdown", ""]
+  const changes: MarkdownChangedBlockDescriptor[] = []
+  for (let section = 1; section <= sectionCount; section++) {
+    lines.push(`## Section ${section}`, "")
+    const change = changedSections.get(section)
+    lines.push(change?.text ?? `Unchanged paragraph ${section} keeps the document long enough to scroll through several screens.`)
+    if (change) {
+      changes.push({ kind: change.kind, startLine: lines.length, endLine: lines.length })
+    }
+    lines.push("")
+  }
+  return { markdown: lines.join("\n"), changes }
 }
 
 function installMockToolbarStyles(): void {

@@ -206,7 +206,7 @@ test("highlights added, modified, and removed blocks of a rendered diff", async 
   await page.goto(preview.url)
   await page.waitForSelector(".markdownPreviewContent")
 
-  await page.getByRole("button", { name: "Diff markdown" }).click()
+  await page.getByRole("button", { name: "Diff markdown", exact: true }).click()
   await page.waitForFunction(() => document.querySelector(".markdownPreviewContent .is-vcs-added") != null)
 
   const diffState = await page.evaluate(() => {
@@ -242,6 +242,7 @@ test("reports the visible source line to the host while scrolling", async ({ pag
   await page.waitForSelector(".markdownPreviewContent")
 
   await page.waitForFunction(() => document.documentElement.scrollHeight > window.innerHeight * 2)
+  await waitForProgrammaticScrollQuietPeriod(page)
 
   const initialCalls = await methodCallCount(page, "markdown.preview/previewScrolled")
   await page.evaluate(() => window.scrollTo({ top: window.innerHeight * 2, behavior: "instant" }))
@@ -253,6 +254,50 @@ test("reports the visible source line to the host while scrolling", async ({ pag
   })
 
   expect(await methodCallCount(page, "markdown.preview/previewScrolled") > initialCalls).toBe(true)
+})
+
+test("reports the visible table row instead of the table start while scrolling through a table", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreviewContent")
+
+  await page.getByRole("button", { name: "Diff markdown", exact: true }).click()
+  await page.waitForFunction(() => document.querySelector(".markdownPreviewContent table") != null)
+  await page.evaluate(() => {
+    document.querySelectorAll<HTMLElement>(".markdownPreviewContent tr").forEach(row => {
+      row.style.height = "600px"
+    })
+    document.body.style.paddingBottom = "3000px"
+  })
+  await waitForProgrammaticScrollQuietPeriod(page)
+
+  await page.evaluate(() => {
+    (window as Window & { __WVI_MOCK__?: { calls: { clear(): void } } }).__WVI_MOCK__?.calls.clear()
+    const row = Array.from(document.querySelectorAll<HTMLElement>(".markdownPreviewContent tr"))
+      .find(element => element.textContent?.includes("Added row"))
+    if (!row) throw new Error("Missing table row")
+    window.scrollBy({ top: row.getBoundingClientRect().top + 10, behavior: "instant" })
+  })
+  await page.waitForFunction(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/previewScrolled") ?? []
+    return calls.length > 0
+  })
+
+  const reportedLine = await page.evaluate(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/previewScrolled") ?? []
+    return (calls[calls.length - 1]?.params as { line?: number } | undefined)?.line
+  })
+
+  // "| Added row | Ctrl+A |" is the 14th source line of the diff markdown, reported 0-based.
+  expect(reportedLine === 13).toBe(true)
 })
 
 test("keeps font settings available without table of contents", async ({ page }) => {
@@ -598,6 +643,13 @@ function methodCallCount(page: Page, method: string): Promise<number> {
 
 function waitForLateMockUpdates(page: Page): Promise<unknown> {
   return page.evaluate(() => new Promise(resolve => setTimeout(resolve, 120)))
+}
+
+/**
+ * The preview ignores scroll events for a short period after a host-requested scroll, such as the initial one.
+ */
+function waitForProgrammaticScrollQuietPeriod(page: Page): Promise<unknown> {
+  return page.evaluate(() => new Promise(resolve => setTimeout(resolve, 400)))
 }
 
 async function installControlledIdleCallbacks(page: Page): Promise<void> {

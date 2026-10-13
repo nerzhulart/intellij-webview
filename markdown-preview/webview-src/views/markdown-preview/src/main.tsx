@@ -3,6 +3,7 @@
 import { createRoot } from "react-dom/client"
 import { apiId, getPerfLogger, webView, webViewTheme, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 import { MarkdownPreviewApp, scrollMarkdownPreviewToLine } from "./MarkdownPreviewApp"
+import { installScrollbarChangeMarkers, refreshScrollbarChangeMarkers, setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { decorateSourceBlocks, isProgrammaticMarkdownPreviewScroll, topVisibleSourceLine } from "./markdownSourcePositions"
 import type {
@@ -97,16 +98,18 @@ webView.implement(markdownPreviewPageApiId, {
   },
   selectionChanged(params) {
     selection = params.selection ?? undefined
-    decorateSourceBlocks(selection, changes)
+    setScrollbarChangeMarkers(decorateSourceBlocks(selection, changes))
   },
 })
 
 applyTheme(theme)
+installScrollbarChangeMarkers()
 renderPreview("initial")
 window.addEventListener("scroll", scheduleScrollReport, { passive: true })
 webViewTheme.onChanged(nextTheme => {
   theme = nextTheme
   applyTheme(nextTheme)
+  refreshScrollbarChangeMarkers()
 })
 void markdownPreviewHostApi.pageReady()
 
