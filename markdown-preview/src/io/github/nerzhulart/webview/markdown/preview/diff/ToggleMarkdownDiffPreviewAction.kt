@@ -13,7 +13,7 @@ internal class ToggleMarkdownDiffPreviewAction(
 ) : ToggleAction(
   MarkdownWebViewPreviewBundle.message("markdown.diff.preview.toggle.action.text"),
   MarkdownWebViewPreviewBundle.message("markdown.diff.preview.toggle.action.description"),
-  AllIcons.Actions.PreviewDetails,
+  AllIcons.General.LayoutPreviewOnly,
 ), DumbAware {
   override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 

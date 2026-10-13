@@ -7,8 +7,8 @@ diff viewer, its toolbar, and its change navigation stay available.
 ## Using the rendered diff
 
 1. Open a diff for a `*.md` file. The diff opens in the usual text mode.
-2. Toggle **Rendered Markdown** in the diff toolbar. The diff content is replaced with two rendered previews:
-   left is the "before" document, right is the "after" document.
+2. Toggle **Rendered Markdown**, the first action on the right side of the diff toolbar. The diff content is replaced
+   with two rendered previews: left is the "before" document, right is the "after" document.
 3. Toggle the action again to return to the text diff. The chosen mode is remembered for the next opened Markdown diff.
 
 In rendered mode:
@@ -41,6 +41,9 @@ Non-Markdown diffs and three-side merge diffs are never touched.
   `io.github.nerzhulart.webview.markdown.preview.diff.MarkdownDiffPreviewExtension`. It supports both the two-side
   text viewer (`TwosideTextDiffViewer`) and the one-side viewer used for added and deleted files
   (`OnesideTextDiffViewer`); `MarkdownDiffSides` accepts an `EmptyContent` side and reports it as absent.
+- The diff API has no hook for the right toolbar (`DiffRightToolbar` place), so `MarkdownDiffPreviewController` adds
+  the toggle as the first action of that toolbar group after `DiffRequestProcessor` builds the toolbar, finding the
+  toolbar whose target component is the viewer component, and removes it when the viewer is disposed.
 - Change blocks come from the platform `TwosideTextDiffProvider`
   (`DiffUtil.createTextDiffProvider(...)`), so user ignore and highlight policies are honored. That API is
   `@ApiStatus.Internal`: all usage is isolated in `MarkdownDiffPreviewController` and `MarkdownDiffChangeBlocks`, so
