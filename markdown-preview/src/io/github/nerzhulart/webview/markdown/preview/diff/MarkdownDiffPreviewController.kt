@@ -5,20 +5,21 @@ import com.intellij.diff.DiffContext
 import com.intellij.diff.fragments.LineFragment
 import com.intellij.diff.requests.ContentDiffRequest
 import com.intellij.diff.requests.DiffRequest
-import com.intellij.diff.tools.util.DiffDataKeys
 import com.intellij.diff.tools.util.DiffNotifications
-import com.intellij.diff.tools.util.PrevNextDifferenceIterable
 import com.intellij.diff.tools.util.base.DiffViewerBase
 import com.intellij.diff.tools.util.base.TextDiffSettingsHolder.TextDiffSettings
+import com.intellij.diff.tools.util.side.OnesideTextDiffViewer
+import com.intellij.diff.tools.util.side.TwosideTextDiffViewer
 import com.intellij.diff.tools.util.text.TwosideTextDiffProvider
 import com.intellij.diff.util.DiffUserDataKeys
 import com.intellij.diff.util.DiffUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnAction
-import com.intellij.openapi.actionSystem.DataSink
-import com.intellij.openapi.actionSystem.UiCompatibleDataProvider
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.event.CaretEvent
+import com.intellij.openapi.editor.event.CaretListener
 import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.progress.EmptyProgressIndicator
@@ -52,11 +53,9 @@ internal class MarkdownDiffPreviewController private constructor(
   private val textComponent: Component? = (diffPanel?.layout as? BorderLayout)?.getLayoutComponent(BorderLayout.CENTER)
 
   private val notificationsPanel = Wrapper()
-  private val renderedPanel = RenderedPanel().apply {
+  private val renderedPanel = JPanel(BorderLayout()).apply {
     add(notificationsPanel, BorderLayout.NORTH)
   }
-
-  private val differenceIterable = MarkdownDiffDifferenceIterable()
 
   private val contentUpdateAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
 
@@ -70,8 +69,6 @@ internal class MarkdownDiffPreviewController private constructor(
   private var previews: Previews? = null
 
   private var changesRequestId: Int = 0
-
-  private var currentChangeIndex: Int = -1
 
   private var isSyncingScroll: Boolean = false
 
@@ -195,7 +192,6 @@ internal class MarkdownDiffPreviewController private constructor(
     if (requestId != changesRequestId || !isRenderedMode) return
 
     fragments = computed.orEmpty()
-    currentChangeIndex = -1
     val previews = previews ?: return
     for (preview in previews.all) {
       preview.panel.setChangedBlocks(MarkdownDiffChangeBlocks.blocks(fragments, preview.side.side))
@@ -210,7 +206,6 @@ internal class MarkdownDiffPreviewController private constructor(
     val previews = previews ?: return
 
     fragments = emptyList()
-    currentChangeIndex = -1
     for (preview in previews.all) {
       val blocks = MarkdownDiffChangeBlocks.wholeDocumentBlocks(preview.side.document.lineCount, preview.side.side)
       preview.panel.setChangedBlocks(blocks)
@@ -218,11 +213,15 @@ internal class MarkdownDiffPreviewController private constructor(
     setNotification(null)
   }
 
-  private fun scrollToChange(index: Int) {
-    val fragment = fragments.getOrNull(index) ?: return
+  /**
+   * The text viewer stays alive while hidden, so its own previous/next difference actions keep working in rendered mode
+   * and move the caret of the hidden editor to the start line of the target change. The previews follow that caret.
+   */
+  private fun onEditorCaretMoved(side: Side, line: Int) {
+    if (!isRenderedMode) return
     val previews = previews ?: return
 
-    currentChangeIndex = index
+    val fragment = fragments.find { MarkdownDiffScrollSynchronizer.changeStartLine(it, side) == line } ?: return
     for (preview in previews.all) {
       preview.panel.requestScrollToLine(MarkdownDiffScrollSynchronizer.changeStartLine(fragment, preview.side.side))
     }
@@ -256,29 +255,18 @@ internal class MarkdownDiffPreviewController private constructor(
     }
   }
 
+  private fun installCaretListeners(editors: Map<Side, Editor>) {
+    for ((side, editor) in editors) {
+      editor.caretModel.addCaretListener(object : CaretListener {
+        override fun caretPositionChanged(event: CaretEvent) {
+          onEditorCaretMoved(side, event.newPosition.line)
+        }
+      }, this)
+    }
+  }
+
   override fun dispose() {
     applyRenderedMode(false)
-  }
-
-  private inner class RenderedPanel : JPanel(BorderLayout()), UiCompatibleDataProvider {
-    override fun uiDataSnapshot(sink: DataSink) {
-      sink[DiffDataKeys.PREV_NEXT_DIFFERENCE_ITERABLE] = differenceIterable
-    }
-  }
-
-  private inner class MarkdownDiffDifferenceIterable : PrevNextDifferenceIterable {
-    override fun canGoPrev(): Boolean = fragments.isNotEmpty() && currentChangeIndex != 0
-
-    override fun canGoNext(): Boolean = fragments.isNotEmpty() && currentChangeIndex < fragments.lastIndex
-
-    override fun goPrev() {
-      val index = if (currentChangeIndex <= 0) fragments.lastIndex else currentChangeIndex - 1
-      scrollToChange(index)
-    }
-
-    override fun goNext() {
-      scrollToChange((currentChangeIndex + 1).coerceAtMost(fragments.lastIndex))
-    }
   }
 
   private class Preview(
@@ -311,10 +299,19 @@ internal class MarkdownDiffPreviewController private constructor(
 
       Disposer.register(viewer, controller)
       controller.installDocumentListeners()
+      controller.installCaretListeners(editors(viewer, sides))
       installToggleAction(request, controller)
 
       if (MarkdownDiffPreviewSettings.getInstance().isRenderedMode) {
         controller.applyRenderedMode(true)
+      }
+    }
+
+    private fun editors(viewer: DiffViewerBase, sides: MarkdownDiffSides): Map<Side, Editor> {
+      return when (viewer) {
+        is TwosideTextDiffViewer -> sides.present.associate { it.side to viewer.getEditor(it.side) }
+        is OnesideTextDiffViewer -> mapOf(sides.present.single().side to viewer.editor)
+        else -> emptyMap()
       }
     }
 
