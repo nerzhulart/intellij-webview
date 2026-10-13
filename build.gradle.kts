@@ -6,6 +6,7 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.platform.gradle.tasks.PublishPluginTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 
 plugins {
   kotlin("jvm") version "2.4.10"
@@ -88,12 +89,24 @@ intellijPlatform {
       },
     )
   }
+  pluginVerification {
+    ides {
+      current()
+    }
+  }
 }
 
 tasks {
   val testIdeaRoot = layout.buildDirectory.dir("test-idea-root")
 
   named<PublishPluginTask>("publishPlugin") {
+    providers.gradleProperty("pluginArchiveFile").orNull?.let {
+      archiveFile.set(layout.projectDirectory.file(it))
+      setDependsOn(emptyList<Any>())
+    }
+  }
+
+  named<VerifyPluginTask>("verifyPlugin") {
     providers.gradleProperty("pluginArchiveFile").orNull?.let {
       archiveFile.set(layout.projectDirectory.file(it))
       setDependsOn(emptyList<Any>())

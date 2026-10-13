@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PublishPluginTask
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 
 plugins {
   kotlin("jvm")
@@ -73,10 +74,22 @@ intellijPlatform {
       },
     )
   }
+  pluginVerification {
+    ides {
+      current()
+    }
+  }
 }
 
 tasks {
   named<PublishPluginTask>("publishPlugin") {
+    providers.gradleProperty("pluginArchiveFile").orNull?.let {
+      archiveFile.set(rootProject.layout.projectDirectory.file(it))
+      setDependsOn(emptyList<Any>())
+    }
+  }
+
+  named<VerifyPluginTask>("verifyPlugin") {
     providers.gradleProperty("pluginArchiveFile").orNull?.let {
       archiveFile.set(rootProject.layout.projectDirectory.file(it))
       setDependsOn(emptyList<Any>())

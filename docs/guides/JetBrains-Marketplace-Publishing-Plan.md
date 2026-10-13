@@ -1,10 +1,10 @@
 # JetBrains Marketplace Publishing
 
-Status: planned. The repository currently publishes npm packages and GitHub Release assets, but it does not publish plugin updates to JetBrains Marketplace.
+Status: partially implemented. The `publish` job of the **Build and publish release** workflow (`.github/workflows/build.yml`) already uploads the Runtime and Markdown Lens ZIPs with `publishPlugin` and the `PUBLISH_TOKEN` secret. The per-plugin matrix, the existing-version check, and the protected `marketplace` environment described below are not implemented yet.
 
 ## Goal
 
-Extend the existing **Publish selected build** workflow so that it uploads the already verified Runtime and Markdown Lens ZIPs to JetBrains Marketplace. The workflow must not rebuild plugin archives, and the Demo plugin must remain a GitHub Release asset only.
+Extend the existing **Build and publish release** workflow so that it uploads the already verified Runtime and Markdown Lens ZIPs to JetBrains Marketplace. The workflow must not rebuild plugin archives, and the Demo plugin must not be uploaded to Marketplace.
 
 ## Plugin Identity
 
@@ -22,12 +22,12 @@ The Demo XML ID is renamed to keep distributed metadata under the same personal 
 
 ## Release Workflow
 
-Add a Marketplace matrix job to `.github/workflows/release.yml` after the existing release job succeeds. Use one matrix entry per published plugin so that a partial failure can be retried without resending the successful plugin.
+Replace the Marketplace step of the `publish` job in `.github/workflows/build.yml` with a Marketplace matrix job that runs after the existing publish job succeeds. Use one matrix entry per published plugin so that a partial failure can be retried without resending the successful plugin.
 
 Each matrix entry must:
 
-1. Download the `webview-plugin-zips` artifact from the selected **Build plugins** run.
-2. Derive the version from the validated `v<version>` release tag.
+1. Download the `webview-plugin-zips` artifact from the same workflow run.
+2. Use the validated release version input.
 3. Find exactly one expected archive:
    - Runtime: `webview-<version>.zip`;
    - Markdown Lens: `markdown-webview-preview-<version>.zip`.
@@ -47,13 +47,13 @@ Create a protected GitHub environment named `marketplace`, restrict it to the `m
 JetBrains Marketplace requires the first version of each plugin to be uploaded manually. Bootstrap publishing as follows:
 
 1. Create the `nerzhulart` Marketplace vendor profile.
-2. Run **Build plugins** for the first release version and download its Runtime and Markdown Lens ZIPs.
+2. Download the Runtime and Markdown Lens ZIPs for the first release version from a **Build and publish release** run.
 3. Use **Upload plugin** to create both listings with the XML IDs above, the repository's Apache 2.0 license, the source repository URL, and the names and categories from their descriptors.
 4. Use the `eap` custom channel when the bootstrap version is a prerelease; otherwise use the default channel.
 5. Wait until both versions are visible in the corresponding repository feed.
-6. Run **Publish selected build** for the same build. The Marketplace jobs must detect the manual versions and skip their uploads while the existing npm and GitHub release steps complete normally.
+6. Run **Build and publish release** for the same version. The Marketplace jobs must detect the manual versions and skip their uploads while the existing npm and GitHub release steps complete normally.
 
-All later releases use the same two-workflow release process and require no manual Marketplace upload.
+All later releases use the same workflow and require no manual Marketplace upload.
 
 ## Failure Handling
 
@@ -68,7 +68,7 @@ All later releases use the same two-workflow release process and require no manu
 - All three built plugins contain the new XML IDs and correct Runtime dependency references.
 - A prerelease publishes Runtime and Markdown Lens to `eap`; Demo appears only in the GitHub Release.
 - A stable release publishes Runtime and Markdown Lens to the default Marketplace channel.
-- The Marketplace jobs use the exact ZIPs produced by the selected build run and never rebuild them.
+- The Marketplace jobs use the exact ZIPs produced by the build job of the same run and never rebuild them.
 - A repeated run skips versions already present in the selected channel.
 - One failed plugin upload can be retried independently.
 - The Marketplace token never appears in logs or release artifacts.

@@ -154,13 +154,15 @@ Until standalone Kotlin tests are added:
 
 ## CI and Releases
 
-The manually triggered **Build plugins** workflow takes a release version and produces the three plugin ZIPs plus the matching SDK and testkit npm tarballs. It also installs those tarballs in a clean fixture and verifies their public exports, Vite build, and mock preview.
+The manually triggered **Build and publish release** workflow takes a release version and produces the three plugin ZIPs plus the matching SDK and testkit npm tarballs. It also installs those tarballs in a clean fixture and verifies their public exports, Vite build, and mock preview. As soon as the build job finishes, the informational **Verify Runtime plugin** and **Verify Markdown plugin** jobs run `verifyPlugin` on the built ZIPs in parallel with publishing; their failures do not fail the workflow. The publish job then releases the same artifacts to the GitHub Release, npm, and JetBrains Marketplace. See [Publish the WebView npm Packages](Publish-NPM-Packages.md) for credentials, releases, and retries.
 
-The **Publish selected build** workflow validates a successful build run, publishes its npm tarballs, and creates or reconciles the GitHub Release containing the exact three ZIPs. See [Publish the WebView npm Packages](Publish-NPM-Packages.md) for first-release authentication, trusted publishing, normal releases, and retries.
+To run the verifier locally against the targeted IntelliJ Platform:
+
+```shell
+./gradlew verifyPlugin :markdown-preview:verifyPlugin
+```
 
 The **WebView TS tests** workflow runs on every pull request without Gradle, JBR, or the IntelliJ SDK. Its **WebView unit & typecheck** job runs `bun test` in `webview-src` and `bun run typecheck` in `webview-src`, `demo/webview-src`, `markdown-preview/webview-src`, and `samples/hello-webview/webview-src`; the sample is checked against the published SDK from npm. The **WebView browser smoke (demo)** and **WebView browser smoke (markdown-preview)** jobs run `bun run test:browser` with the `chromium` Playwright project only, on Linux. Every install uses `--frozen-lockfile`, so an outdated `bun.lock` fails the check. Test results appear in the job summary, and Playwright traces are uploaded as artifacts when a smoke job fails. To reproduce a failure locally, use the commands from [Work on Frontend Packages](#work-on-frontend-packages).
-
-The workflows do not publish to JetBrains Marketplace.
 
 ## Documentation Verification
 

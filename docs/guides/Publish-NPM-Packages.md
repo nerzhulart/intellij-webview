@@ -13,28 +13,22 @@ The release publishes:
 - `@nerzhulart/intellij-webview-sdk`;
 - `@nerzhulart/intellij-webview-sdk-testkit`.
 
-## Build a Release Candidate
+## Release Workflow
 
-Run the **Build plugins** workflow and provide a SemVer version without a `v` prefix, for example `0.1.0-rc.0`. The workflow builds and verifies:
+Releases use the manually triggered **Build and publish release** workflow (`.github/workflows/build.yml`). Provide a SemVer version without a `v` prefix, for example `0.1.0-rc.0` or `0.1.0`.
 
-- the runtime, demo, and Markdown preview plugin ZIPs;
-- both npm tarballs;
-- `npm-packages.json`, which records the version, source commit, filenames, and integrity values.
+The workflow runs these jobs:
 
-Record the successful workflow run ID. The publish workflow accepts only artifacts from a successful **Build plugins** run.
+1. **Build release artifacts** builds and verifies:
+   - the runtime, demo, and Markdown preview plugin ZIPs;
+   - both npm tarballs;
+   - `npm-packages.json`, which records the version, source commit, filenames, and integrity values.
+2. **Verify Runtime plugin** and **Verify Markdown plugin** run the IntelliJ Plugin Verifier (`verifyPlugin`) on the built ZIPs against the targeted IntelliJ Platform. These jobs are informational: they run in parallel with publishing, and a failure marks only the job itself, not the workflow.
+3. **Publish release** uses the artifacts of the same run without rebuilding them. It creates or updates the GitHub Release `v<version>` with the runtime ZIP, publishes both npm packages, and uploads the runtime and Markdown preview plugins to JetBrains Marketplace.
 
-## Bootstrap the npm Packages Once
+Prerelease versions are published under the npm `next` dist-tag and the Marketplace `eap` channel, and the GitHub Release is marked as a prerelease. Stable versions are published under `latest` and the default Marketplace channel.
 
-Trusted Publisher settings become available only after each npm package exists. Use a temporary granular token for the first release:
-
-1. Create a short-lived granular npm access token with read/write access to packages owned by `nerzhulart`.
-2. Add it to the `npm` GitHub environment as `NPM_BOOTSTRAP_TOKEN`.
-3. Run **Publish selected build** with the build run ID, tag `v0.1.0-rc.0`, `prerelease=true`, and `bootstrap_npm=true`.
-4. Confirm that both packages were published with the `next` dist-tag.
-
-Do not build or publish tarballs locally for bootstrap. The workflow publishes the artifacts already verified by the selected build.
-
-## Enable Trusted Publishing
+## Configure Publishing Credentials
 
 Open the settings for each package on npmjs.com and add the same GitHub Actions Trusted Publisher:
 
@@ -42,32 +36,26 @@ Open the settings for each package on npmjs.com and add the same GitHub Actions 
 | --- | --- |
 | GitHub user or organization | `nerzhulart` |
 | Repository | `intellij-webview` |
-| Workflow filename | `release.yml` |
+| Workflow filename | `build.yml` |
 | Environment | `npm` |
 
-After both configurations are saved:
+The workflow authenticates with short-lived OIDC credentials. Do not create a long-lived npm publish token.
 
-1. delete the `NPM_BOOTSTRAP_TOKEN` GitHub secret;
-2. revoke the granular token on npmjs.com;
-3. use `bootstrap_npm=false` for every later release.
+Marketplace uploads use the `PUBLISH_TOKEN` repository secret, which must contain a JetBrains Marketplace permanent token.
 
-The workflow then authenticates with short-lived OIDC credentials. Do not create a replacement long-lived publish token.
+## Publish a Release
 
-## Publish a Normal Release
-
-1. Run **Build plugins** with the stable version, for example `0.1.0`.
-2. Run **Publish selected build** with its run ID, tag `v0.1.0`, `prerelease=false`, and `bootstrap_npm=false`.
-3. Verify the GitHub Release contains three plugin ZIPs.
-4. Verify both npm packages have version `0.1.0` under the `latest` dist-tag.
-
-Prerelease versions must use `prerelease=true` and are published under `next`. Stable versions must use `prerelease=false` and are published under `latest`.
+1. Run **Build and publish release** with the version, for example `0.1.0`.
+2. Verify the GitHub Release `v0.1.0` contains the runtime ZIP.
+3. Verify both npm packages have version `0.1.0` under the `latest` dist-tag.
+4. Check the **Verify Runtime plugin** and **Verify Markdown plugin** results and their `plugin-verifier-reports-*` artifacts.
 
 ## Retry a Failed Release
 
-Rerun **Publish selected build** with the same inputs and build run ID. The workflow compares each existing registry artifact with the SHA-512 integrity recorded by the build:
+Use GitHub's **Re-run failed jobs** action on the same workflow run so that publishing reuses the already built artifacts. The npm step compares each existing registry artifact with the SHA-512 integrity recorded by the build:
 
 - matching packages are skipped;
 - missing packages are published;
 - a matching name and version with different integrity stops the release permanently and requires a new version.
 
-The GitHub Release step is also idempotent and reconciles the three ZIP assets after npm publication succeeds.
+The GitHub Release step is also idempotent and replaces the runtime ZIP asset.
