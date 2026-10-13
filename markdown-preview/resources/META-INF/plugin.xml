@@ -28,4 +28,12 @@
   <extensions defaultExtensionNs="org.intellij.markdown">
     <html.panel.provider implementation="io.github.nerzhulart.webview.markdown.preview.WebViewMarkdownPreviewPanelProvider"/>
   </extensions>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <registryKey key="markdown.webview.diff.preview.enabled"
+                 defaultValue="true"
+                 restartRequired="false"
+                 description="Enable the rendered Markdown preview mode in the diff viewer"/>
+    <diff.DiffExtension implementation="io.github.nerzhulart.webview.markdown.preview.diff.MarkdownDiffPreviewExtension"/>
+  </extensions>
 </idea-plugin>

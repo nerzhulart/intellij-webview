@@ -344,10 +344,12 @@ export function MarkdownPreviewApp({
     return cancelScheduledMarkdownPreviewScroll
   }, [markdown, scrollLine])
 
+  // Deferred enhancements (path links, run commands, syntax highlighting) re-render the content and drop
+  // decoration classes, so the decorations are re-applied after every render.
   useEffect(() => {
     decorateSourceBlocks(selection, changes)
     return clearSourceDecorations
-  }, [markdown, selection, changes])
+  })
 
   return (
     <>

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client"
 import { apiId, getPerfLogger, webView, webViewTheme, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 import { MarkdownPreviewApp, scrollMarkdownPreviewToLine } from "./MarkdownPreviewApp"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
-import { decorateSourceBlocks } from "./markdownSourcePositions"
+import { decorateSourceBlocks, isProgrammaticMarkdownPreviewScroll, topVisibleSourceLine } from "./markdownSourcePositions"
 import type {
   MarkdownChangedBlockDescriptor,
   MarkdownNavigatePathLinkRequest,
@@ -48,6 +48,11 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   resolvePathLinks(params: MarkdownResolvePathLinksRequest): Promise<MarkdownResolvedPathLinksResponse>
   navigatePathLink(params: MarkdownNavigatePathLinkRequest): Promise<void>
   setFontSize(params: MarkdownSetFontSizeRequest): Promise<void>
+  previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
+}
+
+interface MarkdownPreviewScrolledParams {
+  line: number
 }
 
 interface MarkdownOpenLinkParams {
@@ -66,6 +71,8 @@ let changes: MarkdownChangedBlockDescriptor[] = []
 let selection: MarkdownSourceRange | undefined
 let theme = webViewTheme.current
 let previewSettings = defaultPreviewSettings()
+let reportedScrollLine = -1
+let scheduledScrollReportFrame: number | undefined
 
 webView.implement(markdownPreviewPageApiId, {
   contentChanged(params) {
@@ -96,6 +103,7 @@ webView.implement(markdownPreviewPageApiId, {
 
 applyTheme(theme)
 renderPreview("initial")
+window.addEventListener("scroll", scheduleScrollReport, { passive: true })
 webViewTheme.onChanged(nextTheme => {
   theme = nextTheme
   applyTheme(nextTheme)
@@ -123,6 +131,24 @@ function renderPreview(reason = "render", startedAtMs = performance.now(), detai
   requestAnimationFrame(() => {
     markdownLogger.perfSince("render.afterFrame", startedAtMs, `reason=${reason}, ${details}`)
   })
+}
+
+function scheduleScrollReport(): void {
+  if (scheduledScrollReportFrame !== undefined) return
+  scheduledScrollReportFrame = window.requestAnimationFrame(() => {
+    scheduledScrollReportFrame = undefined
+    reportScrollPosition()
+  })
+}
+
+function reportScrollPosition(): void {
+  if (isProgrammaticMarkdownPreviewScroll()) return
+
+  const line = topVisibleSourceLine()
+  if (line === undefined || line === reportedScrollLine) return
+
+  reportedScrollLine = line
+  void markdownPreviewHostApi.previewScrolled({ line })
 }
 
 function openMarkdownLink(href: string): void {

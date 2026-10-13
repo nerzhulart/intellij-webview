@@ -199,6 +199,62 @@ test("changes preview font size from floating settings", async ({ page }) => {
   expect(await setFontSizeCallCount(page) === callsAfterUserChanges).toBe(true)
 })
 
+test("highlights added, modified, and removed blocks of a rendered diff", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreviewContent")
+
+  await page.getByRole("button", { name: "Diff markdown" }).click()
+  await page.waitForFunction(() => document.querySelector(".markdownPreviewContent .is-vcs-added") != null)
+
+  const diffState = await page.evaluate(() => {
+    const content = document.querySelector(".markdownPreviewContent")
+    const textsOf = (selector: string): string[] => {
+      return Array.from(content?.querySelectorAll(selector) ?? []).map(element => element.textContent ?? "")
+    }
+    return {
+      added: textsOf(".is-vcs-added"),
+      addedTags: Array.from(content?.querySelectorAll(".is-vcs-added") ?? []).map(element => element.tagName),
+      modified: textsOf(".is-vcs-modified"),
+      removed: textsOf(".is-vcs-removed"),
+      placeholderCount: (content?.querySelectorAll(".markdownRemovedBlockPlaceholder") ?? []).length,
+    }
+  })
+
+  expect(diffState.added.length === 2).toBe(true)
+  expect(diffState.added[0] === "Added paragraph line.").toBe(true)
+  expect(diffState.addedTags[1] === "TR").toBe(true)
+  expect(diffState.added[1].includes("Added row")).toBe(true)
+  expect(diffState.modified.length === 1).toBe(true)
+  expect(diffState.modified[0] === "Modified paragraph line.").toBe(true)
+  expect(diffState.removed.length === 1).toBe(true)
+  expect(diffState.removed[0] === "Removed paragraph line.").toBe(true)
+  expect(diffState.placeholderCount === 0).toBe(true)
+})
+
+test("reports the visible source line to the host while scrolling", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreviewContent")
+
+  await page.waitForFunction(() => document.documentElement.scrollHeight > window.innerHeight * 2)
+
+  const initialCalls = await methodCallCount(page, "markdown.preview/previewScrolled")
+  await page.evaluate(() => window.scrollTo({ top: window.innerHeight * 2, behavior: "instant" }))
+  await page.waitForFunction(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
+    }).__WVI_MOCK__
+    return (mock?.calls.byMethod("markdown.preview/previewScrolled").length ?? 0) > 0
+  })
+
+  expect(await methodCallCount(page, "markdown.preview/previewScrolled") > initialCalls).toBe(true)
+})
+
 test("keeps font settings available without table of contents", async ({ page }) => {
   if (!preview) {
     throw new Error("Markdown preview mock preview server was not started")

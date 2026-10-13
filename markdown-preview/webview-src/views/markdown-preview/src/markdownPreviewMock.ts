@@ -46,10 +46,15 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   resolvePathLinks(params: MarkdownResolvePathLinksRequest): Promise<MarkdownResolvedPathLinksResponse>
   navigatePathLink(params: MarkdownNavigatePathLinkRequest): Promise<void>
   setFontSize(params: MarkdownSetFontSizeRequest): Promise<void>
+  previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
 }
 
 interface MarkdownOpenLinkParams {
   href: string
+}
+
+interface MarkdownPreviewScrolledParams {
+  line: number
 }
 
 const markdownPreviewPageApiId = apiId<MarkdownPreviewPageApi>()("markdown.preview")
@@ -57,6 +62,12 @@ const markdownPreviewHostApiId = apiId<MarkdownPreviewHostApi>()("markdown.previ
 const changes: MarkdownChangedBlockDescriptor[] = [
   { kind: "ADDED", startLine: 9, endLine: 13 },
   { kind: "MODIFIED", startLine: 20, endLine: 23 },
+]
+const diffChanges: MarkdownChangedBlockDescriptor[] = [
+  { kind: "ADDED", startLine: 5, endLine: 5 },
+  { kind: "MODIFIED", startLine: 7, endLine: 7 },
+  { kind: "REMOVED", startLine: 9, endLine: 9 },
+  { kind: "ADDED", startLine: 14, endLine: 14 },
 ]
 const resolvedPathLinks = new Set(["docs/guide.md:12", "src/Main.kt", "src\\WindowsPath.kt", "index.h", "index.html", "style.css", "requirements.txt", "my_django_project/", "my_django_app/"])
 const defaultFontSize = 13
@@ -66,6 +77,7 @@ export default defineWebViewMock(({ host, page, theme }) => {
   const toolbar = installMockToolbar()
   let contentVersion = 1
   let currentMarkdown = sampleMarkdown
+  let currentChanges = changes
   let currentFontSize = defaultFontSize
 
   function updatePreview(): void {
@@ -74,7 +86,7 @@ export default defineWebViewMock(({ host, page, theme }) => {
       scrollLine: 0,
       settings: currentSettings(),
       contentVersion: contentVersion++,
-      changes,
+      changes: currentChanges,
     })
     page.callable(markdownPreviewPageApiId).selectionChanged({
       selection: { startLine: 16, startColumn: 1, endLine: 16, endColumn: 17 },
@@ -94,6 +106,12 @@ export default defineWebViewMock(({ host, page, theme }) => {
 
   toolbar.dollarMarkdownButton.addEventListener("click", () => {
     currentMarkdown = ordinaryDollarMarkdown
+    updatePreview()
+  })
+
+  toolbar.diffMarkdownButton.addEventListener("click", () => {
+    currentMarkdown = diffMarkdown
+    currentChanges = diffChanges
     updatePreview()
   })
 
@@ -141,6 +159,9 @@ export default defineWebViewMock(({ host, page, theme }) => {
       currentFontSize = normalizedFontSize
       updatePreview()
     },
+    async previewScrolled(params) {
+      toolbar.log.textContent = JSON.stringify({ kind: "previewScrolled", ...params })
+    },
   })
 
   function currentSettings(): MarkdownPreviewSettings {
@@ -157,6 +178,7 @@ function installMockToolbar(): {
   toggleThemeButton: HTMLButtonElement,
   shortMarkdownButton: HTMLButtonElement,
   dollarMarkdownButton: HTMLButtonElement,
+  diffMarkdownButton: HTMLButtonElement,
   log: HTMLSpanElement,
 } {
   const content = document.getElementById("content")
@@ -183,13 +205,18 @@ function installMockToolbar(): {
   dollarMarkdownButton.textContent = "Dollar markdown"
   toolbar.append(dollarMarkdownButton)
 
+  const diffMarkdownButton = document.createElement("button")
+  diffMarkdownButton.type = "button"
+  diffMarkdownButton.textContent = "Diff markdown"
+  toolbar.append(diffMarkdownButton)
+
   const log = document.createElement("span")
   log.id = "mock-run-log"
   toolbar.append(log)
 
   content.before(toolbar)
   installMockToolbarStyles()
-  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, log }
+  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, diffMarkdownButton, log }
 }
 
 function installMockToolbarStyles(): void {
@@ -318,4 +345,21 @@ This mock document has no table of contents.
 const ordinaryDollarMarkdown = `# Dollar Markdown
 
 This document mentions $5, $10, and an escaped \\$placeholder without math.
+`
+
+const diffMarkdown = `# Diff Markdown
+
+Unchanged intro paragraph.
+
+Added paragraph line.
+
+Modified paragraph line.
+
+Removed paragraph line.
+
+| Action | Keybinding |
+| --- | --- |
+| Stage | Ctrl+S |
+| Added row | Ctrl+A |
+| Commit | Ctrl+K |
 `
