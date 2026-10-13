@@ -118,6 +118,8 @@ bun webview-preview acp-chat --mock default
 
 Preview scripts use Bun and `@nerzhulart/intellij-webview-sdk-testkit`; production view code stays free of mock branches.
 
+Mock previews and Playwright smoke tests do not need a prior `bun run build`: plugin icon sets resolve `assets/<original-name>` from the view sources. Platform `AllIcons` resources exist only on the IntelliJ classpath, so outside an IntelliJ source checkout the mock serves a neutral placeholder for them.
+
 ## Build Native Bridges
 
 ### Windows WebView2
@@ -155,6 +157,8 @@ Until standalone Kotlin tests are added:
 The manually triggered **Build plugins** workflow takes a release version and produces the three plugin ZIPs plus the matching SDK and testkit npm tarballs. It also installs those tarballs in a clean fixture and verifies their public exports, Vite build, and mock preview.
 
 The **Publish selected build** workflow validates a successful build run, publishes its npm tarballs, and creates or reconciles the GitHub Release containing the exact three ZIPs. See [Publish the WebView npm Packages](Publish-NPM-Packages.md) for first-release authentication, trusted publishing, normal releases, and retries.
+
+The **WebView TS tests** workflow runs on every pull request without Gradle, JBR, or the IntelliJ SDK. Its **WebView unit & typecheck** job runs `bun test` in `webview-src` and `bun run typecheck` in `webview-src`, `demo/webview-src`, `markdown-preview/webview-src`, and `samples/hello-webview/webview-src`; the sample is checked against the published SDK from npm. The **WebView browser smoke (demo)** and **WebView browser smoke (markdown-preview)** jobs run `bun run test:browser` with the `chromium` Playwright project only, on Linux. Every install uses `--frozen-lockfile`, so an outdated `bun.lock` fails the check. Test results appear in the job summary, and Playwright traces are uploaded as artifacts when a smoke job fails. To reproduce a failure locally, use the commands from [Work on Frontend Packages](#work-on-frontend-packages).
 
 The workflows do not publish to JetBrains Marketplace.
 

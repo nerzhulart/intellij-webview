@@ -143,6 +143,10 @@ test("navigates fragment links inside the preview without opening host link", as
     return target?.id ?? ""
   })
   expect(targetId.length > 0).toBe(true)
+  // Lazily rendered blocks above the target move it down, so navigate only after they have rendered.
+  await page.waitForSelector(".mermaidBlock svg")
+  await page.waitForSelector(".katex")
+  await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>(".markdownPreviewContent img")).every(image => image.complete))
 
   const initialOpenLinkCalls = await openLinkCallCount(page)
   const initialScrollY = await page.evaluate(() => window.scrollY)
@@ -250,7 +254,10 @@ test("reports the visible source line to the host while scrolling", async ({ pag
     const mock = (window as Window & {
       __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
     }).__WVI_MOCK__
-    return (mock?.calls.byMethod("markdown.preview/previewScrolled").length ?? 0) > 0
+    if ((mock?.calls.byMethod("markdown.preview/previewScrolled").length ?? 0) > 0) return true
+    // Scroll reports are suppressed briefly after the initial programmatic scroll, so keep scrolling like a user does.
+    window.scrollBy({ top: 1, behavior: "instant" })
+    return false
   })
 
   expect(await methodCallCount(page, "markdown.preview/previewScrolled") > initialCalls).toBe(true)
@@ -497,8 +504,7 @@ test("defers markdown enhancements until idle without shifting code fences", asy
   await page.waitForSelector(".markdownPreview h1")
   await page.waitForSelector(".codeFenceWithCommands pre")
 
-  const firstCodeFence = page.locator(".codeFenceWithCommands pre").first()
-  const codeFenceBoxBefore = await firstCodeFence.boundingBox()
+  const codeFenceBoxBefore = await firstCommandCodeFenceBox(page)
   expect(await methodCallCount(page, "markdown.preview/resolvePathLinks") === 0).toBe(true)
   expect(await methodCallCount(page, "markdown.preview/resolveRunCommands") === 0).toBe(true)
   expect(await hasMarkdownPathLinks(page)).toBe(false)
@@ -508,7 +514,7 @@ test("defers markdown enhancements until idle without shifting code fences", asy
   await page.waitForSelector(".markdownPathLink")
   await page.waitForSelector(".markdownRunButton")
 
-  const codeFenceBoxAfter = await firstCodeFence.boundingBox()
+  const codeFenceBoxAfter = await firstCommandCodeFenceBox(page)
   expect(await methodCallCount(page, "markdown.preview/resolvePathLinks") > 0).toBe(true)
   expect(await methodCallCount(page, "markdown.preview/resolveRunCommands") > 0).toBe(true)
   expect(codeFenceBoxBefore != null && codeFenceBoxAfter != null).toBe(true)
@@ -696,6 +702,14 @@ async function installControlledIdleCallbacks(page: Page): Promise<void> {
 async function flushIdleCallbacks(page: Page): Promise<void> {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
   await page.evaluate(() => (window as Window & { __flushMarkdownPreviewIdleCallbacks?: () => void }).__flushMarkdownPreviewIdleCallbacks?.())
+}
+
+function firstCommandCodeFenceBox(page: Page): Promise<{ x: number; width: number } | null> {
+  // Measure in one page task: enhancements re-render code fences, so a locator can catch a detached element.
+  return page.evaluate(() => {
+    const box = document.querySelector(".codeFenceWithCommands pre")?.getBoundingClientRect()
+    return box ? { x: box.x, width: box.width } : null
+  })
 }
 
 function hasMarkdownPathLinks(page: Page): Promise<boolean> {

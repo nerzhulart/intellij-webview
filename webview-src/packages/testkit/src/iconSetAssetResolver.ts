@@ -1,10 +1,12 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path"
 
 export interface WebViewMockIconSetAssetResolverOptions {
   viewResourceRoot: string
+  /** View source directory used to resolve not yet built `assets/<original-name>` resources. */
+  viewSourceRoot?: string
 }
 
 export interface WebViewMockIconSetAssetResponse {
@@ -14,11 +16,21 @@ export interface WebViewMockIconSetAssetResponse {
   body: Buffer | string
 }
 
+const PLATFORM_ICON_SET_ID = "AllIcons"
+
+const PLATFORM_ICON_PLACEHOLDER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="none" stroke="#8C8C8C"/></svg>`
+
 export function resolveWebViewMockIconSetAsset(
   requestPath: string,
   options: WebViewMockIconSetAssetResolverOptions,
 ): WebViewMockIconSetAssetResponse | undefined {
-  const resourceRoots = iconResourceRoots(options.viewResourceRoot)
+  const resolvedViewResourceRoot = resolve(options.viewResourceRoot)
+  const platformRoots = platformIconResourceRoots(resolvedViewResourceRoot)
+  const lookup: IconLookup = {
+    viewResourceRoot: resolvedViewResourceRoot,
+    viewSourceRoot: options.viewSourceRoot ? resolve(options.viewSourceRoot) : undefined,
+    resourceRoots: iconResourceRoots(resolvedViewResourceRoot, platformRoots),
+  }
   const route = parseIconRoute(requestPath)
   if (!route) return undefined
 
@@ -27,10 +39,14 @@ export function resolveWebViewMockIconSetAsset(
   }
 
   const actualResourcePath = route.flavor === "dark"
-    ? darkIconResourcePath(resourceRoots, route.resourcePath) ?? route.resourcePath
+    ? darkIconResourcePath(lookup, route.resourcePath) ?? route.resourcePath
     : route.resourcePath
-  const iconPath = iconResourceFilePath(resourceRoots, actualResourcePath)
+  const iconPath = iconFilePath(lookup, actualResourcePath)
   if (!iconPath) {
+    // Platform icons live on the IntelliJ classpath and are available to the mock only inside a monorepo checkout.
+    if (route.iconSetId === PLATFORM_ICON_SET_ID && platformRoots.length === 0) {
+      return platformIconPlaceholder()
+    }
     return notFound("Icon not found")
   }
 
@@ -42,8 +58,15 @@ export function resolveWebViewMockIconSetAsset(
   }
 }
 
+interface IconLookup {
+  viewResourceRoot: string
+  viewSourceRoot?: string
+  resourceRoots: string[]
+}
+
 interface IconRoute {
   flavor: "light" | "dark"
+  iconSetId?: string
   resourcePath?: string
 }
 
@@ -60,15 +83,14 @@ function parseIconRoute(requestPath: string): IconRoute | undefined {
 
   const encodedResourcePath = path.substring(`__ij-icons/${iconSetId}/${flavor}/`.length)
   const resourcePath = decodeIconResourcePath(encodedResourcePath)
-  return { flavor, resourcePath }
+  return { flavor, iconSetId, resourcePath }
 }
 
-function iconResourceRoots(viewResourceRoot: string): string[] {
-  const resolvedViewResourceRoot = resolve(viewResourceRoot)
+function iconResourceRoots(resolvedViewResourceRoot: string, platformRoots: readonly string[]): string[] {
   return Array.from(new Set([
     resolvedViewResourceRoot,
     resolve(resolvedViewResourceRoot, "../../.."),
-    ...platformIconResourceRoots(resolvedViewResourceRoot),
+    ...platformRoots,
   ]))
 }
 
@@ -103,10 +125,41 @@ function decodeIconResourcePath(encodedPath: string): string | undefined {
   return resourcePath
 }
 
-function darkIconResourcePath(resourceRoots: readonly string[], resourcePath: string): string | undefined {
+function darkIconResourcePath(lookup: IconLookup, resourcePath: string): string | undefined {
   const extensionStart = resourcePath.lastIndexOf(".")
   const candidate = `${resourcePath.substring(0, extensionStart)}_dark${resourcePath.substring(extensionStart)}`
-  return iconResourceFilePath(resourceRoots, candidate) ? candidate : undefined
+  return iconFilePath(lookup, candidate) ? candidate : undefined
+}
+
+function iconFilePath(lookup: IconLookup, resourcePath: string): string | undefined {
+  return iconResourceFilePath(lookup.resourceRoots, resourcePath) ?? viewSourceAssetFilePath(lookup, resourcePath)
+}
+
+function viewSourceAssetFilePath(lookup: IconLookup, resourcePath: string): string | undefined {
+  if (!lookup.viewSourceRoot || !existsSync(lookup.viewSourceRoot)) return undefined
+  const assetName = builtViewAssetName(lookup, resourcePath)
+  return assetName ? findFileByName(lookup.viewSourceRoot, assetName) : undefined
+}
+
+function builtViewAssetName(lookup: IconLookup, resourcePath: string): string | undefined {
+  const roots = [lookup.viewResourceRoot, resolve(lookup.viewResourceRoot, "../../..")]
+  for (const root of roots) {
+    const segments = relative(lookup.viewResourceRoot, resolve(root, resourcePath)).split(sep)
+    if (segments.length === 2 && segments[0] === "assets") return segments[1]
+  }
+  return undefined
+}
+
+function findFileByName(dir: string, fileName: string): string | undefined {
+  const entries = readdirSync(dir, { withFileTypes: true })
+  const file = entries.find(entry => entry.isFile() && entry.name === fileName)
+  if (file) return resolve(dir, file.name)
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === "node_modules" || entry.name.startsWith(".")) continue
+    const nested = findFileByName(resolve(dir, entry.name), fileName)
+    if (nested) return nested
+  }
+  return undefined
 }
 
 function iconResourceFilePath(resourceRoots: readonly string[], resourcePath: string): string | undefined {
@@ -128,6 +181,15 @@ function isValidIconSetId(iconSetId: string): boolean {
 
 function iconContentType(path: string): string {
   return path.endsWith(".svg") ? "image/svg+xml" : "image/png"
+}
+
+function platformIconPlaceholder(): WebViewMockIconSetAssetResponse {
+  return {
+    statusCode: 200,
+    contentType: "image/svg+xml",
+    headers: { "Cache-Control": "no-cache", "X-WebView-Mock-Icon": "placeholder" },
+    body: PLATFORM_ICON_PLACEHOLDER_SVG,
+  }
 }
 
 function forbidden(message: string): WebViewMockIconSetAssetResponse {

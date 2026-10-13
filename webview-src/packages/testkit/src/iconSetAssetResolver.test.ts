@@ -90,6 +90,79 @@ test("resolves platform AllIcons resources from checkout roots", () => {
   }
 })
 
+test("resolves not yet built view assets from the view source root", () => {
+  try {
+    const viewResourceRoot = createTempViewResourceRoot()
+    const viewSourceRoot = join(viewResourceRoot, "../../../../webview-src/views/sample-view")
+    writeResource(viewSourceRoot, "src/icons/sourceIcon.svg", "source-light")
+    writeResource(viewSourceRoot, "src/icons/sourceIcon_dark.svg", "source-dark")
+    writeResource(viewSourceRoot, "node_modules/pkg/hiddenIcon.svg", "hidden")
+
+    const lightResponse = resolveWebViewMockIconSetAsset(
+      "/__ij-icons/SampleIcons/light/webview/views/sample-view/assets/sourceIcon.svg",
+      { viewResourceRoot, viewSourceRoot },
+    )
+    const darkResponse = resolveWebViewMockIconSetAsset(
+      "/__ij-icons/SampleIcons/dark/assets/sourceIcon.svg",
+      { viewResourceRoot, viewSourceRoot },
+    )
+    const nodeModulesResponse = resolveWebViewMockIconSetAsset(
+      "/__ij-icons/SampleIcons/light/assets/hiddenIcon.svg",
+      { viewResourceRoot, viewSourceRoot },
+    )
+    const nestedResponse = resolveWebViewMockIconSetAsset(
+      "/__ij-icons/SampleIcons/light/assets/src/sourceIcon.svg",
+      { viewResourceRoot, viewSourceRoot },
+    )
+
+    expect(lightResponse?.statusCode).toBe(200)
+    expect(lightResponse?.body.toString()).toBe("source-light")
+    expect(darkResponse?.statusCode).toBe(200)
+    expect(darkResponse?.body.toString()).toBe("source-dark")
+    expect(nodeModulesResponse?.statusCode).toBe(404)
+    expect(nestedResponse?.statusCode).toBe(404)
+  }
+  finally {
+    cleanupTempDirs()
+  }
+})
+
+test("serves placeholder for AllIcons outside an IntelliJ checkout", () => {
+  try {
+    const viewResourceRoot = createTempViewResourceRoot()
+
+    const response = resolveWebViewMockIconSetAsset(
+      "/__ij-icons/AllIcons/dark/graph/zoomIn.svg",
+      { viewResourceRoot },
+    )
+
+    expect(response?.statusCode).toBe(200)
+    expect(response?.contentType).toBe("image/svg+xml")
+    expect(response?.headers?.["X-WebView-Mock-Icon"]).toBe("placeholder")
+    expect(response?.body.toString().startsWith("<svg ")).toBe(true)
+  }
+  finally {
+    cleanupTempDirs()
+  }
+})
+
+test("returns not found for missing AllIcons inside an IntelliJ checkout", () => {
+  try {
+    const viewResourceRoot = createTempViewResourceRoot()
+    writeResource(viewResourceRoot, "../../../../community/platform/icons/src/graph/zoomIn.svg", "platform-zoom-in")
+
+    const response = resolveWebViewMockIconSetAsset(
+      "/__ij-icons/AllIcons/light/graph/missing.svg",
+      { viewResourceRoot },
+    )
+
+    expect(response?.statusCode).toBe(404)
+  }
+  finally {
+    cleanupTempDirs()
+  }
+})
+
 test("returns forbidden for malformed icon requests", () => {
   try {
     const viewResourceRoot = createTempViewResourceRoot()
