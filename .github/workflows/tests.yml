@@ -229,7 +229,8 @@ jobs:
   verify-plugins:
     name: Verify ${{ matrix.name }} plugin
     runs-on: ubuntu-24.04
-    # Informational, as in the release workflow: the runtime plugin still reports INTERNAL_API_USAGES.
+    # Informational, as in the release workflow. Approved internal API usages are listed in
+    # plugin-verifier-ignored-internal-api.txt; any other internal API usage fails :verifyPlugin.
     continue-on-error: true
     strategy:
       fail-fast: false

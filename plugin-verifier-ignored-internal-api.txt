@@ -1,0 +1,5 @@
+# Internal API usages of the runtime plugin that are approved on JetBrains Marketplace.
+# Each non-comment line is a regular expression matched against lines of the Plugin Verifier
+# internal-api-usages.txt report. :verifyPlugin fails on every internal API usage not matched here.
+^Internal \w+ com\.intellij\.ui\.HwFacadeHelper\b
+^Internal \w+ com\.intellij\.ui\.HwFacadeProvider\b

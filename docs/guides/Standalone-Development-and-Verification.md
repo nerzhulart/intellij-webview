@@ -158,6 +158,8 @@ The manually triggered **Build and publish release** workflow takes a release ve
 
 The **Gradle tests** workflow also runs the verifier on every pull request: the **Verify Runtime plugin** and **Verify Markdown plugin** jobs run `verifyPlugin` on Linux in parallel with the test matrix. Without `-PpluginArchiveFile`, the task builds the plugin ZIP itself with the default `pluginVersion`. These jobs are informational as well, and their reports are uploaded as `plugin-verifier-reports-<name>` artifacts.
 
+The runtime plugin uses internal API approved on JetBrains Marketplace. Those usages are listed as regular expressions in `plugin-verifier-ignored-internal-api.txt`, because the Plugin Verifier `ignoredProblemsFile` does not apply to internal API usages. `:verifyPlugin` fails on every internal API usage that the list does not match. Add a new pattern only after Marketplace approves the usage.
+
 To run the verifier locally against the targeted IntelliJ Platform:
 
 ```shell
