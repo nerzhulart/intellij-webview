@@ -53,6 +53,7 @@ internal object WKWebViewBridge {
   private const val CLS_NSOBJECT = "NSObject"
   private const val CLS_NSAPPLICATION = "NSApplication"
   private const val CLS_NSVIEW = "NSView"
+  private const val CLS_NSCOLOR = "NSColor"
   private const val CLS_NSGESTURE_RECOGNIZER = "NSGestureRecognizer"
   private const val CLS_WKUSER_SCRIPT = "WKUserScript"
   // endregion
@@ -88,6 +89,7 @@ internal object WKWebViewBridge {
   private const val SEL_SET_INSPECTABLE = "setInspectable:"
   private const val SEL_SET_CAN_USE_CREDENTIAL_STORAGE = "_setCanUseCredentialStorage:"
   private const val SEL_SET_RUBBER_BANDING_ENABLED = "_setRubberBandingEnabled:"
+  private const val SEL_SET_DRAWS_BACKGROUND = "_setDrawsBackground:"
   private const val SEL_SET_UI_DELEGATE = "setUIDelegate:"
   private const val SEL_REMOVE_FROM_SUPERVIEW = "removeFromSuperview"
   private const val SEL_COPY = "copy:"
@@ -112,8 +114,13 @@ internal object WKWebViewBridge {
   private const val SEL_SET_WANTS_LAYER = "setWantsLayer:"
   private const val SEL_LAYER = "layer"
   private const val SEL_SET_MASKS_TO_BOUNDS = "setMasksToBounds:"
+  private const val SEL_SET_BACKGROUND_COLOR = "setBackgroundColor:"
   private const val SEL_ADD_GESTURE_RECOGNIZER = "addGestureRecognizer:"
   private const val SEL_REMOVE_GESTURE_RECOGNIZER = "removeGestureRecognizer:"
+
+  // NSColor
+  private const val SEL_COLOR_WITH_SRGB_RED_GREEN_BLUE_ALPHA = "colorWithSRGBRed:green:blue:alpha:"
+  private const val SEL_CG_COLOR = "CGColor"
 
   // NSGestureRecognizer
   private const val SEL_SET_DELAYS_PRIMARY_MOUSE_BUTTON_EVENTS = "setDelaysPrimaryMouseButtonEvents:"
@@ -328,6 +335,27 @@ internal object WKWebViewBridge {
     invoke(clipView, SEL_SET_HIDDEN, true)
     invoke(parentNSView, SEL_ADD_SUBVIEW, clipView)
     return clipView
+  }
+
+  /**
+   * Paints the clipping container with the host background: it is what shows through the WebView
+   * while the page has no frame and under a page without its own background.
+   *
+   * @param argb opaque `0xAARRGGBB`.
+   */
+  fun setContainerBackgroundColor(clipView: ID, argb: Int) {
+    val layer = invoke(clipView, SEL_LAYER)
+    if (isNil(layer)) return
+    val color = invoke(
+      getObjcClass(CLS_NSCOLOR),
+      SEL_COLOR_WITH_SRGB_RED_GREEN_BLUE_ALPHA,
+      ((argb shr 16) and 0xFF) / 255.0,
+      ((argb shr 8) and 0xFF) / 255.0,
+      (argb and 0xFF) / 255.0,
+      1.0,
+    )
+    // The layer retains the CGColor, which the autoreleased NSColor only lends.
+    invoke(layer, SEL_SET_BACKGROUND_COLOR, invoke(color, SEL_CG_COLOR))
   }
 
   fun releaseClippingContainer(clipView: ID) {
@@ -678,6 +706,10 @@ internal object WKWebViewBridge {
     invokeIfResponds(webView, SEL_SET_INSPECTABLE, true, "setInspectable:")
     invokeIfResponds(webView, SEL_SET_CAN_USE_CREDENTIAL_STORAGE, false, "_setCanUseCredentialStorage:")
     invokeIfResponds(webView, SEL_SET_RUBBER_BANDING_ENABLED, WK_RECT_EDGE_NONE, "_setRubberBandingEnabled:")
+    // WKWebView fills itself white until the page paints, which flashes in a dark theme. A view that
+    // does not draw a background shows the clipping container behind it, and that one is painted
+    // with the host panel background - see [setContainerBackgroundColor].
+    invokeIfResponds(webView, SEL_SET_DRAWS_BACKGROUND, false, "_setDrawsBackground:")
   }
 
   private fun invokeIfResponds(target: ID, selector: String, value: Any, settingName: String) {

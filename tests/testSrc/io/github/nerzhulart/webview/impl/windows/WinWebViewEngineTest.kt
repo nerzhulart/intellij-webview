@@ -6,6 +6,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.testFramework.LoggedErrorProcessor
 import com.intellij.testFramework.TestLoggerFactory
 import com.intellij.testFramework.runInEdtAndWait
+import com.intellij.util.ui.UIUtil
 import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.WEBVIEW_ASSET_CUSTOM_SCHEME
@@ -39,6 +40,7 @@ import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.awt.BorderLayout
 import java.awt.Canvas
+import java.awt.Color
 import java.awt.Component
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -47,8 +49,12 @@ import java.util.EnumSet
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.swing.JFrame
 import javax.swing.JLabel
+import javax.swing.plaf.ColorUIResource
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration.Companion.seconds
+
+private const val LIGHT_PANEL_RGB = 0xF7F8FA
+private const val DARK_PANEL_RGB = 0x2B2D30
 
 internal class WinWebViewEngineTest {
 
@@ -778,6 +784,91 @@ internal class WinWebViewEngineTest {
     }
   }
 
+  @Test
+  fun controllerIsBornWithHostPanelBackground() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createTestEngine(scope, bridge, componentHwndResolver = { 200L })
+    try {
+      runInEdtAndWait {
+        val host = SwingWebViewHostPanel(scope, engine).apply {
+          background = Color(LIGHT_PANEL_RGB)
+        }
+        engine.attach(host)
+      }
+
+      assertEquals(listOf(opaque(LIGHT_PANEL_RGB)), bridge.backgroundColors, "the controller is created with the host panel color")
+      assertEquals(opaque(LIGHT_PANEL_RGB), canvasOf(engine).background.rgb, "the Canvas peer erases with the same color")
+      assertEquals(emptyList<BackgroundUpdate>(), bridge.backgroundUpdates)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun hostPanelBackgroundChangeReachesCanvasControllerAndRecovery() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createTestEngine(scope, bridge, componentHwndResolver = { 200L })
+    lateinit var host: SwingWebViewHostPanel
+    try {
+      runInEdtAndWait {
+        host = SwingWebViewHostPanel(scope, engine).apply {
+          background = Color(LIGHT_PANEL_RGB)
+        }
+        engine.attach(host)
+        bridge.callbacks.onCreated(bridge.createdHandles.last())
+
+        host.background = Color(DARK_PANEL_RGB)
+      }
+
+      assertEquals(listOf(BackgroundUpdate(1L, opaque(DARK_PANEL_RGB))), bridge.backgroundUpdates)
+      assertEquals(opaque(DARK_PANEL_RGB), canvasOf(engine).background.rgb)
+
+      collectWarningsAndErrors {
+        runInEdtAndWait {
+          bridge.callbacks.onNativeDiagnostic(4, "process-failed.fatal", "render process crashed", "exitCode=1")
+        }
+      }
+      assertEquals(
+        listOf(opaque(LIGHT_PANEL_RGB), opaque(DARK_PANEL_RGB)),
+        bridge.backgroundColors,
+        "a recreated controller starts with the current host color, not the one of the first creation",
+      )
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
+  fun lookAndFeelDefaultHostBackgroundFollowsCurrentPanelBackground() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createTestEngine(scope, bridge, componentHwndResolver = { 200L })
+    try {
+      runInEdtAndWait {
+        // A stale Look and Feel default left from a theme the host was detached through.
+        val host = SwingWebViewHostPanel(scope, engine).apply {
+          background = ColorUIResource(DARK_PANEL_RGB)
+        }
+        engine.attach(host)
+      }
+
+      val expected = opaque(UIUtil.getPanelBackground().rgb)
+      assertEquals(listOf(expected), bridge.backgroundColors)
+      assertEquals(expected, canvasOf(engine).background.rgb)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  private fun canvasOf(engine: WinWebViewEngine): Canvas = engine.component.components.single() as Canvas
+
+  private fun opaque(rgb: Int): Int = 0xFF000000.toInt() or (rgb and 0xFFFFFF)
+
   private fun createActiveEngine(
     scope: CoroutineScope,
     bridge: FakeWinWebView2Bridge,
@@ -969,6 +1060,11 @@ internal class WinWebViewEngineTest {
     val rawJson: String,
   )
 
+  private data class BackgroundUpdate(
+    val handle: Long,
+    val argb: Int,
+  )
+
   private data class DevToolsCall(
     val handle: Long,
     val callId: Long,
@@ -996,6 +1092,7 @@ internal class WinWebViewEngineTest {
     val assetCompletions = CopyOnWriteArrayList<AssetCompletion>()
     val documentStartScripts = mutableListOf<String>()
     val backgroundColors = mutableListOf<Int>()
+    val backgroundUpdates = mutableListOf<BackgroundUpdate>()
     val focusedHandles = mutableListOf<Long>()
     val clearFocusedHandles = mutableListOf<Long>()
     val callOrder = mutableListOf<String>()
@@ -1075,6 +1172,10 @@ internal class WinWebViewEngineTest {
     override fun clearFocus(handle: Long) {
       clearFocusedHandles.add(handle)
       clearFocusFailure?.let { throw it }
+    }
+
+    override fun setBackgroundColor(handle: Long, backgroundColor: Int) {
+      backgroundUpdates.add(BackgroundUpdate(handle, backgroundColor))
     }
 
     override fun loadUrl(handle: Long, url: String) {

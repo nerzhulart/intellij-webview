@@ -11,6 +11,7 @@ import io.github.nerzhulart.webview.api.WebViewAssetPath
 import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
+import io.github.nerzhulart.webview.impl.WebViewHostBackground
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.engine.WebViewScript
 import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
@@ -46,7 +47,9 @@ import org.cef.handler.CefResourceRequestHandlerAdapter
 import org.cef.misc.BoolRef
 import org.cef.network.CefRequest
 import org.intellij.lang.annotations.Language
+import java.awt.Color
 import java.awt.Component
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.util.ArrayDeque
@@ -66,7 +69,7 @@ internal class JcefWebViewEngine(
   private val documentStartScripts: List<WebViewScript> = emptyList(),
 ) : WebViewEngine {
   private companion object {
-    private const val INITIAL_URL = "about:blank"
+    private const val BLANK_URL = "about:blank"
     private const val QUERY_FUNCTION = "__wviJcefQuery"
     private const val QUERY_CANCEL_FUNCTION = "__wviJcefQueryCancel"
     private const val EVAL_PREFIX = "__wvi_eval__"
@@ -100,7 +103,9 @@ internal class JcefWebViewEngine(
   private val messageRouterHandler: CefMessageRouterHandlerAdapter
   private val jbCefBrowser: JBCefBrowser = JBCefBrowser.createBuilder()
     .setClient(jbCefClient)
-    .setUrl(INITIAL_URL)
+    // Chromium paints `about:blank` white, and that first frame stays until the real page paints -
+    // a white flash in a dark theme. The placeholder page has the host background instead.
+    .setUrl(initialPageUrl(WebViewHostBackground.opaqueArgb(WebViewHostBackground.resolveHostBackground(null))))
     .setEnableOpenDevToolsMenuItem(false)
     .build()
   override val isHeavyweight: Boolean = false
@@ -176,7 +181,7 @@ internal class JcefWebViewEngine(
         pendingEvals.remove(evalId)?.complete(null)
         return@runOnEdt
       }
-      cefBrowser.executeJavaScript(buildEvalScript(evalId, script), cefBrowser.url ?: INITIAL_URL, 0)
+      cefBrowser.executeJavaScript(buildEvalScript(evalId, script), cefBrowser.url ?: BLANK_URL, 0)
     }
 
     return try {
@@ -197,13 +202,24 @@ internal class JcefWebViewEngine(
     messageReceiver = handler
   }
 
+  /**
+   * The browser component shows its background until JCEF delivers the first frame, so it follows
+   * the host panel instead of the generic `JBColor.background()` it is created with.
+   */
+  private val hostBackground = WebViewHostBackground(scope) { argb ->
+    @Suppress("UseJBColor") // A resolved snapshot of the host background, refreshed on every theme change.
+    component.background = Color(argb)
+  }
+
   override fun attach(host: Component): Boolean {
     // TODO: should we attach our component to this host here?
+    hostBackground.listenTo(host)
     return true
   }
 
   override fun detach() {
     // TODO: see above
+    hostBackground.stopListening()
   }
 
   override fun syncHostState(host: Component) {
@@ -403,7 +419,7 @@ internal class JcefWebViewEngine(
   private fun injectDocumentStartScripts(browser: CefBrowser?, frame: CefFrame?) {
     if (browser !== cefBrowser || frame == null || documentStartScripts.isEmpty()) return
     for (script in documentStartScripts) {
-      frame.executeJavaScript(script.script, frame.url ?: INITIAL_URL, 0)
+      frame.executeJavaScript(script.script, frame.url ?: BLANK_URL, 0)
     }
   }
 
@@ -555,6 +571,13 @@ internal class JcefWebViewEngine(
   }
 
   private fun quoteJsString(value: String): String = JsonPrimitive(value).toString()
+
+  private fun initialPageUrl(argb: Int): String {
+    val color = "%06x".format(argb and 0xFFFFFF)
+    @Language("HTML")
+    val html = """<!DOCTYPE html><html style="background:#$color"></html>"""
+    return "data:text/html;charset=utf-8," + URLEncoder.encode(html, StandardCharsets.UTF_8).replace("+", "%20")
+  }
 
   private fun runOnEdt(action: () -> Unit) {
     if (EDT.isCurrentThreadEdt()) {

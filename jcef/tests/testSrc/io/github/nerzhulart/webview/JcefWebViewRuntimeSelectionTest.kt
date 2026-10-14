@@ -11,11 +11,14 @@ import com.intellij.openapi.util.registry.Registry
 import com.intellij.testFramework.junit5.TestApplication
 import com.intellij.testFramework.junit5.TestDisposable
 import com.intellij.ui.jcef.JBCefApp
+import com.intellij.util.ui.UIUtil
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineId
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineKind
 import io.github.nerzhulart.webview.impl.engine.WebViewRuntime
 import io.github.nerzhulart.webview.impl.engine.WebViewEngineProvider
 import io.github.nerzhulart.webview.impl.jcef.JcefEngineProvider
+import io.github.nerzhulart.webview.impl.jcef.JcefWebViewEngine
+import io.github.nerzhulart.webview.impl.jcef.createJcefWebViewEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +33,8 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import java.awt.Color
+import javax.swing.JPanel
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -61,6 +66,58 @@ internal class JcefWebViewRuntimeSelectionTest {
       finally {
         scope.coroutineContext.job.cancelAndJoin()
       }
+    }
+  }
+
+  @Test
+  fun jcefEngine_placeholderPageAndComponentFollowHostBackground(): Unit = runBlocking {
+    withProgrammaticJcefOverride {
+      assumeTrue(JBCefApp.isSupported(), "JCEF is not supported in this environment")
+
+      @Suppress("RAW_SCOPE_CREATION") // Test: no parent scope available without product code.
+      val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+      try {
+        val engine = withContext(Dispatchers.EDT) { createJcefWebViewEngine(scope) }
+        try {
+          val panel = UIUtil.getPanelBackground()
+          assertEquals(
+            "rgb(${panel.red}, ${panel.green}, ${panel.blue})",
+            awaitPageBackground(engine),
+            "Chromium shows the placeholder page until the real one paints, so it has the host background",
+          )
+
+          withContext(Dispatchers.EDT) {
+            @Suppress("UseJBColor")
+            val host = JPanel().apply { background = Color(0x123456) }
+            engine.attach(host)
+            assertEquals(host.background.rgb, engine.component.background.rgb)
+
+            @Suppress("UseJBColor")
+            val changed = Color(0x654321)
+            host.background = changed
+            assertEquals(host.background.rgb, engine.component.background.rgb)
+            engine.detach()
+          }
+        }
+        finally {
+          engine.close()
+        }
+      }
+      finally {
+        scope.coroutineContext.job.cancelAndJoin()
+      }
+    }
+  }
+
+  /** `null` until the placeholder page has finished loading, so the evaluation is retried. */
+  private suspend fun awaitPageBackground(engine: JcefWebViewEngine): String? {
+    return withTimeoutOrNull(20.seconds) {
+      var background: String? = null
+      while (background == null) {
+        background = engine.evaluateJavaScript("getComputedStyle(document.documentElement).backgroundColor")
+        if (background == null) delay(100.milliseconds)
+      }
+      background
     }
   }
 

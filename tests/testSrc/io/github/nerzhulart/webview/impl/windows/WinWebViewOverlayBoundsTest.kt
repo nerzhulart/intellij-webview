@@ -229,6 +229,9 @@ internal class WinWebViewOverlayBoundsTest {
     override fun clearFocus(handle: Long) {
     }
 
+    override fun setBackgroundColor(handle: Long, backgroundColor: Int) {
+    }
+
     override fun loadUrl(handle: Long, url: String) {
     }
 
