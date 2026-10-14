@@ -10,6 +10,7 @@ import {
   MarkdownZoomToolbar,
   shouldHandleZoomEvent,
 } from "./MarkdownZoomControls"
+import { attachMarkdownWheelZoom, type MarkdownWheelZoom } from "./markdownWheelZoom"
 
 interface MermaidBlockProps {
   chart: string
@@ -74,6 +75,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null)
+  const wheelZoomRef = useRef<MarkdownWheelZoom | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -103,12 +105,16 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     const svgSelection = select<SVGSVGElement, unknown>(svgElement)
     svgSelection.call(zoomBehavior)
     svgSelection.call(zoomBehavior.transform, zoomIdentity)
+    const wheelZoom = attachMarkdownWheelZoom(svgElement, zoomBehavior)
+    wheelZoomRef.current = wheelZoom
 
     return () => {
+      wheelZoom.dispose()
       svgSelection.on(".zoom", null)
       host.innerHTML = ""
       svgRef.current = null
       zoomBehaviorRef.current = null
+      wheelZoomRef.current = null
     }
   }, [svg])
 
@@ -116,6 +122,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     const svgElement = svgRef.current
     const zoomBehavior = zoomBehaviorRef.current
     if (!svgElement || !zoomBehavior) return
+    wheelZoomRef.current?.cancel()
     select<SVGSVGElement, unknown>(svgElement).call(zoomBehavior.scaleBy, factor)
   }
 
@@ -123,6 +130,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     const svgElement = svgRef.current
     const zoomBehavior = zoomBehaviorRef.current
     if (!svgElement || !zoomBehavior) return
+    wheelZoomRef.current?.cancel()
     select<SVGSVGElement, unknown>(svgElement).call(zoomBehavior.transform, zoomIdentity)
   }
 

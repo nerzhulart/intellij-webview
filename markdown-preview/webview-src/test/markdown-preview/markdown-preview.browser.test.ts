@@ -20,6 +20,7 @@ type BoundingBox = {
 }
 
 type Mouse = {
+  click(x: number, y: number): Promise<void>
   down(): Promise<void>
   move(x: number, y: number): Promise<void>
   up(): Promise<void>
@@ -171,8 +172,8 @@ test("changes preview font size from floating settings", async ({ page }) => {
   await page.goto(preview.url)
   await page.waitForSelector(".markdownFloatingRail")
 
-  await expect(page.getByRole("button", { name: "Show font size settings" })).toBeVisible()
-  await page.getByRole("button", { name: "Show font size settings" }).click()
+  await expect(page.getByRole("button", { name: "Show preview options" })).toBeVisible()
+  await page.getByRole("button", { name: "Show preview options" }).click()
   await expect(page.getByRole("button", { name: "Increase font size" })).toBeVisible()
   await waitForFontSettingsIcons(page)
 
@@ -317,7 +318,7 @@ test("keeps font settings available without table of contents", async ({ page })
 
   const railState = await page.evaluate(() => ({
     tableOfContentsButtons: document.querySelectorAll('[aria-label="Show table of contents"]').length,
-    fontSettingsButtons: document.querySelectorAll('[aria-label="Show font size settings"]').length,
+    fontSettingsButtons: document.querySelectorAll('[aria-label="Show preview options"]').length,
   }))
 
   expect(railState.tableOfContentsButtons === 0).toBe(true)
@@ -352,6 +353,185 @@ test("keeps markdown content selectable while preview chrome uses the default gu
   expect(selectionState.railButtonGuarded).toBe(true)
 })
 
+test("zooms the rendered markdown with Ctrl+wheel and trackpad pinch", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+
+  const initial = await page.evaluate(() => {
+    const heading = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    const rail = document.querySelector<HTMLElement>(".markdownFloatingRailButton")!.getBoundingClientRect()
+    return {
+      headingWidth: heading.width,
+      headingHeight: heading.height,
+      headingCenterY: heading.top + heading.height / 2,
+      headingX: heading.left + 20,
+      railWidth: rail.width,
+    }
+  })
+
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -120, clientX: initial.headingX, clientY: initial.headingCenterY, bubbles: true, cancelable: true })
+  expect((await pageZoom(page)) === 1).toBe(true)
+
+  // A coarse Ctrl+wheel step (Windows touchpad pinch emulation) zooms by one step and eases there.
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, clientX: initial.headingX, clientY: initial.headingCenterY, bubbles: true, cancelable: true })
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2) < 0.001)
+
+  const zoomed = await page.evaluate(() => {
+    const heading = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    const rail = document.querySelector<HTMLElement>(".markdownFloatingRailButton")!.getBoundingClientRect()
+    return {
+      headingWidth: heading.width,
+      headingHeight: heading.height,
+      headingCenterY: heading.top + heading.height / 2,
+      railWidth: rail.width,
+    }
+  })
+  expect(Math.abs(zoomed.headingHeight - initial.headingHeight * 1.2) < 1).toBe(true)
+  // The zoom magnifies the laid-out content instead of re-wrapping it: a full-width block grows past the content width.
+  expect(Math.abs(zoomed.headingWidth - initial.headingWidth * 1.2) < 1).toBe(true)
+  // The point under the pointer stays in place, and the floating controls keep their size.
+  expect(Math.abs(zoomed.headingCenterY - initial.headingCenterY) < 2).toBe(true)
+  expect(zoomed.railWidth === initial.railWidth).toBe(true)
+
+  // A dense stream of fine Ctrl+wheel deltas (macOS trackpad pinch) is applied per event without easing.
+  await page.evaluate(({ clientX, clientY }) => {
+    const heading = document.querySelector(".markdownPreview h1")!
+    for (let index = 0; index < 5; index++) {
+      heading.dispatchEvent(new WheelEvent("wheel", { deltaY: 2, ctrlKey: true, clientX, clientY, bubbles: true, cancelable: true }))
+    }
+  }, { clientX: initial.headingX, clientY: initial.headingCenterY })
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2 * 2 ** -0.2) < 0.001)
+})
+
+test("reports user page zoom to the host and applies host page zoom silently", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+  await waitForProgrammaticScrollQuietPeriod(page)
+
+  // A zoom mirrored from the opposite diff preview is applied without a report back and without the options panel.
+  const initialScrolledCalls = await methodCallCount(page, "markdown.preview/previewScrolled")
+  await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__: { page: { callable(id: { namespace: string }): { setPageZoom(params: { zoom: number }): void } } }
+    }).__WVI_MOCK__
+    mock.page.callable({ namespace: "markdown.preview" }).setPageZoom({ zoom: 2 })
+  })
+  await page.waitForFunction(() => document.documentElement.style.getPropertyValue("--wvi-page-zoom") === "2")
+  await waitForAnimationFrames(page, 3)
+  expect(await methodCallCount(page, "markdown.preview/pageZoomChanged") === 0).toBe(true)
+  expect(await methodCallCount(page, "markdown.preview/previewScrolled") === initialScrolledCalls).toBe(true)
+  expect(await floatingPanelOpen(page) === false).toBe(true)
+
+  // A user pinch is reported once per frame with the latest zoom and a growing sequence.
+  const heading = await page.evaluate(() => {
+    window.scrollTo({ top: 0, behavior: "instant" })
+    const box = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    return { clientX: box.left + 20, clientY: box.top + box.height / 2 }
+  })
+  await page.evaluate(({ clientX, clientY }) => {
+    const heading = document.querySelector(".markdownPreview h1")!
+    for (let index = 0; index < 5; index++) {
+      heading.dispatchEvent(new WheelEvent("wheel", { deltaY: -2, ctrlKey: true, clientX, clientY, bubbles: true, cancelable: true }))
+    }
+  }, heading)
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 2 * 2 ** 0.2) < 0.001)
+  await page.waitForFunction(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/pageZoomChanged") ?? []
+    const last = calls[calls.length - 1]?.params as { zoom?: number } | undefined
+    return last?.zoom !== undefined && Math.abs(last.zoom - 2 * 2 ** 0.2) < 0.001
+  })
+  const reports = await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    return mock.calls.byMethod("markdown.preview/pageZoomChanged").map(call => call.params as { zoom: number, sequence: number })
+  })
+  expect(reports.length >= 1 && reports.length < 5).toBe(true)
+  expect(reports.every((report, index) => report.sequence === index)).toBe(true)
+  expect(await floatingPanelOpen(page) === "settings").toBe(true)
+})
+
+test("shows and resets the page zoom in the options panel", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+
+  await page.getByRole("button", { name: "Show preview options" }).click()
+  await expect(page.getByRole("button", { name: "Zoom in page" })).toBeVisible()
+  expect(await optionValues(page) === "13 px|100%").toBe(true)
+  expect(await optionRowsAreSingleLine(page)).toBe(true)
+
+  await page.getByRole("button", { name: "Zoom in page" }).click()
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2) < 0.001)
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "120%")
+
+  // A pinch while the panel is open updates the shown zoom.
+  const heading = await page.evaluate(() => {
+    const box = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    return { clientX: box.left + 20, clientY: box.top + box.height / 2 }
+  })
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, ...heading, bubbles: true, cancelable: true })
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "144%")
+
+  await page.getByRole("button", { name: "Reset page zoom" }).click()
+  await page.waitForFunction(() => document.documentElement.style.getPropertyValue("--wvi-page-zoom") === "")
+  expect(await optionValues(page) === "13 px|100%").toBe(true)
+  expect(await pageZoom(page) === 1).toBe(true)
+})
+
+test("shows the options panel on page zoom and closes it on an outside click", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+  expect(await floatingPanelOpen(page) === false).toBe(true)
+
+  // A pinch shows the options panel with the current zoom.
+  const heading = await page.evaluate(() => {
+    const box = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    return { clientX: box.left + 20, clientY: box.top + box.height / 2 }
+  })
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, ...heading, bubbles: true, cancelable: true })
+  await expect(page.getByRole("button", { name: "Reset page zoom" })).toBeVisible()
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "120%")
+  expect(await page.evaluate(() => document.querySelector("[aria-label='Show preview options']")?.getAttribute("aria-expanded") === "true")).toBe(true)
+
+  // Clicks inside the panel keep it open.
+  await page.getByRole("button", { name: "Zoom in page" }).click()
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "144%")
+  await page.locator(".markdownFontSettingsPanel .markdownFloatingPanelTitle").click()
+  expect(await floatingPanelOpen(page) === "settings").toBe(true)
+
+  // A click anywhere outside the panel closes it and keeps the zoom.
+  await page.mouse.click(heading.clientX, heading.clientY)
+  await page.waitForFunction(() => document.querySelector(".markdownFloatingPanel") == null)
+  expect(Math.abs(await pageZoom(page) - 1.44) < 0.001).toBe(true)
+
+  // The rail button still toggles the panel instead of re-opening it right after the outside-click handling.
+  await page.getByRole("button", { name: "Show preview options" }).click()
+  expect(await floatingPanelOpen(page) === "settings").toBe(true)
+  await page.getByRole("button", { name: "Show preview options" }).click()
+  expect(await floatingPanelOpen(page) === false).toBe(true)
+
+  // The table of contents closes on an outside click too.
+  await page.getByRole("button", { name: "Show table of contents" }).click()
+  expect(await floatingPanelOpen(page) === "toc").toBe(true)
+  await page.mouse.click(heading.clientX, heading.clientY)
+  await page.waitForFunction(() => document.querySelector(".markdownFloatingPanel") == null)
+})
+
 test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ page }) => {
   if (!preview) {
     throw new Error("Markdown preview mock preview server was not started")
@@ -384,6 +564,33 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
   const transformBeforeWheel = await mermaidTransform(page)
   await page.locator(".mermaidViewport svg").dispatchEvent("wheel", { deltaY: -120, clientX: 80, clientY: 80, bubbles: true, cancelable: true })
   expect((await mermaidTransform(page)) === transformBeforeWheel).toBe(true)
+
+  // A coarse Ctrl+wheel step (Windows touchpad pinch emulation) zooms by one button step and eases there.
+  await page.locator(".mermaidViewport svg").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, clientX: 80, clientY: 80, bubbles: true, cancelable: true })
+  await page.waitForFunction(() => {
+    const scale = Number(/scale\(([^)]+)\)/.exec(document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")?.[1])
+    return Math.abs(scale - 1.2) < 0.01
+  })
+  // Ctrl+wheel over a diagram zooms only the diagram, not the whole page.
+  expect((await pageZoom(page)) === 1).toBe(true)
+
+  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
+
+  // A dense stream of fine Ctrl+wheel deltas (macOS trackpad pinch) keeps d3-zoom's per-event scaling.
+  await page.evaluate(() => {
+    const svg = document.querySelector(".mermaidViewport svg")
+    for (let index = 0; index < 5; index++) {
+      svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -2, ctrlKey: true, clientX: 80, clientY: 80, bubbles: true, cancelable: true }))
+    }
+  })
+  await page.waitForFunction(() => {
+    const scale = Number(/scale\(([^)]+)\)/.exec(document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")?.[1])
+    return Math.abs(scale - 2 ** 0.2) < 0.01
+  })
+
+  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
 
   const transformBeforeDrag = await mermaidTransform(page)
   await dragLocatorCenter(page, page.locator(".mermaidViewport svg"), 40, 28, "Markdown Mermaid SVG does not have a rendered bounding box")
@@ -575,6 +782,36 @@ function mermaidTransform(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")
 }
 
+function optionValues(page: Page): Promise<string> {
+  return page.evaluate(() => Array.from(document.querySelectorAll(".markdownFontSizeValue")).map(value => value.textContent ?? "").join("|"))
+}
+
+/** Every option keeps its label, buttons, slider, and value on one line. */
+function optionRowsAreSingleLine(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(".markdownFontSetting"))
+    return rows.length === 2 && rows.every(row => {
+      const tops = Array.from(row.children).map(child => {
+        const box = child.getBoundingClientRect()
+        return box.top + box.height / 2
+      })
+      return tops.every(top => Math.abs(top - tops[0]) < 2) && row.getBoundingClientRect().height <= 28
+    })
+  })
+}
+
+function floatingPanelOpen(page: Page): Promise<"settings" | "toc" | false> {
+  return page.evaluate(() => {
+    if (document.querySelector(".markdownFontSettingsPanel")) return "settings"
+    if (document.querySelector(".markdownTocPanel")) return "toc"
+    return false
+  })
+}
+
+function pageZoom(page: Page): Promise<number> {
+  return page.evaluate(() => Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom") || "1"))
+}
+
 async function dragLocatorCenter(page: Page, locator: Locator, deltaX: number, deltaY: number, missingBoxMessage: string): Promise<void> {
   await locator.scrollIntoViewIfNeeded()
   const box = await locator.boundingBox()
@@ -670,6 +907,16 @@ function waitForLateMockUpdates(page: Page): Promise<unknown> {
  */
 function waitForProgrammaticScrollQuietPeriod(page: Page): Promise<unknown> {
   return page.evaluate(() => new Promise(resolve => setTimeout(resolve, 400)))
+}
+
+function waitForAnimationFrames(page: Page, count: number): Promise<unknown> {
+  return page.evaluate(frames => new Promise<void>(resolve => {
+    const next = (remaining: number): void => {
+      if (remaining <= 0) resolve()
+      else requestAnimationFrame(() => next(remaining - 1))
+    }
+    next(frames)
+  }), count)
 }
 
 async function installControlledIdleCallbacks(page: Page): Promise<void> {

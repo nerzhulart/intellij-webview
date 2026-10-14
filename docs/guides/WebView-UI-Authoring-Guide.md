@@ -255,6 +255,8 @@ Dispose the listener with the component or view. Shared controls already apply t
 
 Treat the page as application UI, not a browser tab. Do not rely on browser context menus, page zoom, navigation gestures, autofill prompts, or browser shortcuts. Implement graph, canvas, or image zoom as component state rather than changing the page scale.
 
+When a document-like view (for example, Markdown preview) should zoom as a whole with trackpad pinch or Ctrl+wheel, call `installWebViewPageZoom()` from `@nerzhulart/intellij-webview-sdk` and apply `scale: var(--wvi-page-zoom, none); transform-origin: 0 0` to the scrollable content, keeping fixed overlays outside of it. This magnifies the laid-out content like a native pinch without re-wrapping it; CSS `zoom` would re-layout the content to the viewport width. Browser page zoom stays disabled: on Windows it only changes in coarse steps. For component-local zoom, `attachWebViewWheelZoom(...)` provides the same smoothing for any scale; components that handle Ctrl+wheel call `preventDefault()`, so the page zoom leaves their events alone.
+
 Use ordinary `console.*` calls for diagnostics. The runtime forwards them to the IDE log and preserves the original browser console output.
 
 ## Use Icons and Controls

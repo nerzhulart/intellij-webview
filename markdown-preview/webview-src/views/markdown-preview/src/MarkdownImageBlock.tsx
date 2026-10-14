@@ -10,6 +10,7 @@ import {
   MarkdownZoomToolbar,
   shouldHandleZoomEvent,
 } from "./MarkdownZoomControls"
+import { attachMarkdownWheelZoom, type MarkdownWheelZoom } from "./markdownWheelZoom"
 
 interface MarkdownImageBlockProps extends HTMLAttributes<HTMLDivElement> {
   src: string
@@ -21,6 +22,7 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
   const viewportRef = useRef<HTMLDivElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
   const zoomBehaviorRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null)
+  const wheelZoomRef = useRef<MarkdownWheelZoom | null>(null)
   const [aspectRatio, setAspectRatio] = useState<number | undefined>()
 
   useEffect(() => {
@@ -39,11 +41,15 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
     const viewportSelection = select<HTMLDivElement, unknown>(viewport)
     viewportSelection.call(zoomBehavior)
     viewportSelection.call(zoomBehavior.transform, zoomIdentity)
+    const wheelZoom = attachMarkdownWheelZoom(viewport, zoomBehavior)
+    wheelZoomRef.current = wheelZoom
 
     return () => {
+      wheelZoom.dispose()
       viewportSelection.on(".zoom", null)
       image.style.removeProperty("transform")
       zoomBehaviorRef.current = null
+      wheelZoomRef.current = null
     }
   }, [src])
 
@@ -55,6 +61,7 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
     const viewport = viewportRef.current
     const zoomBehavior = zoomBehaviorRef.current
     if (!viewport || !zoomBehavior) return
+    wheelZoomRef.current?.cancel()
     select<HTMLDivElement, unknown>(viewport).call(zoomBehavior.scaleBy, factor)
   }
 
@@ -62,6 +69,7 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
     const viewport = viewportRef.current
     const zoomBehavior = zoomBehaviorRef.current
     if (!viewport || !zoomBehavior) return
+    wheelZoomRef.current?.cancel()
     select<HTMLDivElement, unknown>(viewport).call(zoomBehavior.transform, zoomIdentity)
   }
 

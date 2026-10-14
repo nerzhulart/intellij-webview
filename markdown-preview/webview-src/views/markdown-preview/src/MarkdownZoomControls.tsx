@@ -25,17 +25,17 @@ export function MarkdownZoomToolbar({ targetLabel, className, buttonClassName, o
       <button type="button" className={buttonClass} aria-label={`Zoom out ${normalizedTargetLabel}`} title="Zoom out" onClick={onZoomOut}>
         <img src={AllIcons.src("graph/zoomOut.svg")} alt="" draggable={false} />
       </button>
-      <button type="button" className={buttonClass} aria-label={`Reset ${normalizedTargetLabel} zoom`} title="Reset zoom" onClick={onResetZoom}>
-        <img src={AllIcons.src("general/reset.svg")} alt="" draggable={false} />
-      </button>
       <button type="button" className={buttonClass} aria-label={`Zoom in ${normalizedTargetLabel}`} title="Zoom in" onClick={onZoomIn}>
         <img src={AllIcons.src("graph/zoomIn.svg")} alt="" draggable={false} />
+      </button>
+      <button type="button" className={buttonClass} aria-label={`Reset ${normalizedTargetLabel} zoom`} title="Reset zoom" onClick={onResetZoom}>
+        <img src={AllIcons.src("expui/image/actualZoom.svg")} alt="" draggable={false} />
       </button>
     </div>
   )
 }
 
 export function shouldHandleZoomEvent(event: Event): boolean {
-  // Chromium reports trackpad pinch as a ctrlKey wheel event; plain wheel must keep page scrolling.
-  return event.type !== "wheel" || (event as WheelEvent).ctrlKey
+  // Ctrl+wheel (trackpad pinch) zoom is handled by attachMarkdownWheelZoom; plain wheel must keep page scrolling.
+  return event.type !== "wheel"
 }

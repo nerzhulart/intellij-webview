@@ -17,6 +17,8 @@ interface MarkdownPreviewPageApi : WebViewCallable {
 
   fun selectionChanged(params: MarkdownSelectionChangedParams)
 
+  fun setPageZoom(params: MarkdownPageZoomParams)
+
   companion object {
     val ID: WebViewApiId<MarkdownPreviewPageApi> = WebViewApiId.of("markdown.preview")
   }
@@ -39,6 +41,8 @@ interface MarkdownPreviewHostApi : WebViewImplementable {
   suspend fun setFontSize(params: MarkdownSetFontSizeParams)
 
   suspend fun previewScrolled(params: MarkdownPreviewScrolledParams)
+
+  suspend fun pageZoomChanged(params: MarkdownPageZoomChangedParams)
 
   companion object {
     val ID: WebViewApiId<MarkdownPreviewHostApi> = WebViewApiId.of("markdown.preview")
@@ -194,3 +198,17 @@ data class MarkdownSetFontSizeParams(val fontSize: Int)
 @ApiStatus.Internal
 @Serializable
 data class MarkdownPreviewScrolledParams(val line: Int)
+
+@ApiStatus.Internal
+@Serializable
+data class MarkdownPageZoomParams(val zoom: Double)
+
+/**
+ * [sequence] grows with every report of the page, so a stale report handled after a newer one can be dropped.
+ */
+@ApiStatus.Internal
+@Serializable
+data class MarkdownPageZoomChangedParams(
+  val zoom: Double,
+  val sequence: Int,
+)

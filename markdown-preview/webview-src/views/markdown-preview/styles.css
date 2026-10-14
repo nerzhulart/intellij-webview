@@ -62,7 +62,14 @@ html.is-over-change-marker body::-webkit-scrollbar-track {
 }
 
 .markdownPreviewContent {
-  display: contents;
+  /*
+   * Page pinch zoom (installWebViewPageZoom) magnifies the laid-out content like a native pinch instead of re-wrapping it,
+   * so it is a `scale` around the top-left corner rather than CSS `zoom`. The scaled box extends the page scroll area;
+   * the wrapper is a block instead of `display: contents` because a transform needs a box.
+   */
+  display: flow-root;
+  scale: var(--wvi-page-zoom, none);
+  transform-origin: 0 0;
 }
 
 html[data-theme="light"] .markdownPreview {
@@ -313,49 +320,48 @@ html[data-theme="light"] .markdownPreview {
 }
 
 .markdownPreview .markdownFontSettingsPanel {
-  width: min(260px, calc(100vw - 24px));
+  width: min(320px, calc(100vw - 24px));
 }
 
 .markdownPreview .markdownFontSettingsBody {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  padding: 10px;
+  gap: 6px;
+  padding: 8px 6px 8px 10px;
 }
 
+/* One line per option: label, decrease, slider, increase, value, reset. Fixed columns keep the rows aligned. */
 .markdownPreview .markdownFontSetting {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-
-.markdownPreview .markdownFontSizeHeader {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
+  grid-template-columns: 64px 24px minmax(48px, 1fr) 24px 48px 24px;
+  align-items: center;
+  column-gap: 2px;
 }
 
 .markdownPreview .markdownFontSizeSliderLabel {
   min-width: 0;
-  flex: 1;
+  overflow: hidden;
   color: var(--ij-text-secondary);
   font-size: var(--ij-font-size-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .markdownPreview .markdownFontSizeValue {
-  flex: 0 0 auto;
   color: var(--ij-text-primary);
   font-size: var(--ij-font-size);
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 4px;
 }
 
 .markdownPreview .markdownFontSizeSlider {
-  width: 100%;
+  width: calc(100% - 8px);
+  min-width: 0;
+  margin: 0 4px;
   accent-color: var(--ij-accent);
-}
-
-.markdownPreview .markdownFontSizeButtons {
-  display: flex;
-  gap: 4px;
 }
 
 .markdownPreview .markdownFontSizeButton {
@@ -365,6 +371,11 @@ html[data-theme="light"] .markdownPreview {
   border-radius: 4px;
   color: var(--ij-text-primary);
   background: transparent;
+}
+
+.markdownPreview .markdownFontSizeButton.is-bordered {
+  box-sizing: border-box;
+  border: 1px solid var(--ij-border-strong);
 }
 
 .markdownPreview .markdownFontSizeButton:disabled {

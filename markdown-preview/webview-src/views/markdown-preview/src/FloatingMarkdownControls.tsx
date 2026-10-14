@@ -1,12 +1,15 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 import { addWebViewFocusLeaveListener, AllIcons } from "@nerzhulart/intellij-webview-sdk"
-import { useEffect, useMemo, useState, type ChangeEvent } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from "react"
+import type { MarkdownPageZoom } from "./markdownPageZoom"
 import type { MarkdownPreviewSettings } from "./markdownPreviewTypes"
+import { MARKDOWN_ZOOM_BUTTON_FACTOR } from "./MarkdownZoomControls"
 
 interface FloatingMarkdownControlsProps {
   markdown: string
   settings: MarkdownPreviewSettings
+  pageZoom: MarkdownPageZoom
   onSetFontSize: (fontSize: number) => void
 }
 
@@ -20,11 +23,16 @@ interface TableOfContentsEntry {
 const headingSelector = "h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]"
 const activeHeadingTopOffset = 80
 type FloatingPanel = "toc" | "settings"
+// The page zoom slider is logarithmic, so that zooming in and out by the same factor moves it by the same distance.
+const pageZoomSliderStep = 0.01
+const pageZoomSnapLogRatio = 0.01
 
-export function FloatingMarkdownControls({ markdown, settings, onSetFontSize }: FloatingMarkdownControlsProps) {
+export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFontSize }: FloatingMarkdownControlsProps) {
   const [entries, setEntries] = useState<TableOfContentsEntry[]>([])
   const [openPanel, setOpenPanel] = useState<FloatingPanel | undefined>()
   const [activeId, setActiveId] = useState<string | undefined>()
+  const railRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
   const hasTableOfContents = entries.length >= 2
   const fontSizeOptions = useMemo(() => normalizedFontSizeOptions(settings), [settings])
   const currentFontSizeIndex = fontSizeIndex(settings.effectiveFontSize, fontSizeOptions)
@@ -76,6 +84,30 @@ export function FloatingMarkdownControls({ markdown, settings, onSetFontSize }: 
     return addWebViewFocusLeaveListener(() => setOpenPanel(undefined))
   }, [])
 
+  // A page zoom change by the user (pinch, Ctrl+wheel) shows the options panel with the current zoom and its reset button.
+  // A zoom mirrored from the opposite diff preview does not, the panel stays where the user zooms.
+  // Re-opening an already open panel is a no-op state update, so pinch frames do not re-render the controls.
+  useEffect(() => {
+    return pageZoom.subscribe(source => {
+      if (source === "user") setOpenPanel("settings")
+    })
+  }, [pageZoom])
+
+  useEffect(() => {
+    if (openPanel === undefined) return
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Node && (panelRef.current?.contains(target) || railRef.current?.contains(target))) return
+      // Dragging the page scrollbar keeps the panel open.
+      const root = document.documentElement
+      if (event.clientX >= root.clientWidth || event.clientY >= root.clientHeight) return
+      setOpenPanel(undefined)
+    }
+    document.addEventListener("pointerdown", handlePointerDown, true)
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true)
+  }, [openPanel])
+
   useEffect(() => {
     if (openPanel === undefined) return
 
@@ -111,15 +143,14 @@ export function FloatingMarkdownControls({ markdown, settings, onSetFontSize }: 
     onSetFontSize(normalizedFontSize)
   }
 
-  function handleSliderChange(event: ChangeEvent<HTMLInputElement>): void {
-    const requestedIndex = Number(event.currentTarget.value)
+  function handleFontSizeSliderChange(requestedIndex: number): void {
     const requestedFontSize = fontSizeOptions[requestedIndex]
     if (requestedFontSize !== undefined) requestFontSize(requestedFontSize)
   }
 
   return (
     <>
-      <div className="markdownFloatingRail" aria-label="Markdown preview controls">
+      <div ref={railRef} className="markdownFloatingRail" aria-label="Markdown preview controls">
         {hasTableOfContents && (
           <button
             type="button"
@@ -135,8 +166,8 @@ export function FloatingMarkdownControls({ markdown, settings, onSetFontSize }: 
         <button
           type="button"
           className={classNames("markdownFloatingRailButton", openPanel === "settings" ? "is-active" : undefined)}
-          title="Font size settings"
-          aria-label="Show font size settings"
+          title="Options"
+          aria-label="Show preview options"
           aria-expanded={openPanel === "settings"}
           onClick={() => togglePanel("settings")}
         >
@@ -145,6 +176,7 @@ export function FloatingMarkdownControls({ markdown, settings, onSetFontSize }: 
       </div>
       {openPanel === "toc" && hasTableOfContents && (
         <nav
+          ref={panelRef}
           className="markdownFloatingPanel markdownTocPanel"
           aria-label="Table of contents"
         >
@@ -169,49 +201,39 @@ export function FloatingMarkdownControls({ markdown, settings, onSetFontSize }: 
       )}
       {openPanel === "settings" && (
         <section
+          ref={panelRef}
           className="markdownFloatingPanel markdownFontSettingsPanel"
           aria-label="Options"
         >
-          <FloatingPanelHeader title="Options" closeLabel="Collapse font size settings" onClose={closePanel} />
+          <FloatingPanelHeader title="Options" closeLabel="Collapse preview options" onClose={closePanel} />
           <div className="markdownFontSettingsBody">
-            <div className="markdownFontSetting">
-              <div className="markdownFontSizeHeader">
-                <label className="markdownFontSizeSliderLabel" htmlFor="markdown-font-size-slider">Font size</label>
-                <div className="markdownFontSizeValue">{settings.effectiveFontSize} px</div>
-              </div>
-              <input
-                id="markdown-font-size-slider"
-                type="range"
-                className="markdownFontSizeSlider"
-                min={0}
-                max={Math.max(0, fontSizeOptions.length - 1)}
-                step={1}
-                value={currentFontSizeIndex}
-                disabled={fontSizeOptions.length < 2}
-                aria-valuetext={`${settings.effectiveFontSize} px`}
-                onChange={handleSliderChange}
-              />
-              <div className="markdownFontSizeButtons" aria-label="Font size controls">
-                <FontSizeButton
-                  icon="general/remove.svg"
-                  label="Decrease font size"
-                  disabled={currentFontSizeIndex <= 0}
-                  onClick={() => requestFontSize(fontSizeOptions[currentFontSizeIndex - 1] ?? settings.effectiveFontSize)}
-                />
-                <FontSizeButton
-                  icon="general/reset.svg"
-                  label="Reset font size"
-                  disabled={settings.effectiveFontSize === settings.defaultFontSize}
-                  onClick={() => requestFontSize(settings.defaultFontSize)}
-                />
-                <FontSizeButton
-                  icon="general/add.svg"
-                  label="Increase font size"
-                  disabled={currentFontSizeIndex >= fontSizeOptions.length - 1}
-                  onClick={() => requestFontSize(fontSizeOptions[currentFontSizeIndex + 1] ?? settings.effectiveFontSize)}
-                />
-              </div>
-            </div>
+            <OptionSliderRow
+              id="markdown-font-size-slider"
+              label="Font size"
+              valueText={`${settings.effectiveFontSize} px`}
+              min={0}
+              max={Math.max(0, fontSizeOptions.length - 1)}
+              step={1}
+              value={currentFontSizeIndex}
+              disabled={fontSizeOptions.length < 2}
+              onChange={handleFontSizeSliderChange}
+              decrease={{
+                label: "Decrease font size",
+                disabled: currentFontSizeIndex <= 0,
+                onClick: () => requestFontSize(fontSizeOptions[currentFontSizeIndex - 1] ?? settings.effectiveFontSize),
+              }}
+              increase={{
+                label: "Increase font size",
+                disabled: currentFontSizeIndex >= fontSizeOptions.length - 1,
+                onClick: () => requestFontSize(fontSizeOptions[currentFontSizeIndex + 1] ?? settings.effectiveFontSize),
+              }}
+              reset={{
+                label: "Reset font size",
+                disabled: settings.effectiveFontSize === settings.defaultFontSize,
+                onClick: () => requestFontSize(settings.defaultFontSize),
+              }}
+            />
+            <PageZoomOptionRow pageZoom={pageZoom} />
           </div>
         </section>
       )}
@@ -242,18 +264,112 @@ function FloatingPanelHeader({ title, closeLabel, onClose }: FloatingPanelHeader
   )
 }
 
-interface FontSizeButtonProps {
-  icon: string
+interface PageZoomOptionRowProps {
+  pageZoom: MarkdownPageZoom
+}
+
+// Subscribes to the page zoom only while the options panel is open, so pinch zoom does not re-render the controls.
+function PageZoomOptionRow({ pageZoom }: PageZoomOptionRowProps) {
+  const zoom = useSyncExternalStore(pageZoom.subscribe, pageZoom.zoom)
+  const zoomPercent = Math.round(zoom * 100)
+
+  function requestZoom(requestedZoom: number): void {
+    const snappedZoom = Math.abs(Math.log(requestedZoom)) < pageZoomSnapLogRatio ? 1 : requestedZoom
+    pageZoom.setZoom(Math.min(pageZoom.maxZoom, Math.max(pageZoom.minZoom, snappedZoom)))
+  }
+
+  return (
+    <OptionSliderRow
+      id="markdown-page-zoom-slider"
+      label="Zoom"
+      valueText={`${zoomPercent}%`}
+      min={Math.log2(pageZoom.minZoom)}
+      max={Math.log2(pageZoom.maxZoom)}
+      step={pageZoomSliderStep}
+      value={Math.log2(zoom)}
+      disabled={pageZoom.maxZoom <= pageZoom.minZoom}
+      onChange={value => requestZoom(2 ** value)}
+      decrease={{
+        label: "Zoom out page",
+        disabled: zoom <= pageZoom.minZoom,
+        onClick: () => requestZoom(zoom / MARKDOWN_ZOOM_BUTTON_FACTOR),
+      }}
+      increase={{
+        label: "Zoom in page",
+        disabled: zoom >= pageZoom.maxZoom,
+        onClick: () => requestZoom(zoom * MARKDOWN_ZOOM_BUTTON_FACTOR),
+      }}
+      reset={{
+        label: "Reset page zoom",
+        disabled: zoom === 1,
+        onClick: () => requestZoom(1),
+      }}
+    />
+  )
+}
+
+interface OptionButtonAction {
   label: string
   disabled: boolean
   onClick: () => void
 }
 
-function FontSizeButton({ icon, label, disabled, onClick }: FontSizeButtonProps) {
+interface OptionSliderRowProps {
+  id: string
+  label: string
+  valueText: string
+  min: number
+  max: number
+  step: number
+  value: number
+  disabled: boolean
+  onChange: (value: number) => void
+  decrease: OptionButtonAction
+  increase: OptionButtonAction
+  reset: OptionButtonAction
+}
+
+/** One options line: label, decrease button, slider, increase button, current value, and reset button. */
+function OptionSliderRow({ id, label, valueText, min, max, step, value, disabled, onChange, decrease, increase, reset }: OptionSliderRowProps) {
+  function handleChange(event: ChangeEvent<HTMLInputElement>): void {
+    const requestedValue = Number(event.currentTarget.value)
+    if (Number.isFinite(requestedValue)) onChange(requestedValue)
+  }
+
+  return (
+    <div className="markdownFontSetting" role="group" aria-label={`${label} controls`}>
+      <label className="markdownFontSizeSliderLabel" htmlFor={id}>{label}</label>
+      <FontSizeButton icon="expui/image/zoomOut.svg" {...decrease} />
+      <input
+        id={id}
+        type="range"
+        className="markdownFontSizeSlider"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        aria-valuetext={valueText}
+        onChange={handleChange}
+      />
+      <FontSizeButton icon="expui/image/zoomIn.svg" {...increase} />
+      <output className="markdownFontSizeValue" htmlFor={id}>{valueText}</output>
+      <FontSizeButton icon="expui/image/actualZoom.svg" bordered {...reset} />
+    </div>
+  )
+}
+
+interface FontSizeButtonProps extends OptionButtonAction {
+  icon: string
+  /** Draws a permanent outline, like an IntelliJ action button with a border. */
+  bordered?: boolean
+}
+
+function FontSizeButton({ icon, bordered = false, label, disabled, onClick }: FontSizeButtonProps) {
   return (
     <button
       type="button"
-      className="markdownFontSizeButton"
+      className={bordered ? "markdownFontSizeButton is-bordered" : "markdownFontSizeButton"}
       title={label}
       aria-label={label}
       disabled={disabled}

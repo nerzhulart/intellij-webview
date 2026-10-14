@@ -85,6 +85,22 @@ class WebViewMarkdownPreviewPanel(
   @ApiStatus.Internal
   var scrollListener: ((Int) -> Unit)? = null
 
+  /**
+   * Called on EDT when the user changes the page zoom of this preview. A zoom set by [requestPageZoom] is not reported.
+   */
+  @Volatile
+  @ApiStatus.Internal
+  var pageZoomListener: ((Double) -> Unit)? = null
+
+  /**
+   * The last known page zoom, restored when the page is reloaded.
+   */
+  @Volatile
+  private var pageZoom: Double = DEFAULT_PAGE_ZOOM
+
+  @Volatile
+  private var lastPageZoomSequence: Int = -1
+
   private val panelCreatedAt = TimeSource.Monotonic.markNow()
 
   init {
@@ -158,6 +174,33 @@ class WebViewMarkdownPreviewPanel(
     panel.interop.callable(MarkdownPreviewPageApi.ID).scrollToLine(MarkdownScrollToLineParams(line))
   }
 
+  /**
+   * Sets the page zoom without reporting it to [pageZoomListener], e.g. to mirror the zoom of another preview.
+   */
+  @ApiStatus.Internal
+  fun requestPageZoom(zoom: Double) {
+    if (pageZoom == zoom) return
+    pageZoom = zoom
+    sendPageZoom()
+  }
+
+  /**
+   * Sends the notification right away instead of launching a coroutine, so the zoom updates of a pinch keep their order.
+   */
+  private fun sendPageZoom() {
+    if (!pageReady) return
+    val panel = webViewPanel ?: return
+    try {
+      panel.interop.callable(MarkdownPreviewPageApi.ID).setPageZoom(MarkdownPageZoomParams(pageZoom))
+    }
+    catch (e: CancellationException) {
+      throw e
+    }
+    catch (t: Throwable) {
+      LOG.warn("Failed to set Markdown WebView preview page zoom", t)
+    }
+  }
+
   private fun loadWebView() {
     coroutineScope.launch {
       try {
@@ -202,12 +245,14 @@ class WebViewMarkdownPreviewPanel(
     return object : MarkdownPreviewHostApi {
       override suspend fun pageReady() {
         pageReady = true
+        lastPageZoomSequence = -1
         LOG.traceWebViewPerfSince(
           "markdown.webview.pageReady.sincePanelCreate",
           panelCreatedAt,
           markdownDiagnosticDetails(lastUpdate),
         )
         sendContentUpdate()
+        if (pageZoom != DEFAULT_PAGE_ZOOM) sendPageZoom()
       }
 
       override suspend fun openLink(params: MarkdownOpenLinkParams) {
@@ -239,6 +284,16 @@ class WebViewMarkdownPreviewPanel(
         val listener = scrollListener ?: return
         withContext(Dispatchers.EDT) {
           listener(params.line)
+        }
+      }
+
+      override suspend fun pageZoomChanged(params: MarkdownPageZoomChangedParams) {
+        // Incoming calls are handled concurrently, so a pinch frame may get here after the next one.
+        withContext(Dispatchers.EDT) {
+          if (params.sequence <= lastPageZoomSequence) return@withContext
+          lastPageZoomSequence = params.sequence
+          pageZoom = params.zoom
+          pageZoomListener?.invoke(params.zoom)
         }
       }
     }
@@ -431,6 +486,8 @@ class WebViewMarkdownPreviewPanel(
   )
 
   private companion object {
+    private const val DEFAULT_PAGE_ZOOM = 1.0
+
     private val ASSET_ROOT = WebViewAssetRoot
       .forView("markdown-preview")
       .withIconSets(WebViewIconSet.allIcons())
