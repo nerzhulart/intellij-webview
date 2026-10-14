@@ -143,6 +143,10 @@ test("navigates fragment links inside the preview without opening host link", as
     return target?.id ?? ""
   })
   expect(targetId.length > 0).toBe(true)
+  // Lazily rendered blocks above the target move it down, so navigate only after they have rendered.
+  await page.waitForSelector(".mermaidBlock svg")
+  await page.waitForSelector(".katex")
+  await page.waitForFunction(() => Array.from(document.querySelectorAll<HTMLImageElement>(".markdownPreviewContent img")).every(image => image.complete))
 
   const initialOpenLinkCalls = await openLinkCallCount(page)
   const initialScrollY = await page.evaluate(() => window.scrollY)
@@ -170,7 +174,7 @@ test("changes preview font size from floating settings", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Show font size settings" })).toBeVisible()
   await page.getByRole("button", { name: "Show font size settings" }).click()
   await expect(page.getByRole("button", { name: "Increase font size" })).toBeVisible()
-  expect(await fontSettingsIconsLoaded(page)).toBe(true)
+  await waitForFontSettingsIcons(page)
 
   const initialCalls = await setFontSizeCallCount(page)
   await page.getByRole("button", { name: "Increase font size" }).click()
@@ -250,7 +254,10 @@ test("reports the visible source line to the host while scrolling", async ({ pag
     const mock = (window as Window & {
       __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
     }).__WVI_MOCK__
-    return (mock?.calls.byMethod("markdown.preview/previewScrolled").length ?? 0) > 0
+    if ((mock?.calls.byMethod("markdown.preview/previewScrolled").length ?? 0) > 0) return true
+    // Scroll reports are suppressed briefly after the initial programmatic scroll, so keep scrolling like a user does.
+    window.scrollBy({ top: 1, behavior: "instant" })
+    return false
   })
 
   expect(await methodCallCount(page, "markdown.preview/previewScrolled") > initialCalls).toBe(true)
@@ -353,7 +360,7 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
   await page.waitForSelector(".mermaidBlock svg")
 
   await expect(page.getByRole("button", { name: "Zoom in diagram" })).toBeVisible()
-  expect(await mermaidToolbarIconsLoaded(page)).toBe(true)
+  await waitForMermaidToolbarIcons(page)
   expect(await mermaidToolbarButtonsUseDefaultCursor(page)).toBe(true)
   expect(await mermaidHasNoRunGutter(page)).toBe(true)
   const resizeEnabled = await page.evaluate(() => {
@@ -398,7 +405,7 @@ test("zooms standalone image blocks without changing inline or linked images", a
   await page.waitForFunction(() => document.querySelector<HTMLImageElement>(".markdownImageViewport img")?.naturalWidth === 960)
 
   await expect(page.getByRole("button", { name: "Zoom in image" })).toBeVisible()
-  expect(await markdownImageToolbarIconsLoaded(page)).toBe(true)
+  await waitForMarkdownImageToolbarIcons(page)
   const imageState = await page.evaluate(() => {
     const block = document.querySelector(".markdownImageBlock.isInteractive")
     const inlineImage = document.querySelector('img[alt="Inline preview"]')
@@ -476,16 +483,29 @@ test("renders only host-resolved code paths as navigation buttons", async ({ pag
   expect(pathLinkState.hasMissingPathButton).toBe(false)
   expect(pathLinkState.hasMermaidPathButton).toBe(false)
 
+  // Run commands and syntax highlighting re-render the content and replace path link buttons,
+  // so a click that lands during a re-render is lost. Click only after these enhancements have been applied.
+  await page.waitForSelector(".markdownRunButton")
+  await page.waitForSelector(".markdownPreviewContent .hljs")
   await page.getByRole("button", { name: "docs/guide.md:12", exact: true }).click()
-  await page.waitForFunction(() => document.querySelector("#mock-run-log")?.textContent?.includes("navigatePathLink") ?? false)
-  const navigation = await page.evaluate(() => JSON.parse(document.querySelector("#mock-run-log")?.textContent ?? "{}") as {
-    rawPath?: string
-    clientX?: number
-    clientY?: number
+  // Read the bridge call instead of #mock-run-log: the click scrolls the preview, and the following previewScrolled
+  // call overwrites the log.
+  await page.waitForFunction(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
+    }).__WVI_MOCK__
+    return (mock?.calls.byMethod("markdown.preview/navigatePathLink").length ?? 0) > 0
+  })
+  const navigation = await page.evaluate(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/navigatePathLink") ?? []
+    return calls[calls.length - 1]?.params as { rawPath?: string, clientX?: number, clientY?: number } | undefined
   })
 
-  expect(navigation.rawPath === "docs/guide.md:12").toBe(true)
-  expect(Number.isFinite(navigation.clientX) && Number.isFinite(navigation.clientY)).toBe(true)
+  expect(navigation?.rawPath === "docs/guide.md:12").toBe(true)
+  expect(Number.isFinite(navigation?.clientX) && Number.isFinite(navigation?.clientY)).toBe(true)
 })
 
 test("defers markdown enhancements until idle without shifting code fences", async ({ page }) => {
@@ -497,8 +517,7 @@ test("defers markdown enhancements until idle without shifting code fences", asy
   await page.waitForSelector(".markdownPreview h1")
   await page.waitForSelector(".codeFenceWithCommands pre")
 
-  const firstCodeFence = page.locator(".codeFenceWithCommands pre").first()
-  const codeFenceBoxBefore = await firstCodeFence.boundingBox()
+  const codeFenceBoxBefore = await firstCommandCodeFenceBox(page)
   expect(await methodCallCount(page, "markdown.preview/resolvePathLinks") === 0).toBe(true)
   expect(await methodCallCount(page, "markdown.preview/resolveRunCommands") === 0).toBe(true)
   expect(await hasMarkdownPathLinks(page)).toBe(false)
@@ -508,7 +527,7 @@ test("defers markdown enhancements until idle without shifting code fences", asy
   await page.waitForSelector(".markdownPathLink")
   await page.waitForSelector(".markdownRunButton")
 
-  const codeFenceBoxAfter = await firstCodeFence.boundingBox()
+  const codeFenceBoxAfter = await firstCommandCodeFenceBox(page)
   expect(await methodCallCount(page, "markdown.preview/resolvePathLinks") > 0).toBe(true)
   expect(await methodCallCount(page, "markdown.preview/resolveRunCommands") > 0).toBe(true)
   expect(codeFenceBoxBefore != null && codeFenceBoxAfter != null).toBe(true)
@@ -586,8 +605,9 @@ function mermaidViewportUsesMoveCursor(page: Page): Promise<boolean> {
   })
 }
 
-function mermaidToolbarIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+// Icons load asynchronously, so wait for them instead of checking once: a missing icon still fails the test by timeout.
+async function waitForMermaidToolbarIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".mermaidToolbar img"))
     return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
@@ -600,15 +620,15 @@ function mermaidToolbarButtonsUseDefaultCursor(page: Page): Promise<boolean> {
   })
 }
 
-function markdownImageToolbarIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+async function waitForMarkdownImageToolbarIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".markdownImageToolbar img"))
     return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
 }
 
-function fontSettingsIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+async function waitForFontSettingsIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".markdownFontSizeButton img, .markdownFloatingRailButton img"))
     return icons.length >= 4 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
@@ -696,6 +716,14 @@ async function installControlledIdleCallbacks(page: Page): Promise<void> {
 async function flushIdleCallbacks(page: Page): Promise<void> {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
   await page.evaluate(() => (window as Window & { __flushMarkdownPreviewIdleCallbacks?: () => void }).__flushMarkdownPreviewIdleCallbacks?.())
+}
+
+function firstCommandCodeFenceBox(page: Page): Promise<{ x: number; width: number } | null> {
+  // Measure in one page task: enhancements re-render code fences, so a locator can catch a detached element.
+  return page.evaluate(() => {
+    const box = document.querySelector(".codeFenceWithCommands pre")?.getBoundingClientRect()
+    return box ? { x: box.x, width: box.width } : null
+  })
 }
 
 function hasMarkdownPathLinks(page: Page): Promise<boolean> {

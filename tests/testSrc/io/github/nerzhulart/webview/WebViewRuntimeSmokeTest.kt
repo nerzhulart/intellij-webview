@@ -493,6 +493,7 @@ internal class WebViewRuntimeSmokeTest {
   @Test
   @EnabledOnOs(OS.MAC, OS.WINDOWS)
   fun clickingWebView_closesOpenSwingPopupMenu(): Unit = runSmokeTest {
+    assumeNotHostedMacIntelRunner()
     val panel = createPanel(scope!!)
     val popupMenu = JPopupMenu().apply {
       add(JMenuItem("Popup item"))
@@ -623,6 +624,7 @@ internal class WebViewRuntimeSmokeTest {
   @Test
   @EnabledOnOs(OS.MAC, OS.WINDOWS)
   fun clickingWebView_closesFocusedIdePopupOnFirstClick(): Unit = runSmokeTest {
+    assumeNotHostedMacIntelRunner()
     val panel = createPanel(scope!!)
     val popupAnchor = JButton("Popup anchor")
 
@@ -818,6 +820,13 @@ internal class WebViewRuntimeSmokeTest {
     }
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     robot.waitForIdle()
+  }
+
+  private fun assumeNotHostedMacIntelRunner() {
+    assumeTrue(
+      System.getenv("CI") != "true" || !SystemInfo.isMac || System.getProperty("os.arch") != "x86_64",
+      "Robot clicks on hosted macOS Intel runners reach WKWebView but do not dismiss Swing popups",
+    )
   }
 
   private fun createRobotOrSkip(): Robot {

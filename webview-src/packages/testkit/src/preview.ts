@@ -1,6 +1,8 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 import { createServer as createNetServer } from "node:net"
+import { resolve } from "node:path"
+import process from "node:process"
 import { createServer, type Plugin, type UserConfig } from "vite"
 import { defineWebViewViewConfig } from "@nerzhulart/intellij-webview-sdk/vite"
 import { resolveWebViewMockIconSetAsset } from "./iconSetAssetResolver"
@@ -21,6 +23,7 @@ export async function startWebViewMockPreview(options: StartWebViewMockPreviewOp
   })
   const server = await createServer({
     ...config,
+    cacheDir: config.cacheDir ?? parallelTestWorkerCacheDir(options),
     server: {
       ...config.server,
       host: "127.0.0.1",
@@ -45,6 +48,7 @@ export async function startWebViewMockPreview(options: StartWebViewMockPreviewOp
 
 function webViewMockIconSetPlugin(config: UserConfig): Plugin {
   const viewResourceRoot = typeof config.build?.outDir === "string" ? config.build.outDir : undefined
+  const viewSourceRoot = typeof config.root === "string" ? config.root : undefined
   return {
     name: "webview-mock-icon-sets",
     configureServer(server) {
@@ -54,7 +58,7 @@ function webViewMockIconSetPlugin(config: UserConfig): Plugin {
           return
         }
 
-        const response = resolveWebViewMockIconSetAsset(req.url, { viewResourceRoot })
+        const response = resolveWebViewMockIconSetAsset(req.url, { viewResourceRoot, viewSourceRoot })
         if (!response) {
           next()
           return
@@ -69,6 +73,16 @@ function webViewMockIconSetPlugin(config: UserConfig): Plugin {
       })
     },
   }
+}
+
+/**
+ * Parallel test workers start one preview server each. Sharing Vite's default dependency cache makes cold
+ * optimizer runs overwrite each other's `deps` and reload pages mid-test, so every worker gets its own cache.
+ */
+function parallelTestWorkerCacheDir(options: StartWebViewMockPreviewOptions): string | undefined {
+  const workerIndex = process.env.TEST_PARALLEL_INDEX
+  if (!workerIndex || !/^\d+$/.test(workerIndex)) return undefined
+  return resolve(options.webviewSrcDir, "node_modules", ".vite", `webview-mock-${options.viewId}-worker-${workerIndex}`)
 }
 
 function asPluginArray(plugins: UserConfig["plugins"]): Plugin[] {

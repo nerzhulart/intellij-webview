@@ -1316,7 +1316,7 @@ test("keeps the keyboard-highlighted slash command visible while navigating", as
 
 async function verifyAcpMermaidViewport(page: Page): Promise<void> {
   await expect(page.getByRole("button", {name: "Zoom in diagram"})).toBeVisible()
-  expect(await acpMermaidToolbarIconsLoaded(page)).toBe(true)
+  await waitForAcpMermaidToolbarIcons(page)
   expect(await acpMermaidToolbarButtonsUseDefaultCursor(page)).toBe(true)
   const resizeEnabled = await page.evaluate(() => {
     const block = document.querySelector(".acpMermaidBlock--interactive")
@@ -1382,8 +1382,9 @@ function acpMermaidViewportUsesMoveCursor(page: Page): Promise<boolean> {
   })
 }
 
-function acpMermaidToolbarIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+// Icons load asynchronously, so wait for them instead of checking once: a missing icon still fails the test by timeout.
+async function waitForAcpMermaidToolbarIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".acpMermaidToolbar img"))
     return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })

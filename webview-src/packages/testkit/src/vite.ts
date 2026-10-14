@@ -72,6 +72,12 @@ function webViewMockBridgePlugin(mockPath: string): Plugin {
           res.end(mockWebViewBridgeBrowserScript())
           return
         }
+        if (path === "/__webview/wvi-platform-features.js" && platformFeaturesEntryPath()) {
+          res.statusCode = 200
+          res.setHeader("Content-Type", "text/javascript; charset=utf-8")
+          res.end("// Platform features are installed from source by /__webview-test/mock-entry.js.\n")
+          return
+        }
         if (path === "/__webview-test/mock-entry.js") {
           const platformFeaturesPath = platformFeaturesEntryPath()
           const platformFeaturesImport = platformFeaturesPath

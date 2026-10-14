@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { apiId, type WebViewCallable, type WebViewImplementable } from "../../api/src/index"
 import { defineWebViewMock, installMockWebViewBridge } from "../src"
 
@@ -17,10 +17,21 @@ const hostApiId = apiId<HostApi>()("test.host")
 const pageApiId = apiId<PageApi>()("test.page")
 
 describe("mock WebView bridge", () => {
+  // Bun has no DOM `window`, and test files share one global scope, so install a fresh stub instead of relying on other files.
+  let previousWindow: PropertyDescriptor | undefined
+
   beforeEach(() => {
-    const testWindow = globalThis.window as typeof globalThis.window & { __WVI__?: unknown; __WVI_MOCK__?: unknown }
-    delete testWindow.__WVI__
-    delete testWindow.__WVI_MOCK__
+    previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {} })
+  })
+
+  afterEach(() => {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, "window", previousWindow)
+    }
+    else {
+      delete (globalThis as { window?: unknown }).window
+    }
   })
 
   test("routes page calls to mock host implementations", async () => {

@@ -1,0 +1,144 @@
+name: WebView TS tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: WebView unit & typecheck
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install webview-src dependencies
+        working-directory: webview-src
+        run: bun install --frozen-lockfile
+
+      - name: Run webview-src unit tests
+        working-directory: webview-src
+        run: |
+          mkdir -p build/test-results/bun
+          bun test --reporter=junit --reporter-outfile=build/test-results/bun/junit.xml
+
+      - name: Typecheck webview-src
+        if: success() || failure()
+        working-directory: webview-src
+        run: bun run typecheck
+
+      - name: Typecheck demo
+        if: success() || failure()
+        working-directory: demo/webview-src
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+
+      - name: Typecheck markdown-preview
+        if: success() || failure()
+        working-directory: markdown-preview/webview-src
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+
+      - name: Typecheck hello-webview sample against published SDK
+        if: success() || failure()
+        working-directory: samples/hello-webview/webview-src
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+
+      - name: Publish unit test summary
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: webview-src/build/test-results/bun/*.xml
+          check_name: WebView unit test report
+          annotate_only: true
+          job_summary: true
+          detailed_summary: true
+          include_time_in_summary: true
+          simplified_summary: true
+
+  browser:
+    name: WebView browser smoke (${{ matrix.project }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [demo, markdown-preview]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}/webview-src
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install webview-src dependencies
+        working-directory: webview-src
+        run: bun install --frozen-lockfile
+
+      - name: Install ${{ matrix.project }} dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Read Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: bunx playwright install --with-deps chromium
+
+      - name: Install Playwright Chromium system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: bunx playwright install-deps chromium
+
+      - name: Run browser smoke tests
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: build/test-results/playwright/junit.xml
+        run: bun run test:browser --project=chromium --retries=1 --reporter=list,junit
+
+      - name: Publish browser smoke summary
+        if: always()
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: ${{ matrix.project }}/webview-src/build/test-results/playwright/*.xml
+          check_name: WebView browser smoke report (${{ matrix.project }})
+          annotate_only: true
+          job_summary: true
+          detailed_summary: true
+          include_time_in_summary: true
+          simplified_summary: true
+
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results-${{ matrix.project }}
+          path: |
+            ${{ matrix.project }}/webview-src/test-results/
+            ${{ matrix.project }}/webview-src/build/test-results/playwright/
+          if-no-files-found: warn

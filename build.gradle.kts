@@ -6,6 +6,7 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.platform.gradle.tasks.PublishPluginTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 
 plugins {
   kotlin("jvm") version "2.4.10"
@@ -88,6 +89,19 @@ intellijPlatform {
       },
     )
   }
+  pluginVerification {
+    // Internal API usages are checked in verifyPlugin.doLast against plugin-verifier-ignored-internal-api.txt:
+    // Plugin Verifier's ignoredProblemsFile does not apply to internal API usages.
+    failureLevel.set(
+      listOf(
+        VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+        VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
+      ),
+    )
+    ides {
+      current()
+    }
+  }
 }
 
 tasks {
@@ -97,6 +111,37 @@ tasks {
     providers.gradleProperty("pluginArchiveFile").orNull?.let {
       archiveFile.set(layout.projectDirectory.file(it))
       setDependsOn(emptyList<Any>())
+    }
+  }
+
+  named<VerifyPluginTask>("verifyPlugin") {
+    providers.gradleProperty("pluginArchiveFile").orNull?.let {
+      archiveFile.set(layout.projectDirectory.file(it))
+      setDependsOn(emptyList<Any>())
+    }
+
+    val reportsDirectory = verificationReportsDirectory
+    val ignoredInternalApiFile = layout.projectDirectory.file("plugin-verifier-ignored-internal-api.txt")
+    inputs.file(ignoredInternalApiFile)
+    doFirst {
+      reportsDirectory.get().asFile.deleteRecursively()
+    }
+    doLast {
+      val ignoredPatterns = ignoredInternalApiFile.asFile.readLines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") }
+        .map { Regex(it) }
+      val unexpectedUsages = reportsDirectory.get().asFile.walk()
+        .filter { it.name == "internal-api-usages.txt" }
+        .flatMap { it.readLines().asSequence() }
+        .filter { usage -> usage.isNotBlank() && ignoredPatterns.none { it.containsMatchIn(usage) } }
+        .toList()
+      if (unexpectedUsages.isNotEmpty()) {
+        throw GradleException(
+          "Plugin Verifier found internal API usages missing from plugin-verifier-ignored-internal-api.txt:\n" +
+            unexpectedUsages.joinToString("\n"),
+        )
+      }
     }
   }
 
