@@ -345,6 +345,59 @@ test("keeps markdown content selectable while preview chrome uses the default gu
   expect(selectionState.railButtonGuarded).toBe(true)
 })
 
+test("zooms the rendered markdown with Ctrl+wheel and trackpad pinch", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+
+  const initial = await page.evaluate(() => {
+    const heading = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    const rail = document.querySelector<HTMLElement>(".markdownFloatingRailButton")!.getBoundingClientRect()
+    return {
+      headingWidth: heading.width,
+      headingHeight: heading.height,
+      headingCenterY: heading.top + heading.height / 2,
+      headingX: heading.left + 20,
+      railWidth: rail.width,
+    }
+  })
+
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -120, clientX: initial.headingX, clientY: initial.headingCenterY, bubbles: true, cancelable: true })
+  expect((await pageZoom(page)) === 1).toBe(true)
+
+  // A coarse Ctrl+wheel step (Windows touchpad pinch emulation) zooms by one step and eases there.
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, clientX: initial.headingX, clientY: initial.headingCenterY, bubbles: true, cancelable: true })
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2) < 0.001)
+
+  const zoomed = await page.evaluate(() => {
+    const heading = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    const rail = document.querySelector<HTMLElement>(".markdownFloatingRailButton")!.getBoundingClientRect()
+    return {
+      headingWidth: heading.width,
+      headingHeight: heading.height,
+      headingCenterY: heading.top + heading.height / 2,
+      railWidth: rail.width,
+    }
+  })
+  expect(Math.abs(zoomed.headingHeight - initial.headingHeight * 1.2) < 1).toBe(true)
+  // The zoom magnifies the laid-out content instead of re-wrapping it: a full-width block grows past the content width.
+  expect(Math.abs(zoomed.headingWidth - initial.headingWidth * 1.2) < 1).toBe(true)
+  // The point under the pointer stays in place, and the floating controls keep their size.
+  expect(Math.abs(zoomed.headingCenterY - initial.headingCenterY) < 2).toBe(true)
+  expect(zoomed.railWidth === initial.railWidth).toBe(true)
+
+  // A dense stream of fine Ctrl+wheel deltas (macOS trackpad pinch) is applied per event without easing.
+  await page.evaluate(({ clientX, clientY }) => {
+    const heading = document.querySelector(".markdownPreview h1")!
+    for (let index = 0; index < 5; index++) {
+      heading.dispatchEvent(new WheelEvent("wheel", { deltaY: 2, ctrlKey: true, clientX, clientY, bubbles: true, cancelable: true }))
+    }
+  }, { clientX: initial.headingX, clientY: initial.headingCenterY })
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2 * 2 ** -0.2) < 0.001)
+})
+
 test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ page }) => {
   if (!preview) {
     throw new Error("Markdown preview mock preview server was not started")
@@ -377,6 +430,33 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
   const transformBeforeWheel = await mermaidTransform(page)
   await page.locator(".mermaidViewport svg").dispatchEvent("wheel", { deltaY: -120, clientX: 80, clientY: 80, bubbles: true, cancelable: true })
   expect((await mermaidTransform(page)) === transformBeforeWheel).toBe(true)
+
+  // A coarse Ctrl+wheel step (Windows touchpad pinch emulation) zooms by one button step and eases there.
+  await page.locator(".mermaidViewport svg").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, clientX: 80, clientY: 80, bubbles: true, cancelable: true })
+  await page.waitForFunction(() => {
+    const scale = Number(/scale\(([^)]+)\)/.exec(document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")?.[1])
+    return Math.abs(scale - 1.2) < 0.01
+  })
+  // Ctrl+wheel over a diagram zooms only the diagram, not the whole page.
+  expect((await pageZoom(page)) === 1).toBe(true)
+
+  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
+
+  // A dense stream of fine Ctrl+wheel deltas (macOS trackpad pinch) keeps d3-zoom's per-event scaling.
+  await page.evaluate(() => {
+    const svg = document.querySelector(".mermaidViewport svg")
+    for (let index = 0; index < 5; index++) {
+      svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -2, ctrlKey: true, clientX: 80, clientY: 80, bubbles: true, cancelable: true }))
+    }
+  })
+  await page.waitForFunction(() => {
+    const scale = Number(/scale\(([^)]+)\)/.exec(document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")?.[1])
+    return Math.abs(scale - 2 ** 0.2) < 0.01
+  })
+
+  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
 
   const transformBeforeDrag = await mermaidTransform(page)
   await dragLocatorCenter(page, page.locator(".mermaidViewport svg"), 40, 28, "Markdown Mermaid SVG does not have a rendered bounding box")
@@ -554,6 +634,10 @@ test("updates after KaTeX rendering without React DOM commit errors", async ({ p
 
 function mermaidTransform(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")
+}
+
+function pageZoom(page: Page): Promise<number> {
+  return page.evaluate(() => Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom") || "1"))
 }
 
 async function dragLocatorCenter(page: Page, locator: Locator, deltaX: number, deltaY: number, missingBoxMessage: string): Promise<void> {

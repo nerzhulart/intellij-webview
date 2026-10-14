@@ -36,6 +36,6 @@ export function MarkdownZoomToolbar({ targetLabel, className, buttonClassName, o
 }
 
 export function shouldHandleZoomEvent(event: Event): boolean {
-  // Chromium reports trackpad pinch as a ctrlKey wheel event; plain wheel must keep page scrolling.
-  return event.type !== "wheel" || (event as WheelEvent).ctrlKey
+  // Ctrl+wheel (trackpad pinch) zoom is handled by attachMarkdownWheelZoom; plain wheel must keep page scrolling.
+  return event.type !== "wheel"
 }

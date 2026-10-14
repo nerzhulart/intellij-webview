@@ -1,7 +1,15 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 import { createRoot } from "react-dom/client"
-import { apiId, getPerfLogger, webView, webViewTheme, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
+import {
+  apiId,
+  getPerfLogger,
+  installWebViewPageZoom,
+  webView,
+  webViewTheme,
+  type WebViewCallable,
+  type WebViewImplementable,
+} from "@nerzhulart/intellij-webview-sdk"
 import { MarkdownPreviewApp, scrollMarkdownPreviewToLine } from "./MarkdownPreviewApp"
 import { installScrollbarChangeMarkers, refreshScrollbarChangeMarkers, setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
@@ -104,6 +112,8 @@ webView.implement(markdownPreviewPageApiId, {
 
 applyTheme(theme)
 installScrollbarChangeMarkers()
+// Trackpad pinch and Ctrl+wheel magnify the rendered markdown (`.markdownPreviewContent`) without re-layout, not the floating controls.
+installWebViewPageZoom({ minZoom: 1, maxZoom: 4 })
 renderPreview("initial")
 window.addEventListener("scroll", scheduleScrollReport, { passive: true })
 webViewTheme.onChanged(nextTheme => {

@@ -62,7 +62,14 @@ html.is-over-change-marker body::-webkit-scrollbar-track {
 }
 
 .markdownPreviewContent {
-  display: contents;
+  /*
+   * Page pinch zoom (installWebViewPageZoom) magnifies the laid-out content like a native pinch instead of re-wrapping it,
+   * so it is a `scale` around the top-left corner rather than CSS `zoom`. The scaled box extends the page scroll area;
+   * the wrapper is a block instead of `display: contents` because a transform needs a box.
+   */
+  display: flow-root;
+  scale: var(--wvi-page-zoom, none);
+  transform-origin: 0 0;
 }
 
 html[data-theme="light"] .markdownPreview {
