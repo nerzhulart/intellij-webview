@@ -150,6 +150,7 @@ internal class MarkdownDiffPreviewController private constructor(
     val panel = WebViewMarkdownPreviewPanel(project, side.virtualFile)
     Disposer.register(this, panel)
     panel.scrollListener = { line -> syncScroll(side.side, line) }
+    panel.pageZoomListener = { zoom -> syncPageZoom(side.side, zoom) }
 
     val component = JPanel(BorderLayout()).apply {
       side.title?.let { title ->
@@ -252,6 +253,15 @@ internal class MarkdownDiffPreviewController private constructor(
     finally {
       isSyncingScroll = false
     }
+  }
+
+  /**
+   * The opposite preview applies the zoom without reporting it back, so the previews do not echo intermediate pinch zooms.
+   * Its scroll position follows through the scroll synchronization once the zoom of the source preview moves its content.
+   */
+  private fun syncPageZoom(side: Side, zoom: Double) {
+    val previews = previews ?: return
+    previews.of(side.other())?.panel?.requestPageZoom(zoom)
   }
 
   private fun installDocumentListeners() {

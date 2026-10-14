@@ -84,10 +84,13 @@ export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFo
     return addWebViewFocusLeaveListener(() => setOpenPanel(undefined))
   }, [])
 
-  // Any page zoom change (pinch, Ctrl+wheel) shows the options panel with the current zoom and its reset button.
+  // A page zoom change by the user (pinch, Ctrl+wheel) shows the options panel with the current zoom and its reset button.
+  // A zoom mirrored from the opposite diff preview does not, the panel stays where the user zooms.
   // Re-opening an already open panel is a no-op state update, so pinch frames do not re-render the controls.
   useEffect(() => {
-    return pageZoom.subscribe(() => setOpenPanel("settings"))
+    return pageZoom.subscribe(source => {
+      if (source === "user") setOpenPanel("settings")
+    })
   }, [pageZoom])
 
   useEffect(() => {

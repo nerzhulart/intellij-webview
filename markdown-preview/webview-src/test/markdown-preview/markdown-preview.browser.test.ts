@@ -399,6 +399,60 @@ test("zooms the rendered markdown with Ctrl+wheel and trackpad pinch", async ({ 
   await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2 * 2 ** -0.2) < 0.001)
 })
 
+test("reports user page zoom to the host and applies host page zoom silently", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+  await waitForProgrammaticScrollQuietPeriod(page)
+
+  // A zoom mirrored from the opposite diff preview is applied without a report back and without the options panel.
+  const initialScrolledCalls = await methodCallCount(page, "markdown.preview/previewScrolled")
+  await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__: { page: { callable(id: { namespace: string }): { setPageZoom(params: { zoom: number }): void } } }
+    }).__WVI_MOCK__
+    mock.page.callable({ namespace: "markdown.preview" }).setPageZoom({ zoom: 2 })
+  })
+  await page.waitForFunction(() => document.documentElement.style.getPropertyValue("--wvi-page-zoom") === "2")
+  await waitForAnimationFrames(page, 3)
+  expect(await methodCallCount(page, "markdown.preview/pageZoomChanged") === 0).toBe(true)
+  expect(await methodCallCount(page, "markdown.preview/previewScrolled") === initialScrolledCalls).toBe(true)
+  expect(await floatingPanelOpen(page) === false).toBe(true)
+
+  // A user pinch is reported once per frame with the latest zoom and a growing sequence.
+  const heading = await page.evaluate(() => {
+    window.scrollTo({ top: 0, behavior: "instant" })
+    const box = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    return { clientX: box.left + 20, clientY: box.top + box.height / 2 }
+  })
+  await page.evaluate(({ clientX, clientY }) => {
+    const heading = document.querySelector(".markdownPreview h1")!
+    for (let index = 0; index < 5; index++) {
+      heading.dispatchEvent(new WheelEvent("wheel", { deltaY: -2, ctrlKey: true, clientX, clientY, bubbles: true, cancelable: true }))
+    }
+  }, heading)
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 2 * 2 ** 0.2) < 0.001)
+  await page.waitForFunction(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/pageZoomChanged") ?? []
+    const last = calls[calls.length - 1]?.params as { zoom?: number } | undefined
+    return last?.zoom !== undefined && Math.abs(last.zoom - 2 * 2 ** 0.2) < 0.001
+  })
+  const reports = await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    return mock.calls.byMethod("markdown.preview/pageZoomChanged").map(call => call.params as { zoom: number, sequence: number })
+  })
+  expect(reports.length >= 1 && reports.length < 5).toBe(true)
+  expect(reports.every((report, index) => report.sequence === index)).toBe(true)
+  expect(await floatingPanelOpen(page) === "settings").toBe(true)
+})
+
 test("shows and resets the page zoom in the options panel", async ({ page }) => {
   if (!preview) {
     throw new Error("Markdown preview mock preview server was not started")
@@ -833,6 +887,16 @@ function waitForLateMockUpdates(page: Page): Promise<unknown> {
  */
 function waitForProgrammaticScrollQuietPeriod(page: Page): Promise<unknown> {
   return page.evaluate(() => new Promise(resolve => setTimeout(resolve, 400)))
+}
+
+function waitForAnimationFrames(page: Page, count: number): Promise<unknown> {
+  return page.evaluate(frames => new Promise<void>(resolve => {
+    const next = (remaining: number): void => {
+      if (remaining <= 0) resolve()
+      else requestAnimationFrame(() => next(remaining - 1))
+    }
+    next(frames)
+  }), count)
 }
 
 async function installControlledIdleCallbacks(page: Page): Promise<void> {

@@ -32,10 +32,15 @@ interface MarkdownSelectionChangedParams {
   selection?: MarkdownSourceRange | null
 }
 
+interface MarkdownPageZoomParams {
+  zoom: number
+}
+
 interface MarkdownPreviewPageApi extends WebViewImplementable {
   contentChanged(params: MarkdownContentChangedParams): void
   scrollToLine(params: MarkdownScrollToLineParams): void
   selectionChanged(params: MarkdownSelectionChangedParams): void
+  setPageZoom(params: MarkdownPageZoomParams): void
 }
 
 interface MarkdownPreviewHostApi extends WebViewCallable {
@@ -47,6 +52,12 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   navigatePathLink(params: MarkdownNavigatePathLinkRequest): Promise<void>
   setFontSize(params: MarkdownSetFontSizeRequest): Promise<void>
   previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
+  pageZoomChanged(params: MarkdownPageZoomChangedParams): Promise<void>
+}
+
+interface MarkdownPageZoomChangedParams {
+  zoom: number
+  sequence: number
 }
 
 interface MarkdownOpenLinkParams {
@@ -168,6 +179,9 @@ export default defineWebViewMock(({ host, page, theme }) => {
     },
     async previewScrolled(params) {
       toolbar.log.textContent = JSON.stringify({ kind: "previewScrolled", ...params })
+    },
+    async pageZoomChanged(params) {
+      toolbar.log.textContent = JSON.stringify({ kind: "pageZoomChanged", ...params })
     },
   })
 

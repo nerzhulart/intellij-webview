@@ -13,7 +13,12 @@ import { MarkdownPreviewApp, scrollMarkdownPreviewToLine } from "./MarkdownPrevi
 import { installScrollbarChangeMarkers, refreshScrollbarChangeMarkers, setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { installMarkdownPageZoom } from "./markdownPageZoom"
-import { decorateSourceBlocks, isProgrammaticMarkdownPreviewScroll, topVisibleSourceLine } from "./markdownSourcePositions"
+import {
+  decorateSourceBlocks,
+  isProgrammaticMarkdownPreviewScroll,
+  markProgrammaticMarkdownPreviewScroll,
+  topVisibleSourceLine,
+} from "./markdownSourcePositions"
 import type {
   MarkdownChangedBlockDescriptor,
   MarkdownNavigatePathLinkRequest,
@@ -39,10 +44,15 @@ interface MarkdownScrollToLineParams {
   line: number
 }
 
+interface MarkdownPageZoomParams {
+  zoom: number
+}
+
 interface MarkdownPreviewPageApi extends WebViewImplementable {
   contentChanged(params: MarkdownContentChangedParams): void
   scrollToLine(params: MarkdownScrollToLineParams): void
   selectionChanged(params: MarkdownSelectionChangedParams): void
+  setPageZoom(params: MarkdownPageZoomParams): void
 }
 
 interface MarkdownSelectionChangedParams {
@@ -58,6 +68,12 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   navigatePathLink(params: MarkdownNavigatePathLinkRequest): Promise<void>
   setFontSize(params: MarkdownSetFontSizeRequest): Promise<void>
   previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
+  pageZoomChanged(params: MarkdownPageZoomChangedParams): Promise<void>
+}
+
+interface MarkdownPageZoomChangedParams {
+  zoom: number
+  sequence: number
 }
 
 interface MarkdownPreviewScrolledParams {
@@ -82,6 +98,9 @@ let theme = webViewTheme.current
 let previewSettings = defaultPreviewSettings()
 let reportedScrollLine = -1
 let scheduledScrollReportFrame: number | undefined
+let reportedPageZoom = 1
+let scheduledPageZoomReportFrame: number | undefined
+let pageZoomReportSequence = 0
 
 webView.implement(markdownPreviewPageApiId, {
   contentChanged(params) {
@@ -108,12 +127,21 @@ webView.implement(markdownPreviewPageApiId, {
     selection = params.selection ?? undefined
     setScrollbarChangeMarkers(decorateSourceBlocks(selection, changes))
   },
+  setPageZoom(params) {
+    // The zoom keeps the viewport center in place by scrolling, which must not drive the scroll of the zoom source back.
+    markProgrammaticMarkdownPreviewScroll()
+    pageZoom.setZoom(params.zoom, "host")
+    reportedPageZoom = pageZoom.zoom()
+  },
 })
 
 applyTheme(theme)
 installScrollbarChangeMarkers()
 // Trackpad pinch and Ctrl+wheel magnify the rendered markdown (`.markdownPreviewContent`) without re-layout, not the floating controls.
 const pageZoom = installMarkdownPageZoom()
+pageZoom.subscribe(source => {
+  if (source === "user") schedulePageZoomReport()
+})
 renderPreview("initial")
 window.addEventListener("scroll", scheduleScrollReport, { passive: true })
 webViewTheme.onChanged(nextTheme => {
@@ -163,6 +191,19 @@ function reportScrollPosition(): void {
 
   reportedScrollLine = line
   void markdownPreviewHostApi.previewScrolled({ line })
+}
+
+// A pinch changes the zoom on every frame, so the host gets at most one update per frame with the latest zoom.
+function schedulePageZoomReport(): void {
+  if (scheduledPageZoomReportFrame !== undefined) return
+  scheduledPageZoomReportFrame = window.requestAnimationFrame(() => {
+    scheduledPageZoomReportFrame = undefined
+    const zoom = pageZoom.zoom()
+    if (zoom === reportedPageZoom) return
+
+    reportedPageZoom = zoom
+    void markdownPreviewHostApi.pageZoomChanged({ zoom, sequence: pageZoomReportSequence++ })
+  })
 }
 
 function openMarkdownLink(href: string): void {
