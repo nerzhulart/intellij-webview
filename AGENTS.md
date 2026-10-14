@@ -22,3 +22,11 @@
 - Apply the same rule to related WebView native bridge files under `native/LinuxWebKitGtkBridge` and `native/WinWebView2Bridge`.
 - Prefer `@Language("HTML")` or `@Language("JavaScript")` on a parameter, property, local variable, or helper function when the language applies to the whole value.
 - If an annotation cannot be attached cleanly, put an IntelliLang marker immediately before the literal: `/*language=HTML*/` or `/*language=JavaScript*/`.
+
+## IntelliJ Internal API
+
+- Do not put `@ApiStatus.Internal` (`org.jetbrains.annotations.ApiStatus.Internal`) or `@IntellijInternalApi` on declarations in this repository. JetBrains Marketplace reports such declarations as internal API usages as soon as another jar of the plugin, for example the `jcef` jar, uses them.
+- To hide an implementation detail, use Kotlin `private` or `internal` visibility when it is not used outside its module. Mark a declaration that other modules or jars of the plugin use `@ApiStatus.Experimental`.
+- Avoid IntelliJ Platform symbols marked `@ApiStatus.Internal` or `@IntellijInternalApi`, including classes, methods, constructors, fields, and opt-ins. Prefer a public platform API, an extension point, or a local implementation, even when that takes more code.
+- Use internal platform API only when no public alternative exists and only after JetBrains Marketplace approves the usage. Then add a narrow pattern for the approved symbol to `plugin-verifier-ignored-internal-api.txt` and explain why at the usage site. Never add broad patterns, such as a whole package or the plugin's own `io.github.nerzhulart.webview` declarations.
+- After changing platform API usage, run `:verifyPlugin` or `:markdown-preview:verifyPlugin` for the affected plugin. Do not hide a new internal API usage by suppressing it or by extending the ignore list without Marketplace approval.

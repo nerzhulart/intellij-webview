@@ -25,7 +25,7 @@ import javax.swing.plaf.UIResource
  * @param scope engine scope; the Look and Feel subscription ends with it.
  * @param onChanged applies a changed color, as opaque `0xAARRGGBB`, to the native view.
  */
-@ApiStatus.Internal
+@ApiStatus.Experimental
 class WebViewHostBackground(scope: CoroutineScope, private val onChanged: (argb: Int) -> Unit) {
   /** The current host background as opaque `0xAARRGGBB`. */
   @Volatile
