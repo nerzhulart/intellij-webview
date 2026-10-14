@@ -127,11 +127,11 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
         <button type="button" className="acpMermaidToolbarButton" aria-label="Zoom out diagram" title="Zoom out" onClick={() => zoomBy(1 / ZOOM_BUTTON_FACTOR)}>
           <img src={AllIcons.src("graph/zoomOut.svg")} alt="" draggable={false} />
         </button>
-        <button type="button" className="acpMermaidToolbarButton" aria-label="Reset diagram zoom" title="Reset zoom" onClick={resetZoom}>
-          <img src={AllIcons.src("general/reset.svg")} alt="" draggable={false} />
-        </button>
         <button type="button" className="acpMermaidToolbarButton" aria-label="Zoom in diagram" title="Zoom in" onClick={() => zoomBy(ZOOM_BUTTON_FACTOR)}>
           <img src={AllIcons.src("graph/zoomIn.svg")} alt="" draggable={false} />
+        </button>
+        <button type="button" className="acpMermaidToolbarButton" aria-label="Reset diagram zoom" title="Reset zoom" onClick={resetZoom}>
+          <img src={AllIcons.src("expui/image/actualZoom.svg")} alt="" draggable={false} />
         </button>
       </div>
     </div>

@@ -25,11 +25,11 @@ export function MarkdownZoomToolbar({ targetLabel, className, buttonClassName, o
       <button type="button" className={buttonClass} aria-label={`Zoom out ${normalizedTargetLabel}`} title="Zoom out" onClick={onZoomOut}>
         <img src={AllIcons.src("graph/zoomOut.svg")} alt="" draggable={false} />
       </button>
-      <button type="button" className={buttonClass} aria-label={`Reset ${normalizedTargetLabel} zoom`} title="Reset zoom" onClick={onResetZoom}>
-        <img src={AllIcons.src("general/reset.svg")} alt="" draggable={false} />
-      </button>
       <button type="button" className={buttonClass} aria-label={`Zoom in ${normalizedTargetLabel}`} title="Zoom in" onClick={onZoomIn}>
         <img src={AllIcons.src("graph/zoomIn.svg")} alt="" draggable={false} />
+      </button>
+      <button type="button" className={buttonClass} aria-label={`Reset ${normalizedTargetLabel} zoom`} title="Reset zoom" onClick={onResetZoom}>
+        <img src={AllIcons.src("expui/image/actualZoom.svg")} alt="" draggable={false} />
       </button>
     </div>
   )

@@ -373,6 +373,11 @@ html[data-theme="light"] .markdownPreview {
   background: transparent;
 }
 
+.markdownPreview .markdownFontSizeButton.is-bordered {
+  box-sizing: border-box;
+  border: 1px solid var(--ij-border-strong);
+}
+
 .markdownPreview .markdownFontSizeButton:disabled {
   opacity: 0.45;
   cursor: default;

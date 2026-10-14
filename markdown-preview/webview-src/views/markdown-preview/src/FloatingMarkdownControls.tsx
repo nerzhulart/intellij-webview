@@ -351,20 +351,22 @@ function OptionSliderRow({ id, label, valueText, min, max, step, value, disabled
       />
       <FontSizeButton icon="expui/image/zoomIn.svg" {...increase} />
       <output className="markdownFontSizeValue" htmlFor={id}>{valueText}</output>
-      <FontSizeButton icon="expui/image/actualZoom.svg" {...reset} />
+      <FontSizeButton icon="expui/image/actualZoom.svg" bordered {...reset} />
     </div>
   )
 }
 
 interface FontSizeButtonProps extends OptionButtonAction {
   icon: string
+  /** Draws a permanent outline, like an IntelliJ action button with a border. */
+  bordered?: boolean
 }
 
-function FontSizeButton({ icon, label, disabled, onClick }: FontSizeButtonProps) {
+function FontSizeButton({ icon, bordered = false, label, disabled, onClick }: FontSizeButtonProps) {
   return (
     <button
       type="button"
-      className="markdownFontSizeButton"
+      className={bordered ? "markdownFontSizeButton is-bordered" : "markdownFontSizeButton"}
       title={label}
       aria-label={label}
       disabled={disabled}
