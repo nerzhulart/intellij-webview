@@ -20,6 +20,7 @@ type BoundingBox = {
 }
 
 type Mouse = {
+  click(x: number, y: number): Promise<void>
   down(): Promise<void>
   move(x: number, y: number): Promise<void>
   up(): Promise<void>
@@ -428,6 +429,48 @@ test("shows and resets the page zoom in the options panel", async ({ page }) => 
   expect(await pageZoom(page) === 1).toBe(true)
 })
 
+test("shows the options panel on page zoom and closes it on an outside click", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+  expect(await floatingPanelOpen(page) === false).toBe(true)
+
+  // A pinch shows the options panel with the current zoom.
+  const heading = await page.evaluate(() => {
+    const box = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    return { clientX: box.left + 20, clientY: box.top + box.height / 2 }
+  })
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, ...heading, bubbles: true, cancelable: true })
+  await expect(page.getByRole("button", { name: "Reset page zoom" })).toBeVisible()
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "120%")
+  expect(await page.evaluate(() => document.querySelector("[aria-label='Show preview options']")?.getAttribute("aria-expanded") === "true")).toBe(true)
+
+  // Clicks inside the panel keep it open.
+  await page.getByRole("button", { name: "Zoom in page" }).click()
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "144%")
+  await page.locator(".markdownFontSettingsPanel .markdownFloatingPanelTitle").click()
+  expect(await floatingPanelOpen(page) === "settings").toBe(true)
+
+  // A click anywhere outside the panel closes it and keeps the zoom.
+  await page.mouse.click(heading.clientX, heading.clientY)
+  await page.waitForFunction(() => document.querySelector(".markdownFloatingPanel") == null)
+  expect(Math.abs(await pageZoom(page) - 1.44) < 0.001).toBe(true)
+
+  // The rail button still toggles the panel instead of re-opening it right after the outside-click handling.
+  await page.getByRole("button", { name: "Show preview options" }).click()
+  expect(await floatingPanelOpen(page) === "settings").toBe(true)
+  await page.getByRole("button", { name: "Show preview options" }).click()
+  expect(await floatingPanelOpen(page) === false).toBe(true)
+
+  // The table of contents closes on an outside click too.
+  await page.getByRole("button", { name: "Show table of contents" }).click()
+  expect(await floatingPanelOpen(page) === "toc").toBe(true)
+  await page.mouse.click(heading.clientX, heading.clientY)
+  await page.waitForFunction(() => document.querySelector(".markdownFloatingPanel") == null)
+})
+
 test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ page }) => {
   if (!preview) {
     throw new Error("Markdown preview mock preview server was not started")
@@ -681,6 +724,14 @@ function optionRowsAreSingleLine(page: Page): Promise<boolean> {
       })
       return tops.every(top => Math.abs(top - tops[0]) < 2) && row.getBoundingClientRect().height <= 28
     })
+  })
+}
+
+function floatingPanelOpen(page: Page): Promise<"settings" | "toc" | false> {
+  return page.evaluate(() => {
+    if (document.querySelector(".markdownFontSettingsPanel")) return "settings"
+    if (document.querySelector(".markdownTocPanel")) return "toc"
+    return false
   })
 }
 

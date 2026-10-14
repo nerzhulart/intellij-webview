@@ -1,7 +1,7 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 import { addWebViewFocusLeaveListener, AllIcons } from "@nerzhulart/intellij-webview-sdk"
-import { useEffect, useMemo, useState, useSyncExternalStore, type ChangeEvent } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent } from "react"
 import type { MarkdownPageZoom } from "./markdownPageZoom"
 import type { MarkdownPreviewSettings } from "./markdownPreviewTypes"
 import { MARKDOWN_ZOOM_BUTTON_FACTOR } from "./MarkdownZoomControls"
@@ -31,6 +31,8 @@ export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFo
   const [entries, setEntries] = useState<TableOfContentsEntry[]>([])
   const [openPanel, setOpenPanel] = useState<FloatingPanel | undefined>()
   const [activeId, setActiveId] = useState<string | undefined>()
+  const railRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
   const hasTableOfContents = entries.length >= 2
   const fontSizeOptions = useMemo(() => normalizedFontSizeOptions(settings), [settings])
   const currentFontSizeIndex = fontSizeIndex(settings.effectiveFontSize, fontSizeOptions)
@@ -82,6 +84,27 @@ export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFo
     return addWebViewFocusLeaveListener(() => setOpenPanel(undefined))
   }, [])
 
+  // Any page zoom change (pinch, Ctrl+wheel) shows the options panel with the current zoom and its reset button.
+  // Re-opening an already open panel is a no-op state update, so pinch frames do not re-render the controls.
+  useEffect(() => {
+    return pageZoom.subscribe(() => setOpenPanel("settings"))
+  }, [pageZoom])
+
+  useEffect(() => {
+    if (openPanel === undefined) return
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Node && (panelRef.current?.contains(target) || railRef.current?.contains(target))) return
+      // Dragging the page scrollbar keeps the panel open.
+      const root = document.documentElement
+      if (event.clientX >= root.clientWidth || event.clientY >= root.clientHeight) return
+      setOpenPanel(undefined)
+    }
+    document.addEventListener("pointerdown", handlePointerDown, true)
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true)
+  }, [openPanel])
+
   useEffect(() => {
     if (openPanel === undefined) return
 
@@ -124,7 +147,7 @@ export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFo
 
   return (
     <>
-      <div className="markdownFloatingRail" aria-label="Markdown preview controls">
+      <div ref={railRef} className="markdownFloatingRail" aria-label="Markdown preview controls">
         {hasTableOfContents && (
           <button
             type="button"
@@ -150,6 +173,7 @@ export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFo
       </div>
       {openPanel === "toc" && hasTableOfContents && (
         <nav
+          ref={panelRef}
           className="markdownFloatingPanel markdownTocPanel"
           aria-label="Table of contents"
         >
@@ -174,6 +198,7 @@ export function FloatingMarkdownControls({ markdown, settings, pageZoom, onSetFo
       )}
       {openPanel === "settings" && (
         <section
+          ref={panelRef}
           className="markdownFloatingPanel markdownFontSettingsPanel"
           aria-label="Options"
         >
