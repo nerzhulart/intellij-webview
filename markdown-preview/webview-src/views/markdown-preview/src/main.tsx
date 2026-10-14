@@ -4,7 +4,6 @@ import { createRoot } from "react-dom/client"
 import {
   apiId,
   getPerfLogger,
-  installWebViewPageZoom,
   webView,
   webViewTheme,
   type WebViewCallable,
@@ -13,6 +12,7 @@ import {
 import { MarkdownPreviewApp, scrollMarkdownPreviewToLine } from "./MarkdownPreviewApp"
 import { installScrollbarChangeMarkers, refreshScrollbarChangeMarkers, setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
+import { installMarkdownPageZoom } from "./markdownPageZoom"
 import { decorateSourceBlocks, isProgrammaticMarkdownPreviewScroll, topVisibleSourceLine } from "./markdownSourcePositions"
 import type {
   MarkdownChangedBlockDescriptor,
@@ -113,7 +113,7 @@ webView.implement(markdownPreviewPageApiId, {
 applyTheme(theme)
 installScrollbarChangeMarkers()
 // Trackpad pinch and Ctrl+wheel magnify the rendered markdown (`.markdownPreviewContent`) without re-layout, not the floating controls.
-installWebViewPageZoom({ minZoom: 1, maxZoom: 4 })
+const pageZoom = installMarkdownPageZoom()
 renderPreview("initial")
 window.addEventListener("scroll", scheduleScrollReport, { passive: true })
 webViewTheme.onChanged(nextTheme => {
@@ -132,6 +132,7 @@ function renderPreview(reason = "render", startedAtMs = performance.now(), detai
       changes={changes}
       selection={selection}
       settings={previewSettings}
+      pageZoom={pageZoom}
       theme={theme}
       onOpenLink={openMarkdownLink}
       onResolveRunCommands={resolveMarkdownRunCommands}

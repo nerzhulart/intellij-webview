@@ -167,8 +167,8 @@ test("changes preview font size from floating settings", async ({ page }) => {
   await page.goto(preview.url)
   await page.waitForSelector(".markdownFloatingRail")
 
-  await expect(page.getByRole("button", { name: "Show font size settings" })).toBeVisible()
-  await page.getByRole("button", { name: "Show font size settings" }).click()
+  await expect(page.getByRole("button", { name: "Show preview options" })).toBeVisible()
+  await page.getByRole("button", { name: "Show preview options" }).click()
   await expect(page.getByRole("button", { name: "Increase font size" })).toBeVisible()
   expect(await fontSettingsIconsLoaded(page)).toBe(true)
 
@@ -310,7 +310,7 @@ test("keeps font settings available without table of contents", async ({ page })
 
   const railState = await page.evaluate(() => ({
     tableOfContentsButtons: document.querySelectorAll('[aria-label="Show table of contents"]').length,
-    fontSettingsButtons: document.querySelectorAll('[aria-label="Show font size settings"]').length,
+    fontSettingsButtons: document.querySelectorAll('[aria-label="Show preview options"]').length,
   }))
 
   expect(railState.tableOfContentsButtons === 0).toBe(true)
@@ -396,6 +396,36 @@ test("zooms the rendered markdown with Ctrl+wheel and trackpad pinch", async ({ 
     }
   }, { clientX: initial.headingX, clientY: initial.headingCenterY })
   await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2 * 2 ** -0.2) < 0.001)
+})
+
+test("shows and resets the page zoom in the options panel", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreview h1")
+
+  await page.getByRole("button", { name: "Show preview options" }).click()
+  await expect(page.getByRole("button", { name: "Zoom in page" })).toBeVisible()
+  expect(await optionValues(page) === "13 px|100%").toBe(true)
+  expect(await optionRowsAreSingleLine(page)).toBe(true)
+
+  await page.getByRole("button", { name: "Zoom in page" }).click()
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2) < 0.001)
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "120%")
+
+  // A pinch while the panel is open updates the shown zoom.
+  const heading = await page.evaluate(() => {
+    const box = document.querySelector<HTMLElement>(".markdownPreview h1")!.getBoundingClientRect()
+    return { clientX: box.left + 20, clientY: box.top + box.height / 2 }
+  })
+  await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, ...heading, bubbles: true, cancelable: true })
+  await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "144%")
+
+  await page.getByRole("button", { name: "Reset page zoom" }).click()
+  await page.waitForFunction(() => document.documentElement.style.getPropertyValue("--wvi-page-zoom") === "")
+  expect(await optionValues(page) === "13 px|100%").toBe(true)
+  expect(await pageZoom(page) === 1).toBe(true)
 })
 
 test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ page }) => {
@@ -634,6 +664,24 @@ test("updates after KaTeX rendering without React DOM commit errors", async ({ p
 
 function mermaidTransform(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")
+}
+
+function optionValues(page: Page): Promise<string> {
+  return page.evaluate(() => Array.from(document.querySelectorAll(".markdownFontSizeValue")).map(value => value.textContent ?? "").join("|"))
+}
+
+/** Every option keeps its label, buttons, slider, and value on one line. */
+function optionRowsAreSingleLine(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(".markdownFontSetting"))
+    return rows.length === 2 && rows.every(row => {
+      const tops = Array.from(row.children).map(child => {
+        const box = child.getBoundingClientRect()
+        return box.top + box.height / 2
+      })
+      return tops.every(top => Math.abs(top - tops[0]) < 2) && row.getBoundingClientRect().height <= 28
+    })
+  })
 }
 
 function pageZoom(page: Page): Promise<number> {

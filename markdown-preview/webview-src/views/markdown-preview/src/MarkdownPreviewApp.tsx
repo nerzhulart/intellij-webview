@@ -12,6 +12,7 @@ import { FloatingMarkdownControls } from "./FloatingMarkdownControls"
 import { setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { codeNodeFromPreNode, type HastNode } from "./markdownHastUtils"
+import type { MarkdownPageZoom } from "./markdownPageZoom"
 import { collectPathLinkCandidates, renderPathLinks } from "./markdownPathLinks"
 import type {
   MarkdownChangedBlockDescriptor,
@@ -62,6 +63,7 @@ interface MarkdownPreviewAppProps {
   changes: MarkdownChangedBlockDescriptor[]
   selection: MarkdownSourceRange | undefined
   settings: MarkdownPreviewSettings
+  pageZoom: MarkdownPageZoom
   theme: "light" | "dark"
   onOpenLink: (href: string) => void
   onResolveRunCommands: (request: MarkdownResolveRunCommandsRequest) => Promise<MarkdownResolvedRunCommandsResponse>
@@ -102,6 +104,7 @@ export function MarkdownPreviewApp({
   changes,
   selection,
   settings,
+  pageZoom,
   theme,
   onOpenLink,
   onResolveRunCommands,
@@ -364,7 +367,7 @@ export function MarkdownPreviewApp({
           {markdown}
         </ReactMarkdown>
       </div>
-      <FloatingMarkdownControls markdown={markdown} settings={settings} onSetFontSize={onSetFontSize} />
+      <FloatingMarkdownControls markdown={markdown} settings={settings} pageZoom={pageZoom} onSetFontSize={onSetFontSize} />
     </>
   )
 }
