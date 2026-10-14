@@ -156,6 +156,8 @@ Until standalone Kotlin tests are added:
 
 The manually triggered **Build and publish release** workflow takes a release version and produces the three plugin ZIPs plus the matching SDK and testkit npm tarballs. It also installs those tarballs in a clean fixture and verifies their public exports, Vite build, and mock preview. As soon as the build job finishes, the informational **Verify Runtime plugin** and **Verify Markdown plugin** jobs run `verifyPlugin` on the built ZIPs in parallel with publishing; their failures do not fail the workflow. The publish job then releases the same artifacts to the GitHub Release, npm, and JetBrains Marketplace. See [Publish the WebView npm Packages](Publish-NPM-Packages.md) for credentials, releases, and retries.
 
+The **Gradle tests** workflow also runs the verifier on every pull request: the **Verify Runtime plugin** and **Verify Markdown plugin** jobs run `verifyPlugin` on Linux in parallel with the test matrix. Without `-PpluginArchiveFile`, the task builds the plugin ZIP itself with the default `pluginVersion`. These jobs are informational as well, and their reports are uploaded as `plugin-verifier-reports-<name>` artifacts.
+
 To run the verifier locally against the targeted IntelliJ Platform:
 
 ```shell
