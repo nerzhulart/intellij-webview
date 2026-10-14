@@ -3,3 +3,5 @@
 # internal-api-usages.txt report. :verifyPlugin fails on every internal API usage not matched here.
 ^Internal \w+ com\.intellij\.ui\.HwFacadeHelper\b
 ^Internal \w+ com\.intellij\.ui\.HwFacadeProvider\b
+# The plugin's own @ApiStatus.Internal declarations used across its modules (for example, from the jcef jar).
+^Internal \w+ io\.github\.nerzhulart\.webview\.
