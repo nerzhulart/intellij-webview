@@ -12,6 +12,7 @@ import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
 import io.github.nerzhulart.webview.impl.WebViewEditCommand
+import io.github.nerzhulart.webview.impl.WebViewHostBackground
 import io.github.nerzhulart.webview.impl.WebViewJsMessageReceiver
 import io.github.nerzhulart.webview.impl.WebViewLogger
 import io.github.nerzhulart.webview.impl.WebViewShortcutRouter
@@ -453,6 +454,17 @@ internal class MacWebViewEngine(
   /** Accessed only on the macOS main thread. */
   private var attachment: Attachment? = null
 
+  /**
+   * Paints the clipping container behind the transparent WKWebView, so that a frame without page
+   * content is indistinguishable from the host panel in any theme.
+   */
+  private val hostBackground = WebViewHostBackground(scope) { argb ->
+    // The main thread runs these in order, so the last change wins.
+    scope.launch(MacMainThreadDispatcher) {
+      attachment?.let { WKWebViewBridge.setContainerBackgroundColor(it.clipView, argb) }
+    }
+  }
+
   /** Accessed only on the macOS main thread. */
   private var lastAppliedLayout: MacNativeLayout? = null
 
@@ -487,6 +499,7 @@ internal class MacWebViewEngine(
     // attach/detach lifecycle. Both callbacks are invalidated by this attachment generation.
     setModifierKeyHandler { event -> postModifierKeyEvent(host, event) }
     setNativeMousePressedHandler { event -> postNativeMousePressed(host, generation, event) }
+    hostBackground.listenTo(host)
 
     scope.launch(MacMainThreadDispatcher) {
       if (!awaitReadyForAttachment() || !isCurrentAttachment(generation)) return@launch
@@ -496,6 +509,7 @@ internal class MacWebViewEngine(
         WKWebViewBridge.releaseClippingContainer(clipView)
         return@launch
       }
+      WKWebViewBridge.setContainerBackgroundColor(clipView, hostBackground.argb)
 
       val webViewAttached = attachToParent(clipView)
       if (!webViewAttached || !isCurrentAttachment(generation)) {
@@ -526,6 +540,7 @@ internal class MacWebViewEngine(
     hostHidden = true
     setModifierKeyHandler(null)
     setNativeMousePressedHandler(null)
+    hostBackground.stopListening()
     scope.launch(MacMainThreadDispatcher) {
       releaseAttachment()
     }

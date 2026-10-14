@@ -10,6 +10,7 @@ import io.github.nerzhulart.webview.api.WebViewAssetRoot
 import io.github.nerzhulart.webview.impl.SwingWebViewHostPanel
 import io.github.nerzhulart.webview.impl.WebViewAssetResolver
 import io.github.nerzhulart.webview.impl.WebViewAssetResponse
+import io.github.nerzhulart.webview.impl.WebViewHostBackground
 import io.github.nerzhulart.webview.impl.WEBVIEW_CONSOLE_NOTIFICATION_METHOD
 import io.github.nerzhulart.webview.impl.resolveWebViewAssetUrl
 import io.github.nerzhulart.webview.impl.webViewAssetCustomSchemeUrl
@@ -37,6 +38,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.annotations.ApiStatus
 import java.awt.BorderLayout
 import java.awt.Canvas
+import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.nio.file.Files
@@ -75,10 +77,14 @@ internal class WinWebViewEngine(
     init {
       // The AWT peer erases with the component background; the default near-white brush is a
       // major part of the perceived flash while the native controller has no frame to present.
-      background = java.awt.Color(HOST_BACKGROUND_RGB)
+      @Suppress("UseJBColor") // A resolved snapshot: the native brush cannot follow a JBColor anyway.
+      background = Color(WebViewHostBackground.opaqueArgb(WebViewHostBackground.resolveHostBackground(null)))
     }
 
     override fun addNotify() {
+      // The peer brush is taken from the component background at creation, so the theme the host
+      // has now has to be on the Canvas before the peer exists.
+      refreshHostBackground()
       // AWT creates the peer with whatever bounds the component carries over from its previous
       // parent, and the peer is a child of the frame HWND, so it appears at (0, 0) of the client
       // area in full size until Swing lays it out - a white rectangle over the whole UI for about
@@ -168,6 +174,17 @@ internal class WinWebViewEngine(
 
   @Suppress("RAW_SCOPE_CREATION") // Intentional: engine manages its own child scope lifecycle with close()
   private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
+
+  /**
+   * Shared by the Canvas peer brush and the controller default background, so that a frame without
+   * page content is indistinguishable from the host behind it. [performCreate] and crash recovery
+   * read its current value. A detached host is still the parent of [component], so the Canvas peer
+   * recreated on reattach starts with the right color too.
+   */
+  private val hostBackground = WebViewHostBackground(scope) { argb ->
+    syncCanvasBackground(argb)
+    pushControllerBackground()
+  }
 
   private val handleReady = AtomicReference(CompletableDeferred<Long>())
   private val nextEvalId = AtomicLong(0)
@@ -563,7 +580,7 @@ internal class WinWebViewEngine(
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       val generation = hostGeneration.incrementAndGet()
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", diagnosticDetails()) {
-        bridge.create(desired.parentHwnd, generation, userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
+        bridge.create(desired.parentHwnd, generation, userDataDir().toString(), documentStartScript, hostBackground.argb, callbacks)
       }
       // The controller is born on this parent, so only the geometry part of the snapshot is left.
       lastApplied = desired
@@ -736,7 +753,7 @@ internal class WinWebViewEngine(
       LOG.webViewLifecycle("win-webview2-recovery", "recreating after $event${diagnosticContext()}")
       nativeCreateStartedAt.set(TimeSource.Monotonic.markNow())
       nativeHandle = LOG.traceWebViewPerf("win-webview2.bridge.create.call", "recovery=true, ${diagnosticDetails()}") {
-        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, HOST_BACKGROUND_ARGB, callbacks)
+        bridge.create(parentHwnd, hostGeneration.get(), userDataDir().toString(), documentStartScript, hostBackground.argb, callbacks)
       }
       lastApplied = placement
       placement?.let {
@@ -1062,13 +1079,16 @@ internal class WinWebViewEngine(
     ) {
       setUnderlyingComponent(host)
       setFocusGainedHandler { hostPanel.nativeWebViewFocusGained() }
+      // Before the snapshot: the first one creates the controller, and it is born with this color.
+      hostBackground.listenTo(host)
       syncHostState(host)
       true
     }
   }
 
   override fun detach() {
-    if (underlyingComponent == null) return
+    val host = underlyingComponent ?: return
+    hostBackground.stopListening()
     // No hide here: the Canvas peer disposal has already parked the controller, and parking hides
     // it natively.
     setUnderlyingComponent(null)
@@ -1142,12 +1162,38 @@ internal class WinWebViewEngine(
     syncHostState(host)
   }
 
+  /**
+   * Re-reads the host panel background; a changed one reaches the Canvas brush and the controller.
+   * The peer is created before the first [attach], when the host is already the parent of [component].
+   */
+  private fun refreshHostBackground() {
+    syncCanvasBackground(hostBackground.refresh(underlyingComponent ?: component.parent))
+  }
+
+  private fun syncCanvasBackground(argb: Int) {
+    if (canvas.background?.rgb == argb) return
+    @Suppress("UseJBColor") // A resolved snapshot: the native brush cannot follow a JBColor anyway.
+    canvas.background = Color(argb)
+  }
+
+  private fun pushControllerBackground() {
+    invokeOnWebView {
+      val handle = nativeHandle
+      val currentState = state.get()
+      // A controller still being created takes the color from its native view; one that does not
+      // exist yet gets the current color through `create`.
+      if (handle == 0L || (currentState != State.Creating && currentState != State.Active)) return@invokeOnWebView
+      try {
+        bridge.setBackgroundColor(handle, hostBackground.argb)
+      }
+      catch (e: IllegalStateException) {
+        LOG.trace("Failed to apply WebView2 background${diagnosticContext()}")
+        LOG.trace(e)
+      }
+    }
+  }
 
   private companion object {
-    /** Shared by the Canvas peer brush and the controller default background, so that a frame
-     * without page content is indistinguishable from the host behind it. */
-    private const val HOST_BACKGROUND_RGB = 0x1E1F22
-    private const val HOST_BACKGROUND_ARGB = 0xFF000000.toInt() or HOST_BACKGROUND_RGB
     private const val NATIVE_DIAGNOSTIC_WARN = 3
     private const val NATIVE_DIAGNOSTIC_ERROR = 4
     private const val MAX_RECOVERY_ATTEMPTS = 2

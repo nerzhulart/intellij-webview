@@ -45,7 +45,7 @@ private class WinWebView2BridgePluginAnchor
  */
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v18"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v19"
 
   init {
     if (SystemInfo.isWindows) {
@@ -97,6 +97,9 @@ internal object WinWebView2Bridge {
 
   @JvmStatic
   private external fun clearFocusNative(handle: Long)
+
+  @JvmStatic
+  private external fun setBackgroundColorNative(handle: Long, backgroundColor: Int)
 
   @JvmStatic
   private external fun loadUrlNative(handle: Long, url: String)
@@ -193,6 +196,14 @@ internal object WinWebView2Bridge {
    * @param handle view to take the focus away from.
    */
   fun clearFocus(handle: Long) = clearFocusNative(handle)
+
+  /**
+   * Queues a new default controller background. See [WinWebView2BridgeApi.setBackgroundColor].
+   *
+   * @param handle view to repaint.
+   * @param backgroundColor default controller background as `0xAARRGGBB`.
+   */
+  fun setBackgroundColor(handle: Long, backgroundColor: Int) = setBackgroundColorNative(handle, backgroundColor)
 
   /**
    * Queues a navigation; the outcome arrives only as a diagnostic. See [WinWebView2BridgeApi.loadUrl].
@@ -536,6 +547,16 @@ internal interface WinWebView2BridgeApi {
   fun clearFocus(handle: Long)
 
   /**
+   * Replaces the default controller background given to [create], so it follows the host when the
+   * IDE theme changes. The native view keeps the color, so a controller that is still being created
+   * starts with it instead of the one passed to [create].
+   *
+   * @param handle view whose controller is repainted.
+   * @param backgroundColor the new background as `0xAARRGGBB`, kept equal to the Canvas brush.
+   */
+  fun setBackgroundColor(handle: Long, backgroundColor: Int)
+
+  /**
    * Starts a navigation; how it ended arrives as a navigation diagnostic, not as a return value.
    *
    * @param handle view to navigate.
@@ -630,6 +651,7 @@ internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
     WinWebView2Bridge.parkBeforePeerDispose(handle, hostHwnd, generation)
   override fun focus(handle: Long) = WinWebView2Bridge.focus(handle)
   override fun clearFocus(handle: Long) = WinWebView2Bridge.clearFocus(handle)
+  override fun setBackgroundColor(handle: Long, backgroundColor: Int) = WinWebView2Bridge.setBackgroundColor(handle, backgroundColor)
   override fun loadUrl(handle: Long, url: String) = WinWebView2Bridge.loadUrl(handle, url)
   override fun setVirtualHostNameToFolderMapping(handle: Long, hostName: String, folderPath: String) =
     WinWebView2Bridge.setVirtualHostNameToFolderMapping(handle, hostName, folderPath)

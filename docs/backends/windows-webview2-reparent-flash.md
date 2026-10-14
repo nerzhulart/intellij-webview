@@ -35,9 +35,22 @@ rectangles:
    Swing content.
 
 Neither is painted by Swing: `SwingWebViewHostPanel` and the engine wrapper are `isOpaque = false`,
-and the `Canvas` peer plus the controller default background are both set to `#1E1F22`. Both are the
-freshly created AWT `Canvas` peer before anything has painted into it - AWT creates the HWND first
+and the `Canvas` peer plus the controller default background are both set to the same color. Both are
+the freshly created AWT `Canvas` peer before anything has painted into it - AWT creates the HWND first
 and lays it out afterwards, and the browser simply rides along inside it.
+
+That color used to be a hard-coded `#1E1F22`, which turned the white flash of a dark theme into a
+dark flash of a light one. It is now the background of the host panel (`SwingWebViewHostPanel`): an
+explicitly set background is used as is, a Look and Feel default resolves to the current
+`Panel.background`. The shared `WebViewHostBackground` re-reads it on attach, on a `background`
+change of the host and on `LafManagerListener` - `WinWebViewEngine` also on every Canvas
+`addNotify` - and the engine pushes a changed value to the Canvas brush and - through
+`setBackgroundColor` - to the live controller, so a theme switch needs no controller recreation.
+
+The other engines follow the same host color: on macOS the `WKWebView` stops drawing its own white
+background (`_setDrawsBackground:`) and the clipping container behind it is painted with the host
+color; JCEF starts from a placeholder page with the host background instead of `about:blank`, which
+Chromium paints white, and its browser component follows the host too.
 
 ## Actual cause: the recreated AWT peer, not WebView2
 

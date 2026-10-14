@@ -23,12 +23,17 @@ internal fun webViewLogTimestamp(millis: Long = System.currentTimeMillis()): Str
  * empty window surface over dark UI - dark content replacing a dark background changes a lot of
  * pixels without ever being visible as a flash, and vice versa.
  *
+ * Brightness only describes a flash over dark UI. With [expectedRgb] the recorder also reports how
+ * much of a frame is far from that color, which catches a dark frame over light UI just as well -
+ * the region is expected to show nothing but the host background and a page painted with it.
+ *
  * Frames crossing either threshold are written as PNGs; timestamps use the idea.log format so they
  * can be lined up with the native `geom.*` diagnostics.
  */
 internal class WebViewFlashRecorder(
   private val screenRegion: Rectangle,
   private val reportName: String = "run-" + System.currentTimeMillis(),
+  private val expectedRgb: Int? = null,
 ) {
   private val robot = Robot()
   private val outputDir: Path = Path.of("build", "reports", "webview-flash", reportName)
@@ -48,6 +53,11 @@ internal class WebViewFlashRecorder(
   var maxBrightFraction: Double = 0.0
     private set
 
+  /** Largest share of a frame far from [expectedRgb]; stays `0` without it. */
+  @Volatile
+  var maxOffColorFraction: Double = 0.0
+    private set
+
   fun start() {
     Files.createDirectories(outputDir)
     thread.start()
@@ -60,7 +70,9 @@ internal class WebViewFlashRecorder(
       append(
         "[flash-recorder] $reportName samples=$samples" +
           ", maxChangedFraction=${"%.2f".format(maxChangedFraction)}" +
-          ", maxBrightFraction=${"%.2f".format(maxBrightFraction)}, dir=$outputDir\n"
+          ", maxBrightFraction=${"%.2f".format(maxBrightFraction)}" +
+          (if (expectedRgb != null) ", maxOffColorFraction=${"%.2f".format(maxOffColorFraction)}" else "") +
+          ", dir=$outputDir\n"
       )
       append(events)
     }
@@ -82,11 +94,22 @@ internal class WebViewFlashRecorder(
       if (fraction > maxChangedFraction) maxChangedFraction = fraction
       val bright = brightFraction(image)
       if (bright > maxBrightFraction) maxBrightFraction = bright
-      if (bright >= BRIGHT_THRESHOLD && savedImages < MAX_SAVED_IMAGES) {
+      // Over light UI every frame is bright; the off-color check below is the one that means a flash.
+      if (expectedRgb == null && bright >= BRIGHT_THRESHOLD && savedImages < MAX_SAVED_IMAGES) {
         val brightFile = outputDir.resolve("${timestampForFileName(now)}-bright.png")
         ImageIO.write(image, "png", brightFile.toFile())
         savedImages++
         events.append("[flash-recorder] BRIGHT FRAME fraction=${"%.2f".format(bright)} at ${webViewLogTimestamp(now)} -> ${brightFile.fileName}\n")
+      }
+      if (expectedRgb != null) {
+        val offColor = offColorFraction(image, expectedRgb)
+        if (offColor > maxOffColorFraction) maxOffColorFraction = offColor
+        if (offColor >= OFF_COLOR_THRESHOLD && savedImages < MAX_SAVED_IMAGES) {
+          val offColorFile = outputDir.resolve("${timestampForFileName(now)}-off-color.png")
+          ImageIO.write(image, "png", offColorFile.toFile())
+          savedImages++
+          events.append("[flash-recorder] OFF-COLOR FRAME fraction=${"%.2f".format(offColor)} at ${webViewLogTimestamp(now)} -> ${offColorFile.fileName}\n")
+        }
       }
       if (fraction >= BIG_CHANGE_THRESHOLD && savedImages < MAX_SAVED_IMAGES) {
         val stamp = timestampForFileName(now)
@@ -109,10 +132,7 @@ internal class WebViewFlashRecorder(
       while (x < width) {
         val pa = a.getRGB(x, y)
         val pb = b.getRGB(x, y)
-        val delta = kotlin.math.abs((pa ushr 16 and 0xFF) - (pb ushr 16 and 0xFF)) +
-          kotlin.math.abs((pa ushr 8 and 0xFF) - (pb ushr 8 and 0xFF)) +
-          kotlin.math.abs((pa and 0xFF) - (pb and 0xFF))
-        if (delta > 60) changed++
+        if (colorDistance(pa, pb) > 60) changed++
         total++
         x += SAMPLE_STEP
       }
@@ -145,10 +165,34 @@ internal class WebViewFlashRecorder(
       .format(DateTimeFormatter.ofPattern("HH-mm-ss-SSS"))
   }
 
-  private companion object {
+  companion object {
+    /** Share of sampled pixels that a viewer tells apart from [rgb]. */
+    fun offColorFraction(image: BufferedImage, rgb: Int): Double {
+      var off = 0
+      var total = 0
+      var y = 0
+      while (y < image.height) {
+        var x = 0
+        while (x < image.width) {
+          if (colorDistance(image.getRGB(x, y), rgb) > 60) off++
+          total++
+          x += SAMPLE_STEP
+        }
+        y += SAMPLE_STEP
+      }
+      return if (total == 0) 0.0 else off.toDouble() / total
+    }
+
+    fun colorDistance(a: Int, b: Int): Int {
+      return kotlin.math.abs((a ushr 16 and 0xFF) - (b ushr 16 and 0xFF)) +
+        kotlin.math.abs((a ushr 8 and 0xFF) - (b ushr 8 and 0xFF)) +
+        kotlin.math.abs((a and 0xFF) - (b and 0xFF))
+    }
+
     private const val SAMPLE_STEP = 8
     private const val BIG_CHANGE_THRESHOLD = 0.30
     private const val BRIGHT_THRESHOLD = 0.10
+    private const val OFF_COLOR_THRESHOLD = 0.10
     private const val MAX_SAVED_IMAGES = 40
   }
 }

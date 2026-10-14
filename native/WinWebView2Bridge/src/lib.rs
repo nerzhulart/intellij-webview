@@ -44,7 +44,7 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v18";
+const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v19";
 const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
 /// Sent to the holder window to drain the command queue on AWT-Windows synchronously.
 const WM_AWT_WEBVIEW_BARRIER: u32 = WM_APP + 0x35B;
@@ -116,6 +116,12 @@ enum NativeCommand {
     ClearFocus {
         handle: jlong,
     },
+    /// The host background changed - typically with the IDE theme - so the controller has to
+    /// show the new one while it has no page frame, and a recreated controller has to start with it.
+    SetBackgroundColor {
+        handle: jlong,
+        background_color: u32,
+    },
     MousePressed {
         handle: jlong,
         button: jint,
@@ -165,6 +171,7 @@ impl NativeCommand {
             | Self::Park { handle, .. }
             | Self::Focus { handle }
             | Self::ClearFocus { handle }
+            | Self::SetBackgroundColor { handle, .. }
             | Self::MousePressed { handle, .. }
             | Self::LoadUrl { handle, .. }
             | Self::SetVirtualHostMapping { handle, .. }
@@ -1173,6 +1180,22 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
 }
 
 #[no_mangle]
+pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_setBackgroundColorNative(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    handle: jlong,
+    background_color: jint,
+) {
+    enqueue_or_throw(
+        &mut env,
+        NativeCommand::SetBackgroundColor {
+            handle,
+            background_color: background_color as u32,
+        },
+    );
+}
+
+#[no_mangle]
 pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView2Bridge_loadUrlNative(
     mut env: JNIEnv<'_>,
     _class: JClass<'_>,
@@ -1660,6 +1683,24 @@ fn execute_native_command(command: NativeCommand) {
                         let _ = SetFocus(Some(root));
                     }
                 }
+            }
+            Ok(())
+        }),
+        NativeCommand::SetBackgroundColor {
+            handle,
+            background_color,
+        } => with_native(handle, |native| {
+            // Stored first, so a controller that is still being created picks the color up in
+            // `finish_create`, and one that already exists gets it right away.
+            let controller = {
+                let mut view = native
+                    .try_borrow_mut()
+                    .map_err(|_| "WebView2 state is busy while setting background".to_string())?;
+                view.background_color = background_color;
+                view.controller.clone()
+            };
+            if let Some(controller) = controller {
+                apply_default_background_color(&native, &controller);
             }
             Ok(())
         }),
