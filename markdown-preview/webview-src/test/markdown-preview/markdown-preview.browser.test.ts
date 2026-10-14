@@ -174,7 +174,7 @@ test("changes preview font size from floating settings", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Show font size settings" })).toBeVisible()
   await page.getByRole("button", { name: "Show font size settings" }).click()
   await expect(page.getByRole("button", { name: "Increase font size" })).toBeVisible()
-  expect(await fontSettingsIconsLoaded(page)).toBe(true)
+  await waitForFontSettingsIcons(page)
 
   const initialCalls = await setFontSizeCallCount(page)
   await page.getByRole("button", { name: "Increase font size" }).click()
@@ -360,7 +360,7 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
   await page.waitForSelector(".mermaidBlock svg")
 
   await expect(page.getByRole("button", { name: "Zoom in diagram" })).toBeVisible()
-  expect(await mermaidToolbarIconsLoaded(page)).toBe(true)
+  await waitForMermaidToolbarIcons(page)
   expect(await mermaidToolbarButtonsUseDefaultCursor(page)).toBe(true)
   expect(await mermaidHasNoRunGutter(page)).toBe(true)
   const resizeEnabled = await page.evaluate(() => {
@@ -405,7 +405,7 @@ test("zooms standalone image blocks without changing inline or linked images", a
   await page.waitForFunction(() => document.querySelector<HTMLImageElement>(".markdownImageViewport img")?.naturalWidth === 960)
 
   await expect(page.getByRole("button", { name: "Zoom in image" })).toBeVisible()
-  expect(await markdownImageToolbarIconsLoaded(page)).toBe(true)
+  await waitForMarkdownImageToolbarIcons(page)
   const imageState = await page.evaluate(() => {
     const block = document.querySelector(".markdownImageBlock.isInteractive")
     const inlineImage = document.querySelector('img[alt="Inline preview"]')
@@ -483,6 +483,10 @@ test("renders only host-resolved code paths as navigation buttons", async ({ pag
   expect(pathLinkState.hasMissingPathButton).toBe(false)
   expect(pathLinkState.hasMermaidPathButton).toBe(false)
 
+  // Run commands and syntax highlighting re-render the content and replace path link buttons,
+  // so a click that lands during a re-render is lost. Click only after these enhancements have been applied.
+  await page.waitForSelector(".markdownRunButton")
+  await page.waitForSelector(".markdownPreviewContent .hljs")
   await page.getByRole("button", { name: "docs/guide.md:12", exact: true }).click()
   await page.waitForFunction(() => document.querySelector("#mock-run-log")?.textContent?.includes("navigatePathLink") ?? false)
   const navigation = await page.evaluate(() => JSON.parse(document.querySelector("#mock-run-log")?.textContent ?? "{}") as {
@@ -592,8 +596,9 @@ function mermaidViewportUsesMoveCursor(page: Page): Promise<boolean> {
   })
 }
 
-function mermaidToolbarIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+// Icons load asynchronously, so wait for them instead of checking once: a missing icon still fails the test by timeout.
+async function waitForMermaidToolbarIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".mermaidToolbar img"))
     return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
@@ -606,15 +611,15 @@ function mermaidToolbarButtonsUseDefaultCursor(page: Page): Promise<boolean> {
   })
 }
 
-function markdownImageToolbarIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+async function waitForMarkdownImageToolbarIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".markdownImageToolbar img"))
     return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
 }
 
-function fontSettingsIconsLoaded(page: Page): Promise<boolean> {
-  return page.evaluate(() => {
+async function waitForFontSettingsIcons(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".markdownFontSizeButton img, .markdownFloatingRailButton img"))
     return icons.length >= 4 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
