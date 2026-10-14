@@ -87,7 +87,7 @@ Three independent things, all needed:
    `reconcile` orders the calls "hide, reparent, resize, show", so the page is never presented at a
    size or position the host no longer has, and the reveal happens exactly once. There is no timer:
    the layout event is the gate.
-3. **The Canvas reports its own geometry.** The controller is a child window of the `Canvas`, so the
+3. **The Canvas reports its own geometry.** The controller is a descendant of the `Canvas`, so the
    `Canvas` rectangle - not the one of `SwingWebViewHostPanel` - is what the page is clipped to, and
    the layout pass that finally sizes it produces no event the host panel listens to. `Canvas.reshape`
    therefore synchronizes the snapshot itself; without it the last thing the native side ever hears is
@@ -143,3 +143,9 @@ Placement has since moved onto `put_ParentWindow` + `SetBounds`
 ([Raw Win32 Audit](windows-webview2-raw-winapi-audit.md)) and the measurement was repeated with the
 same parameters: `maxChangedFraction=0.01`, `maxBrightFraction=0.03`, no flash frames saved - the
 numbers above are unchanged, confirming once more that the reparent API is not the cause.
+
+The later resize-clipping fix reintroduced one stable bridge-owned child HWND between Canvas and
+WebView2. It is not a flash workaround, and runtime inspection showed that its client rectangle is
+not a hard visual clip for WebView2's DirectComposition surface. It remains useful as the stable
+controller parent and parking unit. The separate composition-controller experiment adds an
+application-owned visual clip, but it does not solve this first-frame gap by itself.

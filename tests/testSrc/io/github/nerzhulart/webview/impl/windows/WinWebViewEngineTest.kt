@@ -370,6 +370,37 @@ internal class WinWebViewEngineTest {
   }
 
   @Test
+  fun rootGeometryMoveAndResizeCollapseIntoOneBoundedApply() {
+    val bridge = FakeWinWebView2Bridge()
+    val scope = testScope()
+    val engine = createActiveEngine(
+      scope,
+      bridge,
+      rootHwndPresentation = true,
+      rootGeometryCoalesceMillis = 40,
+    )
+    try {
+      bridge.bounds.clear()
+      engine.requestHostState(WinWebViewEngine.HostState(100L, 817, 1_558, true, 2_058, 114))
+      runBlocking { delay(15) }
+      assertTrue(bridge.bounds.isEmpty(), "a late matching resize must remain inside the coalescing window")
+      engine.requestHostState(WinWebViewEngine.HostState(100L, 760, 1_558, true, 2_058, 114))
+
+      assertTrue(bridge.bounds.isEmpty(), "root geometry must wait for the bounded coalescing window")
+      runBlocking {
+        withTimeout(1_000) {
+          while (bridge.bounds.isEmpty()) delay(2)
+        }
+      }
+
+      assertEquals(listOf(BoundsRecord(1L, Bounds(760, 1_558, 2_058, 114))), bridge.bounds)
+    }
+    finally {
+      closeEngine(engine, scope)
+    }
+  }
+
+  @Test
   fun attachToParentRespectsLatestParentOnce() {
     val bridge = FakeWinWebView2Bridge()
     val scope = testScope()
@@ -785,6 +816,8 @@ internal class WinWebViewEngineTest {
     devToolsCpuProfilingEnabled: Boolean = false,
     customSchemeAssetLoadingEnabled: Boolean = true,
     componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
+    rootHwndPresentation: Boolean = false,
+    rootGeometryCoalesceMillis: Long = 16,
   ): WinWebViewEngine {
     val engine = createTestEngine(
       scope,
@@ -794,6 +827,8 @@ internal class WinWebViewEngineTest {
       devToolsCpuProfilingEnabled = { devToolsCpuProfilingEnabled },
       customSchemeAssetLoadingEnabled = { customSchemeAssetLoadingEnabled },
       componentHwndResolver = componentHwndResolver,
+      rootHwndPresentation = rootHwndPresentation,
+      rootGeometryCoalesceMillis = rootGeometryCoalesceMillis,
     )
     runInEdtAndWait {
       engine.syncHostState(parentHwnd)
@@ -897,6 +932,8 @@ internal class WinWebViewEngineTest {
     devToolsCpuProfilingEnabled: () -> Boolean = { false },
     customSchemeAssetLoadingEnabled: () -> Boolean = { true },
     componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
+    rootHwndPresentation: Boolean = false,
+    rootGeometryCoalesceMillis: Long = 16,
   ): WinWebViewEngine {
     return WinWebViewEngine(
       scope,
@@ -907,6 +944,8 @@ internal class WinWebViewEngineTest {
       devToolsCpuProfilingEnabled = devToolsCpuProfilingEnabled,
       customSchemeAssetLoadingEnabled = customSchemeAssetLoadingEnabled,
       componentHwndResolver = componentHwndResolver,
+      rootHwndPresentation = rootHwndPresentation,
+      rootGeometryCoalesceMillis = rootGeometryCoalesceMillis,
     )
   }
 
@@ -946,6 +985,8 @@ internal class WinWebViewEngineTest {
   private data class Bounds(
     val width: Int,
     val height: Int,
+    val screenX: Int = 0,
+    val screenY: Int = 0,
   )
 
   private data class HtmlLoad(
@@ -987,7 +1028,7 @@ internal class WinWebViewEngineTest {
     /** A freshly created controller is visible, exactly like the native one. */
     private val appliedVisibility = mutableMapOf<Long, Boolean>()
     val destroyedHandles = mutableListOf<Long>()
-    val bounds = mutableListOf<BoundsRecord>()
+    val bounds = CopyOnWriteArrayList<BoundsRecord>()
     val visibility = mutableListOf<Visibility>()
     val htmlLoads = mutableListOf<HtmlLoad>()
     val urlLoads = mutableListOf<UrlLoad>()
@@ -1042,6 +1083,8 @@ internal class WinWebViewEngineTest {
     override fun setHostState(
       handle: Long,
       parentHwnd: Long,
+      screenX: Int,
+      screenY: Int,
       width: Int,
       height: Int,
       visible: Boolean,
@@ -1050,7 +1093,7 @@ internal class WinWebViewEngineTest {
       if (parentHwnd != 0L && appliedParents.put(handle, parentHwnd) != parentHwnd) {
         attachParents.add(parentHwnd)
       }
-      bounds.add(BoundsRecord(handle, Bounds(width, height)))
+      bounds.add(BoundsRecord(handle, Bounds(width, height, screenX, screenY)))
       callOrder.add("bounds:$handle:$width:$height")
       val shown = visible && parentHwnd != 0L
       if (appliedVisibility.put(handle, shown) != shown) {

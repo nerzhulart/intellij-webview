@@ -45,7 +45,7 @@ private class WinWebView2BridgePluginAnchor
  */
 @ApiStatus.Internal
 internal object WinWebView2Bridge {
-  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-awt-canvas-host-v16"
+  private const val EXPECTED_NATIVE_ABI_VERSION = "wvi-root-windowed-v18"
 
   init {
     if (SystemInfo.isWindows) {
@@ -79,6 +79,8 @@ internal object WinWebView2Bridge {
   private external fun setHostStateNative(
     handle: Long,
     parentHwnd: Long,
+    screenX: Int,
+    screenY: Int,
     width: Int,
     height: Int,
     visible: Boolean,
@@ -157,20 +159,30 @@ internal object WinWebView2Bridge {
    * applied. See [WinWebView2BridgeApi.setHostState].
    *
    * @param handle view to place.
-   * @param parentHwnd current Canvas HWND, `0` once the peer is gone.
+   * @param parentHwnd current Canvas HWND, or the top-level HWND in the root-host PoC.
+   * @param screenX physical screen X of the lightweight host; used only by the root-host PoC.
+   * @param screenY physical screen Y of the lightweight host; used only by the root-host PoC.
    * @param width Swing-side width in device pixels, a fallback for the real client rect.
    * @param height Swing-side height in device pixels, a fallback for the real client rect.
    * @param visible `false` hides the controller through `put_IsVisible`, so the page stops
    *   rendering while nobody looks at it.
    * @param generation attachment counter this snapshot belongs to.
    */
-  fun setHostState(handle: Long, parentHwnd: Long, width: Int, height: Int, visible: Boolean, generation: Long) =
-    setHostStateNative(handle, parentHwnd, width, height, visible, generation)
+  fun setHostState(
+    handle: Long,
+    parentHwnd: Long,
+    screenX: Int,
+    screenY: Int,
+    width: Int,
+    height: Int,
+    visible: Boolean,
+    generation: Long,
+  ) = setHostStateNative(handle, parentHwnd, screenX, screenY, width, height, visible, generation)
 
   /**
    * The only call in this object that blocks: it queues the park and then drives the queue through
-   * a bounded barrier sent to the bridge holder window, so the controller leaves the Canvas HWND
-   * before that HWND dies. See [WinWebView2BridgeApi.parkBeforePeerDispose].
+   * a bounded barrier sent to the bridge holder window, so the controller's stable clip-host HWND
+   * leaves the Canvas before that Canvas dies. See [WinWebView2BridgeApi.parkBeforePeerDispose].
    *
    * @param handle view to park.
    * @param hostHwnd Canvas HWND about to be destroyed; the holder is derived from its top-level root.
@@ -280,7 +292,7 @@ internal object WinWebView2Bridge {
    */
   internal interface Callbacks {
     /**
-     * The controller exists on the Canvas it was created for; commands for this handle are live from now on.
+     * The controller exists inside its stable native clip host; commands for this handle are live from now on.
      *
      * @param handle the same value [WinWebView2BridgeApi.create] returned, or an older one when
      *   crash recovery has already replaced the view - which is how it is told apart.
@@ -443,8 +455,9 @@ internal interface WinWebView2BridgeApi {
    * readiness arrives as [WinWebView2Bridge.Callbacks.onCreated] or
    * [WinWebView2Bridge.Callbacks.onCreateFailed].
    *
-   * @param parentHwnd HWND of the Canvas the controller is created in; its owning thread becomes
-   *   the thread of this view, and every later command for the handle runs there.
+   * @param parentHwnd HWND of the Canvas under which the native clip host and controller are
+   *   created; its owning thread becomes the thread of this view, and every later command for the
+   *   handle runs there.
    * @param generation attachment counter of that Canvas, carried so that a command queued for an
    *   older attachment cannot undo a newer one.
    * @param userDataDir WebView2 user data directory; views sharing it share one environment and one
@@ -480,8 +493,9 @@ internal interface WinWebView2BridgeApi {
    * never sequences attach, bounds and visibility itself.
    *
    * @param handle view to place.
-   * @param parentHwnd the current Canvas HWND, `0` once the peer is gone - then the reconcile does
-   *   nothing rather than guessing a parent.
+   * @param parentHwnd current Canvas HWND, or the top-level HWND in the root-host PoC.
+   * @param screenX physical screen X of the lightweight host; used only by the root-host PoC.
+   * @param screenY physical screen Y of the lightweight host; used only by the root-host PoC.
    * @param width Swing-side width in device pixels; only a fallback, because the reconcile prefers
    *   the real client rect of [parentHwnd].
    * @param height Swing-side height in device pixels, a fallback in the same sense as [width].
@@ -491,16 +505,27 @@ internal interface WinWebView2BridgeApi {
    * @param generation the attachment this snapshot describes; an older one is dropped in favour of
    *   the applied one.
    */
-  fun setHostState(handle: Long, parentHwnd: Long, width: Int, height: Int, visible: Boolean, generation: Long)
+  fun setHostState(
+    handle: Long,
+    parentHwnd: Long,
+    screenX: Int,
+    screenY: Int,
+    width: Int,
+    height: Int,
+    visible: Boolean,
+    generation: Long,
+  )
 
   /**
-   * Moves the controller out of the Canvas HWND before JBR destroys the peer - a child window would
-   * otherwise be destroyed together with its parent. Called from `Canvas.removeNotify`, and unlike
-   * everything else here it blocks: the bridge sends a bounded barrier to its own holder window,
-   * whose `wndproc` runs the queued park on AWT-Windows before the Canvas can get `WM_NCDESTROY`.
+   * Moves the controller's stable clip-host HWND out of the Canvas before JBR destroys the peer -
+   * a child window would otherwise be destroyed together with its parent. Called from
+   * `Canvas.removeNotify`, and unlike everything else here it blocks: the bridge sends a bounded
+   * barrier to its own holder window, whose `wndproc` runs the queued park on AWT-Windows before
+   * the Canvas can get `WM_NCDESTROY`.
    *
-   * The controller is hidden through `put_IsVisible` and lands in the holder - a zero-sized child
-   * of the same top-level - so a host nobody can see costs nothing to keep alive.
+   * The controller is hidden through `put_IsVisible`; its clip host is reduced to `0x0` and lands
+   * in the holder, a zero-sized child of the same top-level. The controller itself never changes
+   * parent after creation.
    *
    * @param handle view to park.
    * @param hostHwnd the Canvas HWND about to die; its top-level root decides which holder is used.
@@ -611,11 +636,13 @@ internal object NativeWinWebView2BridgeApi : WinWebView2BridgeApi {
   override fun setHostState(
     handle: Long,
     parentHwnd: Long,
+    screenX: Int,
+    screenY: Int,
     width: Int,
     height: Int,
     visible: Boolean,
     generation: Long,
-  ) = WinWebView2Bridge.setHostState(handle, parentHwnd, width, height, visible, generation)
+  ) = WinWebView2Bridge.setHostState(handle, parentHwnd, screenX, screenY, width, height, visible, generation)
 
   override fun parkBeforePeerDispose(handle: Long, hostHwnd: Long, generation: Long): Boolean =
     WinWebView2Bridge.parkBeforePeerDispose(handle, hostHwnd, generation)

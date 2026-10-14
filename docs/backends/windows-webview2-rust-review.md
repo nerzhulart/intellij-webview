@@ -15,7 +15,7 @@ Closed by the [raw Win32 cleanup](windows-webview2-raw-winapi-audit.md):
 
 | ID | Was | Why it is gone |
 | --- | --- | --- |
-| H3 | Native attach hid the child window and relied on Kotlin to restore visibility | There is no bridge-owned child window any more, and no window is ever hidden: placement is `put_ParentWindow` plus `SetBounds`, and hiding is a bounds offset |
+| H3 | Native attach hid the child window and relied on Kotlin to restore visibility | The current bridge-owned child is always visible and provides a stable controller parent and parking unit; controller visibility remains explicit native state and never depends on Kotlin restoring the child HWND |
 
 ## Additional Cleanup
 
@@ -27,8 +27,8 @@ Closed by the [raw Win32 cleanup](windows-webview2-raw-winapi-audit.md):
 - Add a defensive `Drop` path or prove that explicit destruction owns every exit.
 
 Done: attach and detach are no longer separate operations with their own error handling - there is a
-single `reconcile` - and the only window class the bridge registers is the holder, registered once
-through a `OnceLock`.
+single `reconcile`. The bridge registers the shared holder and per-view clip-host window classes
+once through separate `OnceLock` guards.
 
 These are native implementation concerns; they must not change the consumer Kotlin or TypeScript API.
 

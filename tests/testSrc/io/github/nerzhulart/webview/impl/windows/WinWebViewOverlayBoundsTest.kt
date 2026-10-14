@@ -209,6 +209,8 @@ internal class WinWebViewOverlayBoundsTest {
     override fun setHostState(
       handle: Long,
       parentHwnd: Long,
+      screenX: Int,
+      screenY: Int,
       width: Int,
       height: Int,
       visible: Boolean,

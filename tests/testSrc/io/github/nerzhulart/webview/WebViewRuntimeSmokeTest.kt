@@ -43,6 +43,7 @@ import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.awt.BorderLayout
+import java.awt.Color
 import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.Point
@@ -50,6 +51,8 @@ import java.awt.Robot
 import java.awt.event.InputEvent
 import java.nio.file.Files
 import java.nio.file.Path
+import javax.swing.BorderFactory
+import javax.swing.JButton
 import javax.swing.JDialog
 import javax.swing.JFrame
 import javax.swing.JPanel
@@ -520,6 +523,91 @@ internal class WebViewRuntimeSmokeTest {
   }
 
   @Test
+  @EnabledOnOs(OS.WINDOWS)
+  fun shrinkingWindowFromTopLeftKeepsWebViewInsideSwingContainer(): Unit = runSmokeTest {
+    val panel = createPanel(scope!!)
+    panel.webView.loadHtml(
+      /*language=HTML*/ """<html><body style="margin:0;background:#d000d0;color:white">WEBVIEW</body></html>""",
+    )
+    val splitter = withContext(Dispatchers.EDT) {
+      frame!!.glassPane = IdeGlassPaneImpl(frame!!.rootPane)
+      OnePixelSplitter(false, 0.5f).apply splitter@ {
+        firstComponent = panel.component
+        secondComponent = JPanel(BorderLayout()).apply {
+          isOpaque = true
+          background = Color(0x00D000)
+          border = BorderFactory.createLineBorder(Color.BLACK, 3)
+          add(JButton("RIGHT SWING CONTROL").apply {
+            isOpaque = true
+            background = Color(0x00A000)
+          }, BorderLayout.NORTH)
+        }
+        frame!!.contentPane.removeAll()
+        frame!!.contentPane.add(JPanel(BorderLayout()).apply {
+          isOpaque = true
+          background = Color(0xFF9800)
+          border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Color(0x202020), 4),
+            BorderFactory.createEmptyBorder(48, 56, 52, 60),
+          )
+          add(this@splitter, BorderLayout.CENTER)
+        }, BorderLayout.CENTER)
+        frame!!.size = Dimension(1_000, 600)
+        frame!!.setLocation(80, 80)
+        frame!!.validate()
+        runCatching { Desktop.getDesktop().requestForeground(true) }
+        frame!!.isAlwaysOnTop = true
+        frame!!.toFront()
+        frame!!.requestFocus()
+      }
+    }
+
+    withTimeout(5.seconds) {
+      while (withContext(Dispatchers.EDT) { !splitter.divider.isShowing || panel.component.width < 300 }) {
+        delay(50.milliseconds)
+      }
+    }
+
+    val robot = Robot().apply {
+      autoDelay = 8
+      isAutoWaitForIdle = false
+    }
+    val initialWindowSize = withContext(Dispatchers.EDT) { frame!!.size }
+    waitForJavaScript(panel.webView, "document.body.textContent.trim() === 'WEBVIEW'", "true", "Probe page did not load")
+    delay(500.milliseconds)
+    val pixelRecorder = withContext(Dispatchers.EDT) {
+      val location = frame!!.locationOnScreen
+      WebViewFlashRecorder(
+        java.awt.Rectangle(location.x, location.y, frame!!.width, frame!!.height),
+        reportName = "window-resize-boundary",
+        saveAllFrames = true,
+      )
+    }
+    pixelRecorder.start()
+    try {
+      dragWindowEdge(robot, frame!!, WindowResizeEdge.LEFT, delta = 260)
+      val widthAfterLeftResize = withContext(Dispatchers.EDT) { frame!!.width }
+      assertTrue(
+        widthAfterLeftResize < initialWindowSize.width - 150,
+        "Dragging the left window edge right must shrink the window; " +
+        "initial=${initialWindowSize.width}, resized=$widthAfterLeftResize",
+      )
+
+      dragWindowEdge(robot, frame!!, WindowResizeEdge.TOP, delta = 160)
+      val heightAfterTopResize = withContext(Dispatchers.EDT) { frame!!.height }
+      assertTrue(
+        heightAfterTopResize < initialWindowSize.height - 80,
+        "Dragging the top window edge down must shrink the window; " +
+        "initial=${initialWindowSize.height}, resized=$heightAfterTopResize",
+      )
+    }
+    finally {
+      println(pixelRecorder.stopAndReport())
+    }
+    delay(300.milliseconds)
+  }
+
+  @Test
   fun createAndCancel_100times_noLeak(): Unit = runBlocking {
     withTimeout(2.minutes) {
       repeat(100) { index ->
@@ -566,6 +654,8 @@ internal class WebViewRuntimeSmokeTest {
     }
   }
 
+  private enum class WindowResizeEdge { LEFT, TOP }
+
   private suspend fun dragDivider(robot: Robot, splitter: OnePixelSplitter, deltaX: Int) {
     val (start, screenDeltaX) = withContext(Dispatchers.EDT) {
       val location = splitter.divider.locationOnScreen
@@ -577,6 +667,30 @@ internal class WebViewRuntimeSmokeTest {
     robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
     repeat(10) { index ->
       robot.mouseMove(start.x + screenDeltaX * (index + 1) / 10, start.y)
+    }
+    robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    robot.waitForIdle()
+  }
+
+  private suspend fun dragWindowEdge(robot: Robot, window: JFrame, edge: WindowResizeEdge, delta: Int) {
+    val (start, screenDelta) = withContext(Dispatchers.EDT) {
+      val location = window.locationOnScreen
+      val start = when (edge) {
+        WindowResizeEdge.LEFT -> Point(location.x + 1, location.y + window.height / 2)
+        WindowResizeEdge.TOP -> Point(location.x + window.width / 2, location.y + 1)
+      }
+      val transform = window.graphicsConfiguration.defaultTransform
+      val scale = if (edge == WindowResizeEdge.LEFT) transform.scaleX else transform.scaleY
+      start to (delta * scale).roundToInt()
+    }
+    robot.mouseMove(start.x, start.y)
+    robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+    repeat(60) { index ->
+      val offset = screenDelta * (index + 1) / 60
+      when (edge) {
+        WindowResizeEdge.LEFT -> robot.mouseMove(start.x + offset, start.y)
+        WindowResizeEdge.TOP -> robot.mouseMove(start.x, start.y + offset)
+      }
     }
     robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     robot.waitForIdle()

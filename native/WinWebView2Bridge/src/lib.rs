@@ -8,7 +8,7 @@ use std::{
     ffi::c_void,
     rc::Rc,
     sync::{
-        atomic::{AtomicI64, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::Instant,
@@ -21,10 +21,22 @@ use jni::{
 };
 use webview2_com::{Microsoft::Web::WebView2::Win32::*, *};
 use windows::{
-    core::{w, Interface, HSTRING, PCWSTR, PWSTR},
+    core::{w, IUnknown, Interface, HSTRING, PCWSTR, PWSTR},
     Win32::{
         Foundation::*,
-        Graphics::Gdi::HBRUSH,
+        Graphics::{
+            Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP},
+            Direct3D11::{
+                D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_SDK_VERSION,
+            },
+            DirectComposition::{
+                DCompositionCreateDevice, IDCompositionDevice, IDCompositionRectangleClip,
+                IDCompositionTarget, IDCompositionVisual,
+            },
+            Dxgi::IDXGIDevice,
+            Gdi::{ScreenToClient, HBRUSH},
+        },
         System::{Com::*, LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             Input::KeyboardAndMouse::{
@@ -44,7 +56,7 @@ const MODIFIER_SHIFT: jint = 1;
 const MODIFIER_CONTROL: jint = 1 << 1;
 const MODIFIER_ALT: jint = 1 << 2;
 const MODIFIER_META: jint = 1 << 3;
-const NATIVE_ABI_VERSION: &str = "wvi-awt-canvas-host-v16";
+const NATIVE_ABI_VERSION: &str = "wvi-root-windowed-v18";
 const WM_AWT_WEBVIEW_COMMAND: u32 = WM_APP + 0x35A;
 /// Sent to the holder window to drain the command queue on AWT-Windows synchronously.
 const WM_AWT_WEBVIEW_BARRIER: u32 = WM_APP + 0x35B;
@@ -57,9 +69,153 @@ const DIAGNOSTIC_DEBUG: jint = 1;
 const DIAGNOSTIC_INFO: jint = 2;
 const DIAGNOSTIC_WARN: jint = 3;
 const DIAGNOSTIC_ERROR: jint = 4;
+const PRESENTATION_ENV: &str = "WEBVIEW_WIN_PRESENTATION";
+const COMPOSITION_POC_CLIP_ENV: &str = "WEBVIEW_WIN_COMPOSITION_POC_CLIP";
+const COMPOSITION_POC_STALE_BOUNDS_ENV: &str = "WEBVIEW_WIN_COMPOSITION_POC_STALE_BOUNDS";
 
 static NEXT_NATIVE_HANDLE: AtomicI64 = AtomicI64::new(1);
 static TRANSPORT: OnceLock<Mutex<HookTransport>> = OnceLock::new();
+static PRESENTATION_SELECTION: OnceLock<PresentationSelection> = OnceLock::new();
+static PRESENTATION_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PresentationMode {
+    Windowed,
+    WindowedRootPoc,
+    CompositionPoc,
+    CompositionRootPoc,
+}
+
+impl PresentationMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Windowed => "windowed",
+            Self::WindowedRootPoc => "windowed-root-poc",
+            Self::CompositionPoc => "composition-poc",
+            Self::CompositionRootPoc => "composition-root-poc",
+        }
+    }
+
+    fn is_root_host(self) -> bool {
+        matches!(self, Self::WindowedRootPoc | Self::CompositionRootPoc)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PresentationSelection {
+    mode: PresentationMode,
+    warning: Option<String>,
+    forced_clip: Option<(i32, i32)>,
+    stale_controller_bounds: bool,
+}
+
+struct WindowedHost;
+
+struct CompositionHost {
+    // Retain the complete device chain for the lifetime of this view. DirectComposition itself
+    // holds references, but explicit ownership makes teardown and later device-loss work clear.
+    _d3d_device: ID3D11Device,
+    _dxgi_device: IDXGIDevice,
+    d3d_driver: &'static str,
+    d3d_hardware_error: Option<String>,
+    device: IDCompositionDevice,
+    target: IDCompositionTarget,
+    _container_visual: IDCompositionVisual,
+    webview_visual: IDCompositionVisual,
+    clip: IDCompositionRectangleClip,
+    composition_controller: Option<ICoreWebView2CompositionController>,
+    visual_clip_bounds: RECT,
+    maximum_controller_bounds: RECT,
+    commit_generation: u64,
+}
+
+enum PresentationHost {
+    Windowed(WindowedHost),
+    WindowedRootPoc(WindowedHost),
+    CompositionPoc(CompositionHost),
+    CompositionRootPoc(CompositionHost),
+}
+
+enum ControllerCompletedHandler {
+    Windowed {
+        _handler: ICoreWebView2CreateCoreWebView2ControllerCompletedHandler,
+    },
+    Composition {
+        _handler: ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler,
+    },
+}
+
+impl PresentationHost {
+    fn mode(&self) -> PresentationMode {
+        match self {
+            Self::Windowed(_) => PresentationMode::Windowed,
+            Self::WindowedRootPoc(_) => PresentationMode::WindowedRootPoc,
+            Self::CompositionPoc(_) => PresentationMode::CompositionPoc,
+            Self::CompositionRootPoc(_) => PresentationMode::CompositionRootPoc,
+        }
+    }
+}
+
+fn parse_positive_size(value: &str) -> Option<(i32, i32)> {
+    let (width, height) = value.trim().split_once(['x', 'X'])?;
+    let width = width.trim().parse::<i32>().ok()?;
+    let height = height.trim().parse::<i32>().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+fn parse_presentation_selection(
+    presentation: Option<&str>,
+    forced_clip: Option<&str>,
+    stale_controller_bounds: Option<&str>,
+) -> PresentationSelection {
+    let mut warnings = Vec::new();
+    let mode = match presentation.map(str::trim) {
+        None | Some("") | Some("windowed-root-poc") => PresentationMode::WindowedRootPoc,
+        Some("windowed") => PresentationMode::Windowed,
+        Some("composition-poc") => PresentationMode::CompositionPoc,
+        Some("composition-root-poc") => PresentationMode::CompositionRootPoc,
+        Some(value) => {
+            warnings.push(format!(
+                "Invalid {PRESENTATION_ENV} value {value:?}; using windowed-root-poc"
+            ));
+            PresentationMode::WindowedRootPoc
+        }
+    };
+    let forced_clip = if mode == PresentationMode::CompositionPoc {
+        forced_clip.and_then(|value| match parse_positive_size(value) {
+            Some(size) => Some(size),
+            None => {
+                warnings.push(format!(
+                    "Invalid {COMPOSITION_POC_CLIP_ENV} value {value:?}; expected WIDTHxHEIGHT"
+                ));
+                None
+            }
+        })
+    } else {
+        None
+    };
+    let stale_controller_bounds = mode == PresentationMode::CompositionPoc
+        && stale_controller_bounds.is_some_and(|value| value.trim() == "1");
+    PresentationSelection {
+        mode,
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+        forced_clip,
+        stale_controller_bounds,
+    }
+}
+
+fn presentation_selection() -> &'static PresentationSelection {
+    PRESENTATION_SELECTION.get_or_init(|| {
+        let presentation = std::env::var(PRESENTATION_ENV).ok();
+        let forced_clip = std::env::var(COMPOSITION_POC_CLIP_ENV).ok();
+        let stale_controller_bounds = std::env::var(COMPOSITION_POC_STALE_BOUNDS_ENV).ok();
+        parse_presentation_selection(
+            presentation.as_deref(),
+            forced_clip.as_deref(),
+            stale_controller_bounds.as_deref(),
+        )
+    })
+}
 
 struct HookTransport {
     threads: HashMap<u32, HookThread>,
@@ -70,6 +226,7 @@ struct HookThread {
     queue: VecDeque<NativeCommand>,
     wake_pending: bool,
     get_message_hook: usize,
+    call_wnd_proc_hook: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +256,8 @@ enum NativeCommand {
     SetHostState {
         handle: jlong,
         host_hwnd: jlong,
+        screen_x: i32,
+        screen_y: i32,
         width: i32,
         height: i32,
         visible: bool,
@@ -200,12 +359,29 @@ fn register_route(host_hwnd: jlong) -> BridgeResult<(jlong, u32)> {
             )
             .map_err(format_windows_error)?
         };
+        let call_wnd_proc_hook = match unsafe {
+            SetWindowsHookExW(
+                WH_CALLWNDPROC,
+                Some(webview_call_wnd_proc_hook),
+                None,
+                owner_tid,
+            )
+        } {
+            Ok(hook) => hook,
+            Err(error) => {
+                unsafe {
+                    let _ = UnhookWindowsHookEx(get_message_hook);
+                }
+                return Err(format_windows_error(error));
+            }
+        };
         transport.threads.insert(
             owner_tid,
             HookThread {
                 queue: VecDeque::new(),
                 wake_pending: false,
                 get_message_hook: get_message_hook.0 as usize,
+                call_wnd_proc_hook: call_wnd_proc_hook.0 as usize,
             },
         );
     }
@@ -315,6 +491,7 @@ fn remove_route(handle: jlong) {
     if let Some(thread) = hooks {
         unsafe {
             let _ = UnhookWindowsHookEx(HHOOK(thread.get_message_hook as *mut c_void));
+            let _ = UnhookWindowsHookEx(HHOOK(thread.call_wnd_proc_hook as *mut c_void));
         }
     }
 }
@@ -333,6 +510,62 @@ unsafe extern "system" fn webview_get_message_hook(
         }
     }
     result
+}
+
+unsafe extern "system" fn webview_call_wnd_proc_hook(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 && lparam.0 != 0 {
+        let message = unsafe { &*(lparam.0 as *const CWPSTRUCT) };
+        if message.message == WM_SIZE {
+            resize_webview_from_canvas_wm_size(message.hwnd);
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn resize_webview_from_canvas_wm_size(canvas: HWND) {
+    let views = NATIVE_VIEWS.with(|views| {
+        let Ok(views) = views.try_borrow() else {
+            return None;
+        };
+        Some(
+            views
+                .values()
+                .filter_map(|native| {
+                    let view = native.try_borrow().ok()?;
+                    (!view.presentation.mode().is_root_host() && view.canvas == canvas)
+                        .then(|| native.clone())
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    let Some(views) = views else {
+        return;
+    };
+    for native in views {
+        let requested_bounds = canvas_client_bounds(canvas);
+        let result = requested_bounds.and_then(|bounds| {
+            apply_clip_geometry(&native, bounds)?;
+            let extra = format!("bounds={}", format_rect(bounds));
+            trace_placement("wm-size", &native, Some(&extra));
+            Ok(())
+        });
+        if let Err(message) = result {
+            emit_diagnostic(
+                &native,
+                DIAGNOSTIC_WARN,
+                "placement.wm-size-hook.failed",
+                message,
+                diagnostic_data(vec![
+                    ("canvasHwnd", (canvas.0 as usize as u64).to_string()),
+                    ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+                ]),
+            );
+        }
+    }
 }
 
 /// Placement diagnostics, off unless `WEBVIEW_WIN_PAINT_TRACE=1`. One snapshot per placement
@@ -355,21 +588,39 @@ fn format_rect(r: RECT) -> String {
     )
 }
 
-/// Reports where the controller actually is: the Canvas it hangs on (or the holder it is parked
-/// in), the frame around it, and the bounds WebView2 itself reports.
+/// Reports the Canvas, bridge-owned clip host, and bounds WebView2 itself reports. State is
+/// snapshotted before any Win32, COM, or JNI call so tracing cannot create a reentrant borrow.
 fn trace_placement(tag: &str, native: &NativeHandle, extra: Option<&str>) {
     if !placement_trace_enabled() {
         return;
     }
-    let Ok(view) = native.try_borrow() else {
-        return;
-    };
-
-    let canvas = view.hwnd;
-    let parked = if canvas.0.is_null() {
-        view.parent
-    } else {
-        HWND::default()
+    let (canvas, target_parent, clip_host, clip_parent, clip_bounds, controller, presentation_desc) = {
+        let Ok(view) = native.try_borrow() else {
+            return;
+        };
+        let presentation_desc = match &view.presentation {
+            PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => {
+                view.presentation.mode().name().to_string()
+            }
+            PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) => {
+                format!(
+                    "{}:d3dDriver={}:visualClip={}:commitGeneration={}",
+                    view.presentation.mode().name(),
+                    host.d3d_driver,
+                    format_rect(host.visual_clip_bounds),
+                    host.commit_generation,
+                )
+            }
+        };
+        (
+            view.canvas,
+            view.target_parent,
+            view.clip_host,
+            view.clip_parent,
+            view.clip_bounds,
+            view.controller.clone(),
+            presentation_desc,
+        )
     };
 
     let (canvas_desc, frame_desc) = if canvas.0.is_null() {
@@ -394,7 +645,20 @@ fn trace_placement(tag: &str, native: &NativeHandle, extra: Option<&str>) {
         )
     };
 
-    let controller_bounds = match view.controller.as_ref() {
+    let mut clip_client = RECT::default();
+    let _ = unsafe { GetClientRect(clip_host, &mut clip_client) };
+    let mut clip_screen = RECT::default();
+    let _ = unsafe { GetWindowRect(clip_host, &mut clip_screen) };
+    let actual_clip_parent = unsafe { GetParent(clip_host) }.unwrap_or_default();
+    let clip_desc = format!(
+        "{}:{}:{}:parent={}",
+        clip_host.0 as usize,
+        format_rect(clip_screen),
+        format_rect(clip_client),
+        actual_clip_parent.0 as usize,
+    );
+
+    let controller_bounds = match controller.as_ref() {
         Some(controller) => {
             let mut bounds = RECT::default();
             if unsafe { controller.Bounds(&mut bounds) }.is_ok() {
@@ -407,8 +671,16 @@ fn trace_placement(tag: &str, native: &NativeHandle, extra: Option<&str>) {
     };
 
     let mut message = format!(
-        "placement.{} canvas={} parked={} frame={} controllerBounds={}",
-        tag, canvas_desc, parked.0 as usize, frame_desc, controller_bounds
+        "placement.{} presentation={} canvas={} targetParent={} frame={} clipHost={} trackedClipParent={} trackedClipBounds={} controllerBounds={}",
+        tag,
+        presentation_desc,
+        canvas_desc,
+        target_parent.0 as usize,
+        frame_desc,
+        clip_desc,
+        clip_parent.0 as usize,
+        format_rect(clip_bounds),
+        controller_bounds,
     );
     if let Some(extra) = extra {
         message.push(' ');
@@ -858,11 +1130,21 @@ struct NavigationTiming {
 
 struct NativeWebView {
     handle: jlong,
-    parent: HWND,
-    hwnd: HWND,
+    /// The AWT Canvas currently presenting the view, or the top-level HWND in the root-host PoC.
+    /// Null means the ordinary Canvas path is parked.
+    canvas: HWND,
+    /// Desired parent of `clip_host`: the Canvas while attached, otherwise the parking holder.
+    target_parent: HWND,
+    /// Stable bridge-owned parent passed to WebView2 exactly once during controller creation.
+    clip_host: HWND,
+    /// Parent currently applied to `clip_host` through Win32 `SetParent`.
+    clip_parent: HWND,
+    /// Client rectangle currently applied to `clip_host` through `SetWindowPos`.
+    clip_bounds: RECT,
+    presentation: PresentationHost,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
-    controller_completed_handler: Option<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>,
+    controller_completed_handler: Option<ControllerCompletedHandler>,
     controller_create_started_at: Option<Instant>,
     last_navigation_requested_at: Option<Instant>,
     navigation_timings: HashMap<u64, NavigationTiming>,
@@ -889,18 +1171,21 @@ struct NativeWebView {
     /// Host background as ARGB, applied to the controller so that a frame without page content
     /// looks exactly like the Canvas behind it.
     background_color: u32,
-    /// Parent last pushed to the controller, so `put_ParentWindow` fires only on a real reparent.
-    applied_parent: HWND,
     /// Bounds last pushed to the controller, so a repeated snapshot never becomes a resize.
-    applied_bounds: RECT,
+    controller_bounds: RECT,
     /// Visibility last pushed to the controller. A freshly created controller is visible.
-    applied_visible: bool,
+    controller_visible: bool,
     width: i32,
     height: i32,
+    /// Physical screen position of the lightweight Swing host in the root-HWND PoC.
+    screen_x: i32,
+    screen_y: i32,
     host_generation: jlong,
 }
 
 struct DestroyResources {
+    clip_host: HWND,
+    presentation: PresentationHost,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
     accelerator_token: Option<EventRegistrationToken>,
@@ -910,7 +1195,7 @@ struct DestroyResources {
 }
 
 fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
-    let resources = {
+    let mut resources = {
         let mut view = native
             .try_borrow_mut()
             .map_err(|_| "WebView2 state is busy while collecting destroy resources".to_string())?;
@@ -919,6 +1204,11 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
         }
         view.destroyed = true;
         let resources = DestroyResources {
+            clip_host: view.clip_host,
+            presentation: std::mem::replace(
+                &mut view.presentation,
+                PresentationHost::Windowed(WindowedHost),
+            ),
             controller: view.controller.take(),
             webview: view.webview.take(),
             accelerator_token: view.accelerator_key_pressed_token.take(),
@@ -930,9 +1220,12 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
         view.add_script_handlers.clear();
         view.execute_script_handlers.clear();
         view.dev_tools_handlers.clear();
-        // The Canvas HWND belongs to AWT's peer and must never be destroyed here.
-        view.hwnd = HWND::default();
-        view.applied_parent = HWND::default();
+        // The Canvas belongs to AWT. Only the bridge-owned clip host is destroyed below.
+        view.canvas = HWND::default();
+        view.target_parent = HWND::default();
+        view.clip_host = HWND::default();
+        view.clip_parent = HWND::default();
+        view.clip_bounds = RECT::default();
         resources
     };
 
@@ -956,6 +1249,45 @@ fn destroy_native_state(native: &NativeHandle) -> BridgeResult<()> {
     for (_, request) in resources.pending_asset_requests {
         unsafe {
             let _ = request.deferral.Complete();
+        }
+    }
+    let composition_controller = match &mut resources.presentation {
+        PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) => {
+            host.composition_controller.take()
+        }
+        PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => None,
+    };
+    if let Some(composition_controller) = &composition_controller {
+        unsafe {
+            let _ = composition_controller.SetRootVisualTarget(None::<&IUnknown>);
+        }
+    }
+    // WebView2 owns native descendants of the clip host. Release the controller before destroying
+    // that host so Chromium can tear its windows down in its normal order.
+    drop(resources.webview.take());
+    drop(resources.controller.take());
+    drop(composition_controller);
+    if let PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) =
+        &resources.presentation
+    {
+        unsafe {
+            let _ = host.target.SetRoot(None::<&IDCompositionVisual>);
+            let _ = host.device.Commit();
+        }
+    }
+    if !resources.clip_host.0.is_null() && unsafe { IsWindow(Some(resources.clip_host)) }.as_bool()
+    {
+        if let Err(error) = unsafe { DestroyWindow(resources.clip_host) } {
+            emit_diagnostic(
+                native,
+                DIAGNOSTIC_WARN,
+                "clip-host.destroy.failed",
+                format_windows_error(error),
+                diagnostic_data(vec![(
+                    "clipHostHwnd",
+                    (resources.clip_host.0 as usize as u64).to_string(),
+                )]),
+            );
         }
     }
     Ok(())
@@ -1033,6 +1365,8 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
     _class: JClass<'_>,
     handle: jlong,
     parent_hwnd: jlong,
+    screen_x: jint,
+    screen_y: jint,
     width: jint,
     height: jint,
     visible: jboolean,
@@ -1043,6 +1377,8 @@ pub extern "system" fn Java_io_github_nerzhulart_webview_impl_windows_WinWebView
         NativeCommand::SetHostState {
             handle,
             host_hwnd: parent_hwnd,
+            screen_x,
+            screen_y,
             width,
             height,
             visible: visible != 0,
@@ -1266,14 +1602,275 @@ fn enqueue_or_throw(env: &mut JNIEnv<'_>, command: NativeCommand) {
     }
 }
 
+const CLIP_HOST_WINDOW_CLASS: PCWSTR = w!("IJWebView2ClipHost");
+
+/// A plain bridge-owned child HWND used as the stable WebView2 parent, parking unit, and optional
+/// DirectComposition target. In the windowed path its client rectangle is not a hard visual clip.
+unsafe extern "system" fn clip_host_window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+fn ensure_clip_host_window_class() -> BridgeResult<()> {
+    static REGISTERED: OnceLock<BridgeResult<()>> = OnceLock::new();
+    REGISTERED
+        .get_or_init(|| {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(clip_host_window_proc),
+                hInstance: unsafe { GetModuleHandleW(None) }
+                    .map_err(format_windows_error)?
+                    .into(),
+                hbrBackground: HBRUSH::default(),
+                lpszClassName: CLIP_HOST_WINDOW_CLASS,
+                ..Default::default()
+            };
+            if unsafe { RegisterClassW(&class) } == 0 {
+                return Err("Failed to register the WebView2 clip-host window class".to_string());
+            }
+            Ok(())
+        })
+        .clone()
+}
+
+fn canvas_client_bounds(canvas: HWND) -> BridgeResult<RECT> {
+    if canvas.0.is_null() {
+        return Err("WebView2 Canvas HWND is null".to_string());
+    }
+    let mut client = RECT::default();
+    unsafe { GetClientRect(canvas, &mut client) }.map_err(format_windows_error)?;
+    Ok(RECT {
+        left: 0,
+        top: 0,
+        right: (client.right - client.left).max(0),
+        bottom: (client.bottom - client.top).max(0),
+    })
+}
+
+fn create_clip_host_window(canvas: HWND) -> BridgeResult<(HWND, RECT)> {
+    let bounds = canvas_client_bounds(canvas)?;
+    create_clip_host_window_at(canvas, bounds)
+}
+
+fn create_clip_host_window_at(parent: HWND, bounds: RECT) -> BridgeResult<(HWND, RECT)> {
+    ensure_clip_host_window_class()?;
+    let clip_host = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            CLIP_HOST_WINDOW_CLASS,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            bounds.left,
+            bounds.top,
+            (bounds.right - bounds.left).max(0),
+            (bounds.bottom - bounds.top).max(0),
+            Some(parent),
+            None,
+            None,
+            None,
+        )
+        .map_err(format_windows_error)?
+    };
+    Ok((clip_host, bounds))
+}
+
+fn set_clip_host_bounds_window(clip_host: HWND, bounds: RECT) -> BridgeResult<()> {
+    unsafe {
+        SetWindowPos(
+            clip_host,
+            None,
+            bounds.left,
+            bounds.top,
+            (bounds.right - bounds.left).max(0),
+            (bounds.bottom - bounds.top).max(0),
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    }
+    .map_err(format_windows_error)
+}
+
+fn screen_rect_to_client(
+    parent: HWND,
+    screen_x: i32,
+    screen_y: i32,
+    width: i32,
+    height: i32,
+) -> BridgeResult<RECT> {
+    if parent.0.is_null() {
+        return Err("WebView2 root HWND is null".to_string());
+    }
+    let mut origin = POINT {
+        x: screen_x,
+        y: screen_y,
+    };
+    if !unsafe { ScreenToClient(parent, &mut origin) }.as_bool() {
+        return Err(format!(
+            "ScreenToClient failed for root HWND: {}",
+            format_windows_error(windows::core::Error::from_win32())
+        ));
+    }
+    Ok(RECT {
+        left: origin.x,
+        top: origin.y,
+        right: origin.x + width.max(0),
+        bottom: origin.y + height.max(0),
+    })
+}
+
+fn set_clip_host_parent_window(clip_host: HWND, parent: HWND) -> BridgeResult<()> {
+    unsafe { SetParent(clip_host, Some(parent)) }
+        .map(|_| ())
+        .map_err(format_windows_error)
+}
+
+fn rect_from_size(width: i32, height: i32) -> RECT {
+    RECT {
+        left: 0,
+        top: 0,
+        right: width.max(0),
+        bottom: height.max(0),
+    }
+}
+
+fn effective_composition_clip_bounds(bounds: RECT) -> RECT {
+    if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
+        return RECT::default();
+    }
+    presentation_selection()
+        .forced_clip
+        .map(|(width, height)| rect_from_size(width, height))
+        .unwrap_or(bounds)
+}
+
+fn set_composition_clip_objects(
+    clip: &IDCompositionRectangleClip,
+    device: &IDCompositionDevice,
+    bounds: RECT,
+) -> BridgeResult<()> {
+    unsafe {
+        clip.SetLeft2(bounds.left as f32)
+            .map_err(format_windows_error)?;
+        clip.SetTop2(bounds.top as f32)
+            .map_err(format_windows_error)?;
+        clip.SetRight2(bounds.right as f32)
+            .map_err(format_windows_error)?;
+        clip.SetBottom2(bounds.bottom as f32)
+            .map_err(format_windows_error)?;
+        device.Commit().map_err(format_windows_error)
+    }
+}
+
+fn create_d3d11_device(driver_type: D3D_DRIVER_TYPE) -> BridgeResult<ID3D11Device> {
+    let mut device = None;
+    unsafe {
+        D3D11CreateDevice(
+            None::<&windows::Win32::Graphics::Dxgi::IDXGIAdapter>,
+            driver_type,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            None,
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            None,
+        )
+    }
+    .map_err(format_windows_error)?;
+    device.ok_or_else(|| "D3D11CreateDevice succeeded without returning a device".to_string())
+}
+
+fn create_composition_host(surface: HWND, bounds: RECT) -> BridgeResult<CompositionHost> {
+    let (d3d_device, d3d_driver, d3d_hardware_error) =
+        match create_d3d11_device(D3D_DRIVER_TYPE_HARDWARE) {
+            Ok(device) => (device, "hardware", None),
+            Err(hardware_error) => match create_d3d11_device(D3D_DRIVER_TYPE_WARP) {
+                Ok(device) => (device, "warp", Some(hardware_error)),
+                Err(warp_error) => {
+                    return Err(format!(
+                "D3D11CreateDevice failed for hardware ({hardware_error}) and WARP ({warp_error})"
+            ))
+                }
+            },
+        };
+    let dxgi_device = d3d_device.cast::<IDXGIDevice>().map_err(|error| {
+        format!(
+            "ID3D11Device -> IDXGIDevice failed: {}",
+            format_windows_error(error)
+        )
+    })?;
+    let device: IDCompositionDevice =
+        unsafe { DCompositionCreateDevice(&dxgi_device) }.map_err(|error| {
+            format!(
+                "DCompositionCreateDevice failed: {}",
+                format_windows_error(error)
+            )
+        })?;
+    let target = unsafe { device.CreateTargetForHwnd(surface, true) }.map_err(|error| {
+        format!(
+            "CreateTargetForHwnd failed: {}",
+            format_windows_error(error)
+        )
+    })?;
+    let container_visual = unsafe { device.CreateVisual() }.map_err(|error| {
+        format!(
+            "CreateVisual(container) failed: {}",
+            format_windows_error(error)
+        )
+    })?;
+    let webview_visual = unsafe { device.CreateVisual() }.map_err(|error| {
+        format!(
+            "CreateVisual(WebView2 root) failed: {}",
+            format_windows_error(error)
+        )
+    })?;
+    let clip = unsafe { device.CreateRectangleClip() }.map_err(|error| {
+        format!(
+            "CreateRectangleClip failed: {}",
+            format_windows_error(error)
+        )
+    })?;
+    let visual_clip_bounds = effective_composition_clip_bounds(bounds);
+    unsafe {
+        container_visual
+            .SetClip(&clip)
+            .map_err(|error| format!("SetClip failed: {}", format_windows_error(error)))?;
+        container_visual
+            .AddVisual(&webview_visual, false, None::<&IDCompositionVisual>)
+            .map_err(|error| format!("AddVisual failed: {}", format_windows_error(error)))?;
+        target
+            .SetRoot(&container_visual)
+            .map_err(|error| format!("SetRoot failed: {}", format_windows_error(error)))?;
+    }
+    set_composition_clip_objects(&clip, &device, visual_clip_bounds)
+        .map_err(|error| format!("initial DirectComposition clip commit failed: {error}"))?;
+
+    Ok(CompositionHost {
+        _d3d_device: d3d_device,
+        _dxgi_device: dxgi_device,
+        d3d_driver,
+        d3d_hardware_error,
+        device,
+        target,
+        _container_visual: container_visual,
+        webview_visual,
+        clip,
+        composition_controller: None,
+        visual_clip_bounds,
+        maximum_controller_bounds: bounds,
+        commit_generation: 1,
+    })
+}
+
 const HOLDER_WINDOW_CLASS: PCWSTR = w!("IJWebView2Holder");
 /// Keeps the parked widget away from the visible client area even for the frames where the parent
 /// clip has not been applied yet.
 const HOLDER_WINDOW_OFFSET: i32 = -32_000;
 
-/// The only window the bridge owns. It never paints - it has no client area - and exists for two
-/// reasons: it is a live parent for a controller whose Canvas peer is gone, and it is the one
-/// window on AWT-Windows whose `wndproc` is ours, which is what makes the park barrier possible.
+/// The shared parking window never paints and has no client area. It outlives transient Canvas
+/// peers and owns the wndproc used by the synchronous park barrier.
 unsafe extern "system" fn holder_window_proc(
     hwnd: HWND,
     message: u32,
@@ -1445,6 +2042,8 @@ fn execute_native_command(command: NativeCommand) {
         NativeCommand::SetHostState {
             handle,
             host_hwnd,
+            screen_x,
+            screen_y,
             width,
             height,
             visible,
@@ -1467,10 +2066,12 @@ fn execute_native_command(command: NativeCommand) {
                 view.host_generation = generation;
                 view.width = width.max(0);
                 view.height = height.max(0);
+                view.screen_x = screen_x;
+                view.screen_y = screen_y;
                 view.visible = visible;
                 if !host.0.is_null() {
-                    view.hwnd = host;
-                    view.parent = host;
+                    view.canvas = host;
+                    view.target_parent = host;
                 }
             }
             if !host.0.is_null() {
@@ -1494,54 +2095,24 @@ fn execute_native_command(command: NativeCommand) {
             }
             let result = with_native(handle, |native| {
                 let parking_target = resolve_holder_window(HWND(host_hwnd as *mut c_void))?;
-                let controller = {
-                    let view = native
-                        .try_borrow()
-                        .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
-                    if view.host_generation != generation
-                        || view.hwnd.0 as isize as jlong != host_hwnd
-                    {
-                        return Ok(());
-                    }
-                    view.controller.clone()
-                };
-                // The dying Canvas HWND takes its children with it, so the controller has to move
-                // out before WM_NCDESTROY. Hiding it first is what the park is for: nobody can see
-                // the page any more, so the renderer should stop working for it. A controller that
-                // does not exist yet is hidden and re-parented by the reconcile that follows its
-                // creation.
-                if let Some(controller) = &controller {
-                    unsafe {
-                        controller.SetIsVisible(false).map_err(|error| {
-                            format!(
-                                "WebView2 park SetIsVisible(false) failed: {}",
-                                format_windows_error(error)
-                            )
-                        })?;
-                        controller
-                            .SetParentWindow(parking_target)
-                            .map_err(|error| {
-                                format!(
-                                    "WebView2 park SetParentWindow(holder) failed: {}",
-                                    format_windows_error(error)
-                                )
-                            })?;
-                    }
-                    trace_placement("park", &native, None);
-                }
-                {
+                let controller_present = {
                     let mut view = native
                         .try_borrow_mut()
                         .map_err(|_| "WebView2 state is busy while parking Canvas".to_string())?;
-                    view.parent = parking_target;
-                    view.hwnd = HWND::default();
-                    view.visible = false;
-                    if controller.is_some() {
-                        view.applied_parent = parking_target;
-                        view.applied_bounds = RECT::default();
-                        view.applied_visible = false;
+                    if view.host_generation != generation
+                        || view.canvas.0 as isize as jlong != host_hwnd
+                    {
+                        return Ok(());
                     }
-                }
+                    view.canvas = HWND::default();
+                    view.target_parent = parking_target;
+                    view.visible = false;
+                    view.controller.is_some()
+                };
+                // `reconcile` hides the controller, shrinks the clip host to zero, then moves that
+                // stable host into the holder before AWT destroys the Canvas peer.
+                reconcile(&native)?;
+                trace_placement("park", &native, None);
                 emit_diagnostic(
                     &native,
                     DIAGNOSTIC_TRACE,
@@ -1558,7 +2129,7 @@ fn execute_native_command(command: NativeCommand) {
                                 .to_string(),
                         ),
                         ("generation", generation.to_string()),
-                        ("controller", controller.is_some().to_string()),
+                        ("controller", controller_present.to_string()),
                     ]),
                 );
                 Ok(())
@@ -1567,15 +2138,15 @@ fn execute_native_command(command: NativeCommand) {
             result
         }
         NativeCommand::Focus { handle } => with_native(handle, |native| {
-            let (hwnd, controller) = {
+            let (canvas, controller) = {
                 let view = native
                     .try_borrow()
                     .map_err(|_| "WebView2 state is busy while focusing Canvas".to_string())?;
-                (view.hwnd, view.controller.clone())
+                (view.canvas, view.controller.clone())
             };
             unsafe {
-                if !hwnd.0.is_null() {
-                    let _ = SetFocus(Some(hwnd));
+                if !canvas.0.is_null() {
+                    let _ = SetFocus(Some(canvas));
                 }
                 if let Some(controller) = controller {
                     controller
@@ -1586,13 +2157,13 @@ fn execute_native_command(command: NativeCommand) {
             Ok(())
         }),
         NativeCommand::ClearFocus { handle } => with_native(handle, |native| {
-            let parent = native
+            let target_parent = native
                 .try_borrow()
                 .map_err(|_| "WebView2 state is busy while clearing focus".to_string())?
-                .parent;
+                .target_parent;
             unsafe {
-                if !parent.0.is_null() {
-                    let root = GetAncestor(parent, GA_ROOT);
+                if !target_parent.0.is_null() {
+                    let root = GetAncestor(target_parent, GA_ROOT);
                     if !root.0.is_null() {
                         let _ = SetFocus(Some(root));
                     }
@@ -1697,7 +2268,7 @@ fn destroy_views_parked_on(hwnd: HWND) {
             .iter()
             .filter_map(|(handle, native)| {
                 native.try_borrow().ok().and_then(|view| {
-                    (view.hwnd.0.is_null() && view.parent == hwnd).then_some(*handle)
+                    (view.canvas.0.is_null() && view.target_parent == hwnd).then_some(*handle)
                 })
             })
             .collect::<Vec<_>>()
@@ -1877,8 +2448,43 @@ fn create_native_on_owner(
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
     }
 
-    let parent = HWND(parent_hwnd as *mut c_void);
-    let hwnd = parent;
+    let canvas = HWND(parent_hwnd as *mut c_void);
+    // This is the first per-view native action and therefore freezes the process-wide experiment
+    // selection before any WebView2 controller is requested.
+    let selection = presentation_selection().clone();
+    let (clip_host, clip_bounds) = if selection.mode.is_root_host() {
+        create_clip_host_window_at(canvas, RECT::default())?
+    } else {
+        create_clip_host_window(canvas)?
+    };
+    let presentation = match selection.mode {
+        PresentationMode::Windowed => PresentationHost::Windowed(WindowedHost),
+        PresentationMode::WindowedRootPoc => PresentationHost::WindowedRootPoc(WindowedHost),
+        PresentationMode::CompositionPoc => match create_composition_host(clip_host, clip_bounds) {
+            Ok(host) => PresentationHost::CompositionPoc(host),
+            Err(error) => {
+                unsafe {
+                    let _ = DestroyWindow(clip_host);
+                }
+                return Err(format!(
+                    "composition-poc presentation initialization failed: {error}"
+                ));
+            }
+        },
+        PresentationMode::CompositionRootPoc => {
+            match create_composition_host(clip_host, RECT::default()) {
+                Ok(host) => PresentationHost::CompositionRootPoc(host),
+                Err(error) => {
+                    unsafe {
+                        let _ = DestroyWindow(clip_host);
+                    }
+                    return Err(format!(
+                        "composition-root-poc presentation initialization failed: {error}"
+                    ));
+                }
+            }
+        }
+    };
     let document_start_scripts = if document_start_script.is_empty() {
         Vec::new()
     } else {
@@ -1887,8 +2493,12 @@ fn create_native_on_owner(
 
     let native = Rc::new(RefCell::new(NativeWebView {
         handle,
-        parent,
-        hwnd,
+        canvas,
+        target_parent: canvas,
+        clip_host,
+        clip_parent: canvas,
+        clip_bounds,
+        presentation,
         controller: None,
         webview: None,
         controller_completed_handler: None,
@@ -1911,20 +2521,81 @@ fn create_native_on_owner(
         destroyed: false,
         visible: false,
         background_color,
-        applied_parent: HWND::default(),
-        applied_bounds: RECT::default(),
-        applied_visible: true,
+        controller_bounds: RECT::default(),
+        controller_visible: true,
         width: 0,
         height: 0,
+        screen_x: 0,
+        screen_y: 0,
         host_generation: generation,
     }));
 
     NATIVE_VIEWS.with(|views| {
         views.borrow_mut().insert(handle, native.clone());
     });
+    let (d3d_driver, d3d_hardware_error) = native
+        .try_borrow()
+        .ok()
+        .and_then(|view| match &view.presentation {
+            PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) => {
+                Some((host.d3d_driver, host.d3d_hardware_error.clone()))
+            }
+            PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => None,
+        })
+        .unwrap_or_default();
+    emit_diagnostic(
+        &native,
+        DIAGNOSTIC_TRACE,
+        "presentation.selected",
+        format!("Selected {} WebView2 presentation", selection.mode.name()),
+        diagnostic_data(vec![
+            ("mode", selection.mode.name().to_string()),
+            ("d3dDriver", d3d_driver.to_string()),
+            (
+                "d3dHardwareError",
+                d3d_hardware_error.clone().unwrap_or_default(),
+            ),
+            (
+                "forcedClip",
+                selection
+                    .forced_clip
+                    .map(|(width, height)| format!("{width}x{height}"))
+                    .unwrap_or_default(),
+            ),
+            (
+                "visualClip",
+                format_rect(effective_composition_clip_bounds(clip_bounds)),
+            ),
+            (
+                "staleControllerBounds",
+                selection.stale_controller_bounds.to_string(),
+            ),
+            ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+        ]),
+    );
+    if let Some(hardware_error) = d3d_hardware_error {
+        emit_diagnostic(
+            &native,
+            DIAGNOSTIC_INFO,
+            "direct3d.hardware-unavailable",
+            "Using the D3D11 WARP device for the composition PoC".to_string(),
+            diagnostic_data(vec![("hardwareError", hardware_error)]),
+        );
+    }
+    if let Some(warning) = selection.warning {
+        if !PRESENTATION_WARNING_EMITTED.swap(true, Ordering::AcqRel) {
+            emit_diagnostic(
+                &native,
+                DIAGNOSTIC_WARN,
+                "presentation.invalid-selection",
+                warning,
+                diagnostic_data(vec![("selectedMode", selection.mode.name().to_string())]),
+            );
+        }
+    }
     // Eagerly, not on the first park: `removeNotify` can arrive before anything else, and the
     // barrier needs a window to talk to by then.
-    publish_holder_window(handle, parent);
+    publish_holder_window(handle, canvas);
     if let Err(message) = ensure_shared_environment(native.clone(), user_data_dir) {
         let _ = destroy_native_state(&native);
         NATIVE_VIEWS.with(|views| {
@@ -2093,19 +2764,45 @@ fn begin_create_controller(
     environment: ICoreWebView2Environment,
     generation: u64,
 ) -> BridgeResult<()> {
+    let mode = native
+        .try_borrow()
+        .map_err(|_| "WebView2 state is busy while selecting controller type".to_string())?
+        .presentation
+        .mode();
+    match mode {
+        PresentationMode::Windowed | PresentationMode::WindowedRootPoc => {
+            begin_create_windowed_controller(native, environment, generation)
+        }
+        PresentationMode::CompositionPoc => {
+            begin_create_composition_controller(native, environment, generation)
+        }
+        PresentationMode::CompositionRootPoc => {
+            begin_create_composition_controller(native, environment, generation)
+        }
+    }
+}
+
+fn configure_controller_options(options: &ICoreWebView2ControllerOptions) -> BridgeResult<()> {
+    if let Ok(options4) = options.cast::<ICoreWebView2ControllerOptions4>() {
+        unsafe { options4.SetAllowHostInputProcessing(true) }.map_err(format_windows_error)?;
+    }
+    Ok(())
+}
+
+fn begin_create_windowed_controller(
+    native: NativeHandle,
+    environment: ICoreWebView2Environment,
+    generation: u64,
+) -> BridgeResult<()> {
     if is_native_destroyed(&native) {
         return Ok(());
     }
     if !register_shared_environment_active_view(generation, native.clone()) {
         return Ok(());
     }
-    // The controller is created directly in the Canvas HWND. Recording it as the applied parent
-    // keeps the first reconcile from re-parenting the controller to the window it is already in.
-    let hwnd = {
-        let mut view = native.borrow_mut();
-        view.applied_parent = view.hwnd;
-        view.hwnd
-    };
+    // The controller keeps this stable parent for its whole lifetime. Canvas peer changes move the
+    // bridge-owned clip host instead of re-parenting Chromium's internal window hierarchy.
+    let hwnd = native.borrow().clip_host;
     emit_diagnostic(
         &native,
         DIAGNOSTIC_TRACE,
@@ -2115,7 +2812,7 @@ fn begin_create_controller(
             ("generation", generation.to_string()),
             (
                 "parentHwnd",
-                (native.borrow().parent.0 as usize as u64).to_string(),
+                (native.borrow().target_parent.0 as usize as u64).to_string(),
             ),
             ("containerHwnd", (hwnd.0 as usize as u64).to_string()),
             ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
@@ -2189,34 +2886,32 @@ fn begin_create_controller(
     ));
     {
         let mut view = native.borrow_mut();
-        view.controller_completed_handler = Some(handler.clone());
+        view.controller_completed_handler = Some(ControllerCompletedHandler::Windowed {
+            _handler: handler.clone(),
+        });
         view.controller_create_started_at = Some(Instant::now());
     }
-    unsafe {
-        let create_result = if let Ok(environment10) =
-            environment.cast::<ICoreWebView2Environment10>()
-        {
-            match environment10.CreateCoreWebView2ControllerOptions() {
-                Ok(options) => {
-                    if let Ok(options4) = options.cast::<ICoreWebView2ControllerOptions4>() {
-                        options4
-                            .SetAllowHostInputProcessing(true)
-                            .map_err(format_windows_error)?;
-                    }
+    let create_result = if let Ok(environment10) = environment.cast::<ICoreWebView2Environment10>()
+    {
+        match unsafe { environment10.CreateCoreWebView2ControllerOptions() } {
+            Ok(options) => configure_controller_options(&options).and_then(|()| {
+                unsafe {
                     environment10.CreateCoreWebView2ControllerWithOptions(hwnd, &options, &handler)
                 }
-                Err(error) => Err(error),
-            }
-        } else {
-            environment.CreateCoreWebView2Controller(hwnd, &handler)
-        };
-        if let Err(error) = create_result {
-            unregister_shared_environment_view(native_handle(&native));
-            if let Ok(mut view) = native.try_borrow_mut() {
-                view.controller_create_started_at = None;
-            }
-            return Err(format_windows_error(error));
+                .map_err(format_windows_error)
+            }),
+            Err(error) => Err(format_windows_error(error)),
         }
+    } else {
+        unsafe { environment.CreateCoreWebView2Controller(hwnd, &handler) }
+            .map_err(format_windows_error)
+    };
+    if let Err(error) = create_result {
+        unregister_shared_environment_view(native_handle(&native));
+        if let Ok(mut view) = native.try_borrow_mut() {
+            view.controller_create_started_at = None;
+        }
+        return Err(error);
     }
     emit_diagnostic(
         &native,
@@ -2226,6 +2921,257 @@ fn begin_create_controller(
         diagnostic_data(vec![
             ("generation", generation.to_string()),
             ("containerHwnd", (hwnd.0 as usize as u64).to_string()),
+            ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+        ]),
+    );
+    Ok(())
+}
+
+fn begin_create_composition_controller(
+    native: NativeHandle,
+    environment: ICoreWebView2Environment,
+    generation: u64,
+) -> BridgeResult<()> {
+    if is_native_destroyed(&native) {
+        return Ok(());
+    }
+    if !register_shared_environment_active_view(generation, native.clone()) {
+        return Ok(());
+    }
+    let (surface, target_parent) = {
+        let view = native.try_borrow().map_err(|_| {
+            "WebView2 state is busy while starting composition controller creation".to_string()
+        })?;
+        (view.clip_host, view.target_parent)
+    };
+    emit_diagnostic(
+        &native,
+        DIAGNOSTIC_TRACE,
+        "controller.create.requested",
+        "WebView2 composition controller creation requested".to_string(),
+        diagnostic_data(vec![
+            ("generation", generation.to_string()),
+            (
+                "presentationMode",
+                PresentationMode::CompositionPoc.name().to_string(),
+            ),
+            ("parentHwnd", (target_parent.0 as usize as u64).to_string()),
+            ("containerHwnd", (surface.0 as usize as u64).to_string()),
+            ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+        ]),
+    );
+
+    let environment_for_callback = environment.clone();
+    let native_for_callback = native.clone();
+    let handler = CreateCoreWebView2CompositionControllerCompletedHandler::create(Box::new(
+        move |error_code, composition_controller| {
+            let (controller_started_at, native_destroyed) =
+                if let Ok(mut view) = native_for_callback.try_borrow_mut() {
+                    view.controller_completed_handler = None;
+                    (view.controller_create_started_at.take(), view.destroyed)
+                } else {
+                    (None, false)
+                };
+            let generation_current = is_shared_environment_current(generation);
+            let result = match &error_code {
+                Ok(()) => "S_OK".to_string(),
+                Err(error) => format_windows_error(error),
+            };
+            emit_diagnostic(
+                &native_for_callback,
+                DIAGNOSTIC_TRACE,
+                "controller.create.callback",
+                "WebView2 composition controller creation callback invoked".to_string(),
+                diagnostic_data(vec![
+                    ("generation", generation.to_string()),
+                    (
+                        "presentationMode",
+                        PresentationMode::CompositionPoc.name().to_string(),
+                    ),
+                    ("generationCurrent", generation_current.to_string()),
+                    ("nativeDestroyed", native_destroyed.to_string()),
+                    (
+                        "controllerPresent",
+                        composition_controller.is_some().to_string(),
+                    ),
+                    ("result", result),
+                    ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+                ]),
+            );
+            if native_destroyed || !generation_current {
+                return Ok(());
+            }
+            if let Err(error) = error_code {
+                fail_create(
+                    &native_for_callback,
+                    format!(
+                        "composition-poc controller creation failed: {}",
+                        format_windows_error(error)
+                    ),
+                );
+                return Ok(());
+            }
+            let Some(composition_controller) = composition_controller else {
+                fail_create(
+                    &native_for_callback,
+                    "composition-poc controller callback returned null".to_string(),
+                );
+                return Ok(());
+            };
+
+            if let Some(started_at) = controller_started_at {
+                emit_perf_diagnostic(
+                    &native_for_callback,
+                    "perf.webview2.controller.create",
+                    started_at,
+                    vec![
+                        ("generation", generation.to_string()),
+                        (
+                            "presentationMode",
+                            PresentationMode::CompositionPoc.name().to_string(),
+                        ),
+                    ],
+                );
+            }
+
+            let finish_result = (|| {
+                let (webview_visual, device) = {
+                    let view = native_for_callback.try_borrow().map_err(|_| {
+                        "WebView2 state is busy while attaching the root visual".to_string()
+                    })?;
+                    match &view.presentation {
+                        PresentationHost::CompositionPoc(host)
+                        | PresentationHost::CompositionRootPoc(host) => {
+                            (host.webview_visual.clone(), host.device.clone())
+                        }
+                        PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => {
+                            return Err(
+                                "composition-poc callback reached a windowed host".to_string()
+                            )
+                        }
+                    }
+                };
+                let root_visual = webview_visual
+                    .cast::<IUnknown>()
+                    .map_err(format_windows_error)?;
+                let commit_started_at = Instant::now();
+                unsafe {
+                    composition_controller
+                        .SetRootVisualTarget(&root_visual)
+                        .map_err(|error| {
+                            format!(
+                                "SetRootVisualTarget failed: {}",
+                                format_windows_error(error)
+                            )
+                        })?;
+                    device.Commit().map_err(|error| {
+                        format!(
+                            "DirectComposition commit after SetRootVisualTarget failed: {}",
+                            format_windows_error(error)
+                        )
+                    })?;
+                }
+                emit_perf_diagnostic(
+                    &native_for_callback,
+                    "perf.direct-composition.root-visual.commit",
+                    commit_started_at,
+                    vec![("generation", generation.to_string())],
+                );
+                let controller = composition_controller
+                    .cast::<ICoreWebView2Controller>()
+                    .map_err(|error| {
+                        format!(
+                            "ICoreWebView2CompositionController -> ICoreWebView2Controller failed: {}",
+                            format_windows_error(error)
+                        )
+                    })?;
+                {
+                    let mut view = native_for_callback.try_borrow_mut().map_err(|_| {
+                        "WebView2 state is busy while retaining the composition controller"
+                            .to_string()
+                    })?;
+                    match &mut view.presentation {
+                        PresentationHost::CompositionPoc(host)
+                        | PresentationHost::CompositionRootPoc(host) => {
+                            host.composition_controller = Some(composition_controller.clone());
+                        }
+                        PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => {
+                            return Err(
+                                "composition-poc callback reached a windowed host".to_string()
+                            )
+                        }
+                    }
+                }
+                finish_create(
+                    native_for_callback.clone(),
+                    environment_for_callback.clone(),
+                    controller,
+                    generation,
+                )
+            })();
+            if let Err(message) = finish_result {
+                fail_create(&native_for_callback, message);
+            }
+            Ok(())
+        },
+    ));
+    {
+        let mut view = native.borrow_mut();
+        view.controller_completed_handler = Some(ControllerCompletedHandler::Composition {
+            _handler: handler.clone(),
+        });
+        view.controller_create_started_at = Some(Instant::now());
+    }
+
+    let create_without_options = || -> BridgeResult<()> {
+        match environment.cast::<ICoreWebView2Environment3>() {
+            Ok(environment3) => {
+                unsafe { environment3.CreateCoreWebView2CompositionController(surface, &handler) }
+                    .map_err(format_windows_error)
+            }
+            Err(error) => Err(format!(
+                "ICoreWebView2Environment3 is unavailable: {}",
+                format_windows_error(error)
+            )),
+        }
+    };
+    let create_result = if let Ok(environment10) = environment.cast::<ICoreWebView2Environment10>()
+    {
+        match unsafe { environment10.CreateCoreWebView2ControllerOptions() } {
+            Ok(options) => configure_controller_options(&options).and_then(|()| {
+                unsafe {
+                    environment10.CreateCoreWebView2CompositionControllerWithOptions(
+                        surface, &options, &handler,
+                    )
+                }
+                .map_err(format_windows_error)
+            }),
+            Err(_) => create_without_options(),
+        }
+    } else {
+        create_without_options()
+    };
+    if let Err(error) = create_result {
+        unregister_shared_environment_view(native_handle(&native));
+        if let Ok(mut view) = native.try_borrow_mut() {
+            view.controller_create_started_at = None;
+        }
+        return Err(format!(
+            "composition-poc controller request failed: {error}"
+        ));
+    }
+    emit_diagnostic(
+        &native,
+        DIAGNOSTIC_TRACE,
+        "controller.create.accepted",
+        "WebView2 composition controller creation request accepted".to_string(),
+        diagnostic_data(vec![
+            ("generation", generation.to_string()),
+            (
+                "presentationMode",
+                PresentationMode::CompositionPoc.name().to_string(),
+            ),
+            ("containerHwnd", (surface.0 as usize as u64).to_string()),
             ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
         ]),
     );
@@ -3576,142 +4522,374 @@ fn remove_add_script_handler(native: &NativeHandle, handler_id: u64) {
     }
 }
 
-/// Remembers what the controller was actually told, so the next reconcile can stay silent.
-fn store_applied_placement(native: &NativeHandle, parent: HWND, bounds: RECT, visible: bool) {
-    if let Ok(mut view) = native.try_borrow_mut() {
-        view.applied_parent = parent;
-        view.applied_bounds = bounds;
-        view.applied_visible = visible;
+fn has_area(bounds: RECT) -> bool {
+    bounds.right > bounds.left && bounds.bottom > bounds.top
+}
+
+fn store_clip_bounds(native: &NativeHandle, bounds: RECT) -> BridgeResult<()> {
+    native
+        .try_borrow_mut()
+        .map_err(|_| "WebView2 state is busy after resizing the clip host".to_string())?
+        .clip_bounds = bounds;
+    Ok(())
+}
+
+fn store_controller_bounds(native: &NativeHandle, bounds: RECT) -> BridgeResult<()> {
+    native
+        .try_borrow_mut()
+        .map_err(|_| "WebView2 state is busy after resizing the controller".to_string())?
+        .controller_bounds = bounds;
+    Ok(())
+}
+
+fn store_controller_visibility(native: &NativeHandle, visible: bool) -> BridgeResult<()> {
+    native
+        .try_borrow_mut()
+        .map_err(|_| "WebView2 state is busy after changing controller visibility".to_string())?
+        .controller_visible = visible;
+    Ok(())
+}
+
+fn apply_composition_visual_clip(native: &NativeHandle, bounds: RECT) -> BridgeResult<()> {
+    let bounds = effective_composition_clip_bounds(bounds);
+    let (clip, device, previous_bounds, commit_generation, host_generation) = {
+        let view = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while reading the composition clip".to_string())?;
+        match &view.presentation {
+            PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) => {
+                (
+                    host.clip.clone(),
+                    host.device.clone(),
+                    host.visual_clip_bounds,
+                    host.commit_generation + 1,
+                    view.host_generation,
+                )
+            }
+            PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => {
+                return Err("composition clip requested for a windowed host".to_string())
+            }
+        }
+    };
+    if bounds == previous_bounds {
+        return Ok(());
+    }
+
+    let started_at = Instant::now();
+    if let Err(error) = set_composition_clip_objects(&clip, &device, bounds) {
+        emit_diagnostic(
+            native,
+            DIAGNOSTIC_WARN,
+            "direct-composition.clip.commit-failed",
+            error.clone(),
+            diagnostic_data(vec![
+                ("geometryGeneration", host_generation.to_string()),
+                ("commitGeneration", commit_generation.to_string()),
+                ("visualClip", format_rect(bounds)),
+                ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+            ]),
+        );
+        return Err(error);
+    }
+    {
+        let mut view = native.try_borrow_mut().map_err(|_| {
+            "WebView2 state is busy after committing the composition clip".to_string()
+        })?;
+        match &mut view.presentation {
+            PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) => {
+                host.visual_clip_bounds = bounds;
+                host.commit_generation = commit_generation;
+            }
+            PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => {
+                return Err("composition clip committed for a windowed host".to_string())
+            }
+        }
+    }
+    if placement_trace_enabled() {
+        emit_diagnostic(
+            native,
+            DIAGNOSTIC_TRACE,
+            "direct-composition.clip.committed",
+            "DirectComposition visual clip committed".to_string(),
+            diagnostic_data(vec![
+                ("geometryGeneration", host_generation.to_string()),
+                ("commitGeneration", commit_generation.to_string()),
+                ("visualClip", format_rect(bounds)),
+                ("commitResult", "S_OK".to_string()),
+                (
+                    "commitDurationMicros",
+                    started_at.elapsed().as_micros().to_string(),
+                ),
+                ("threadId", unsafe { GetCurrentThreadId() }.to_string()),
+            ]),
+        );
+    }
+    Ok(())
+}
+
+fn composition_controller_target_bounds(
+    native: &NativeHandle,
+    requested_bounds: RECT,
+) -> BridgeResult<RECT> {
+    let stale_controller_bounds = presentation_selection().stale_controller_bounds;
+    let mut view = native.try_borrow_mut().map_err(|_| {
+        "WebView2 state is busy while selecting composition controller bounds".to_string()
+    })?;
+    let host = match &mut view.presentation {
+        PresentationHost::CompositionPoc(host) | PresentationHost::CompositionRootPoc(host) => host,
+        PresentationHost::Windowed(_) | PresentationHost::WindowedRootPoc(_) => {
+            return Err("composition controller bounds requested for a windowed host".to_string())
+        }
+    };
+    if has_area(requested_bounds) {
+        host.maximum_controller_bounds.right = host
+            .maximum_controller_bounds
+            .right
+            .max(requested_bounds.right);
+        host.maximum_controller_bounds.bottom = host
+            .maximum_controller_bounds
+            .bottom
+            .max(requested_bounds.bottom);
+    }
+    if stale_controller_bounds && has_area(requested_bounds) {
+        Ok(host.maximum_controller_bounds)
+    } else {
+        Ok(requested_bounds)
     }
 }
 
-/// The single reconcile: brings the controller to the desired [`NativeWebView`] state.
-///
-/// Placement is the WebView2 API and nothing else: `SetParentWindow` (`put_ParentWindow`) on a real
-/// parent change, `SetBounds` when the parent or the rectangle changed,
-/// `NotifyParentWindowPositionChanged` after a reparent, and `SetIsVisible` (`put_IsVisible`) on a
-/// real visibility change. Hiding is honest, which is the only way Chromium ever learns that the
-/// page is off screen and may freeze its renderer.
-///
-/// The order is what keeps the reveal free of intermediate frames: hide before moving, move before
-/// showing, so nothing is ever presented at a size or position the host no longer has.
-fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
-    // With no Canvas, `parent` is the holder the view was parked in.
-    let (
-        hwnd,
-        holder,
-        controller,
-        visible,
-        width,
-        height,
-        applied_parent,
-        applied_bounds,
-        applied_visible,
-    ) = {
+fn apply_composition_geometry(native: &NativeHandle, bounds: RECT) -> BridgeResult<()> {
+    let root_host = native
+        .try_borrow()
+        .map_err(|_| "WebView2 state is busy while selecting composition geometry".to_string())?
+        .presentation
+        .mode()
+        == PresentationMode::CompositionRootPoc;
+    let local_bounds = if root_host {
+        rect_from_size(bounds.right - bounds.left, bounds.bottom - bounds.top)
+    } else {
+        bounds
+    };
+    // The visual clip is the PoC's actual containment boundary. Commit it before changing either
+    // the surface HWND or controller bounds so an intentionally stale WebView2 surface is safe.
+    apply_composition_visual_clip(native, local_bounds)?;
+    let (surface, surface_bounds, controller, controller_bounds) = {
         let view = native
             .try_borrow()
-            .map_err(|_| "WebView2 state is busy while reading Canvas bounds".to_string())?;
+            .map_err(|_| "WebView2 state is busy while reading composition geometry".to_string())?;
         (
-            view.hwnd,
-            view.parent,
+            view.clip_host,
+            view.clip_bounds,
             view.controller.clone(),
-            view.visible,
-            view.width,
-            view.height,
-            view.applied_parent,
-            view.applied_bounds,
-            view.applied_visible,
+            view.controller_bounds,
         )
+    };
+    if surface.0.is_null() {
+        return Err("WebView2 composition surface HWND is null".to_string());
+    }
+    if bounds != surface_bounds {
+        set_clip_host_bounds_window(surface, bounds)?;
+        store_clip_bounds(native, bounds)?;
+    }
+    let target_bounds = composition_controller_target_bounds(native, local_bounds)?;
+    if has_area(target_bounds) && target_bounds != controller_bounds {
+        if let Some(controller) = controller {
+            unsafe { controller.SetBounds(target_bounds) }.map_err(format_windows_error)?;
+            store_controller_bounds(native, target_bounds)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_clip_geometry(native: &NativeHandle, bounds: RECT) -> BridgeResult<()> {
+    let mode = native
+        .try_borrow()
+        .map_err(|_| "WebView2 state is busy while selecting geometry path".to_string())?
+        .presentation
+        .mode();
+    match mode {
+        PresentationMode::Windowed => apply_windowed_clip_geometry(native, bounds),
+        PresentationMode::WindowedRootPoc => apply_windowed_clip_geometry(native, bounds),
+        PresentationMode::CompositionPoc => apply_composition_geometry(native, bounds),
+        PresentationMode::CompositionRootPoc => apply_composition_geometry(native, bounds),
+    }
+}
+
+/// Applies one host rectangle without holding a `RefCell` borrow across Win32 or COM calls. A root
+/// host moves the clip HWND in root-client coordinates while the WebView2 controller remains at
+/// the clip HWND's local origin. The shrink-first order reduces the stale-size interval.
+fn apply_windowed_clip_geometry(native: &NativeHandle, bounds: RECT) -> BridgeResult<()> {
+    let (clip_host, controller, clip_bounds, controller_bounds, root_host) = {
+        let view = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while reading clip geometry".to_string())?;
+        (
+            view.clip_host,
+            view.controller.clone(),
+            view.clip_bounds,
+            view.controller_bounds,
+            view.presentation.mode().is_root_host(),
+        )
+    };
+    if clip_host.0.is_null() {
+        return Err("WebView2 clip-host HWND is null".to_string());
+    }
+
+    let controller_target_bounds = if root_host {
+        rect_from_size(bounds.right - bounds.left, bounds.bottom - bounds.top)
+    } else {
+        bounds
+    };
+    let clip_changed = bounds != clip_bounds;
+    let shrinking = controller_target_bounds.right - controller_target_bounds.left
+        < controller_bounds.right - controller_bounds.left
+        || controller_target_bounds.bottom - controller_target_bounds.top
+            < controller_bounds.bottom - controller_bounds.top;
+    let clip_first = shrinking || !has_area(bounds) || controller.is_none();
+
+    if clip_changed && clip_first {
+        set_clip_host_bounds_window(clip_host, bounds)?;
+        store_clip_bounds(native, bounds)?;
+    }
+
+    if has_area(controller_target_bounds) && controller_target_bounds != controller_bounds {
+        if let Some(controller) = controller.as_ref() {
+            unsafe { controller.SetBounds(controller_target_bounds) }
+                .map_err(format_windows_error)?;
+            store_controller_bounds(native, controller_target_bounds)?;
+        }
+    }
+
+    if clip_changed && !clip_first {
+        set_clip_host_bounds_window(clip_host, bounds)?;
+        store_clip_bounds(native, bounds)?;
+    }
+
+    Ok(())
+}
+
+fn apply_clip_parent(native: &NativeHandle, target_parent: HWND) -> BridgeResult<bool> {
+    let (clip_host, clip_parent) = {
+        let view = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while reading clip-host parent".to_string())?;
+        (view.clip_host, view.clip_parent)
+    };
+    if clip_parent == target_parent {
+        return Ok(false);
+    }
+    if target_parent.0.is_null() {
+        return Err("WebView2 clip-host target parent is null".to_string());
+    }
+    set_clip_host_parent_window(clip_host, target_parent)?;
+    native
+        .try_borrow_mut()
+        .map_err(|_| "WebView2 state is busy after re-parenting the clip host".to_string())?
+        .clip_parent = target_parent;
+    Ok(true)
+}
+
+fn apply_controller_visibility(native: &NativeHandle, visible: bool) -> BridgeResult<()> {
+    let (controller, controller_visible) = {
+        let view = native.try_borrow().map_err(|_| {
+            "WebView2 state is busy while reading controller visibility".to_string()
+        })?;
+        (view.controller.clone(), view.controller_visible)
     };
     let Some(controller) = controller else {
         return Ok(());
     };
-    if hwnd.0.is_null() {
-        // The controller was created after the park, so the park itself had nothing to move nor to
-        // hide. Leaving it on the destroyed Canvas HWND would take it down together with the peer.
-        if applied_visible {
-            unsafe {
-                controller
-                    .SetIsVisible(false)
-                    .map_err(format_windows_error)?;
-            }
-        }
-        if !holder.0.is_null() && applied_parent != holder {
-            unsafe {
-                controller
-                    .SetParentWindow(holder)
-                    .map_err(format_windows_error)?;
-            }
-            store_applied_placement(native, holder, RECT::default(), false);
-        } else if applied_visible {
-            store_applied_placement(native, applied_parent, applied_bounds, false);
-        }
+    if controller_visible == visible {
         return Ok(());
     }
+    unsafe { controller.SetIsVisible(visible) }.map_err(format_windows_error)?;
+    store_controller_visibility(native, visible)
+}
 
-    let mut client = RECT::default();
-    let (client_width, client_height) = unsafe {
-        match GetClientRect(hwnd, &mut client) {
-            Ok(()) => (client.right - client.left, client.bottom - client.top),
-            Err(_) => (width, height),
-        }
-    };
-    // An AWT peer is born empty and gets its real bounds one layout later. Resizing the page down
-    // to 1x1 in between costs a reflow and a frame, and that size is never what anyone sees, so an
-    // empty host keeps whatever the controller already has.
-    let (width, height) = if client_width > 0 && client_height > 0 {
-        (client_width, client_height)
-    } else if applied_bounds.right > applied_bounds.left
-        && applied_bounds.bottom > applied_bounds.top
-    {
+/// Reconciles the stable clip-host HWND with the current Canvas or parking holder. WebView2 keeps
+/// the clip host as its parent for its entire lifetime; only the plain bridge window is reparented.
+fn reconcile(native: &NativeHandle) -> BridgeResult<()> {
+    let (
+        canvas,
+        target_parent,
+        clip_parent,
+        controller,
+        visible,
+        width,
+        height,
+        screen_x,
+        screen_y,
+        presentation_mode,
+        controller_visible,
+    ) = {
+        let view = native
+            .try_borrow()
+            .map_err(|_| "WebView2 state is busy while reading Canvas state".to_string())?;
         (
-            applied_bounds.right - applied_bounds.left,
-            applied_bounds.bottom - applied_bounds.top,
+            view.canvas,
+            view.target_parent,
+            view.clip_parent,
+            view.controller.clone(),
+            view.visible,
+            view.width,
+            view.height,
+            view.screen_x,
+            view.screen_y,
+            view.presentation.mode(),
+            view.controller_visible,
         )
-    } else {
-        (1, 1)
-    };
-    let bounds = RECT {
-        left: 0,
-        top: 0,
-        right: width,
-        bottom: height,
     };
 
-    let parent_changed = applied_parent != hwnd;
-    unsafe {
-        if applied_visible && !visible {
-            controller
-                .SetIsVisible(false)
-                .map_err(format_windows_error)?;
-        }
-        if parent_changed {
-            controller
-                .SetParentWindow(hwnd)
-                .map_err(format_windows_error)?;
-        }
-        if parent_changed || bounds != applied_bounds {
-            controller.SetBounds(bounds).map_err(format_windows_error)?;
-        }
-        if parent_changed {
-            controller
-                .NotifyParentWindowPositionChanged()
-                .map_err(format_windows_error)?;
-        }
-        if visible && !applied_visible {
-            controller.SetIsVisible(true).map_err(format_windows_error)?;
+    let bounds = if canvas.0.is_null() {
+        RECT::default()
+    } else if presentation_mode.is_root_host() {
+        screen_rect_to_client(canvas, screen_x, screen_y, width, height)?
+    } else {
+        canvas_client_bounds(canvas).unwrap_or(RECT {
+            left: 0,
+            top: 0,
+            right: width.max(0),
+            bottom: height.max(0),
+        })
+    };
+    let parent_changed = clip_parent != target_parent;
+    let should_show = visible && has_area(bounds) && !canvas.0.is_null();
+
+    // A reparent always starts hidden and clipped to zero. This protects the old Canvas while the
+    // clip host moves and also covers a controller whose asynchronous creation finished parked.
+    if controller_visible && (!should_show || parent_changed) {
+        apply_controller_visibility(native, false)?;
+    }
+    if parent_changed {
+        apply_clip_geometry(native, RECT::default())?;
+    }
+    let reparented = apply_clip_parent(native, target_parent)?;
+    apply_clip_geometry(native, bounds)?;
+
+    if reparented {
+        if let Some(controller) = controller.as_ref() {
+            if let Err(error) = unsafe { controller.NotifyParentWindowPositionChanged() } {
+                emit_diagnostic(
+                    native,
+                    DIAGNOSTIC_WARN,
+                    "clip-host.notify-parent-position.failed",
+                    format_windows_error(error),
+                    String::new(),
+                );
+            }
         }
     }
-    store_applied_placement(native, hwnd, bounds, visible);
+    if should_show {
+        apply_controller_visibility(native, true)?;
+    }
 
     let extra = format!(
         "bounds={} visible={} reparented={}",
         format_rect(bounds),
-        visible,
-        parent_changed
+        should_show,
+        reparented
     );
     trace_placement("reconcile", native, Some(&extra));
-
     Ok(())
 }
 
@@ -4023,6 +5201,168 @@ mod tests {
                 let _ = DestroyWindow(self.0);
             }
         }
+    }
+
+    #[test]
+    fn presentation_selection_defaults_and_invalid_values_to_root_windowed() {
+        assert_eq!(
+            parse_presentation_selection(None, None, None),
+            PresentationSelection {
+                mode: PresentationMode::WindowedRootPoc,
+                warning: None,
+                forced_clip: None,
+                stale_controller_bounds: false,
+            }
+        );
+
+        let invalid = parse_presentation_selection(Some("composition"), None, Some("1"));
+        assert_eq!(invalid.mode, PresentationMode::WindowedRootPoc);
+        assert!(invalid
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains(PRESENTATION_ENV)));
+        assert!(!invalid.stale_controller_bounds);
+    }
+
+    #[test]
+    fn explicit_windowed_selection_keeps_the_legacy_canvas_host() {
+        let selection = parse_presentation_selection(Some("windowed"), None, None);
+        assert_eq!(selection.mode, PresentationMode::Windowed);
+        assert!(!selection.mode.is_root_host());
+        assert_eq!(selection.warning, None);
+    }
+
+    #[test]
+    fn windowed_root_poc_selection_is_the_canvas_free_default() {
+        let selection =
+            parse_presentation_selection(Some("windowed-root-poc"), Some("200x400"), Some("1"));
+        assert_eq!(selection.mode, PresentationMode::WindowedRootPoc);
+        assert!(selection.mode.is_root_host());
+        assert_eq!(selection.forced_clip, None);
+        assert!(!selection.stale_controller_bounds);
+        assert_eq!(selection.warning, None);
+    }
+
+    #[test]
+    fn composition_poc_selection_parses_forced_clip_and_stale_bounds() {
+        assert_eq!(
+            parse_presentation_selection(Some("composition-poc"), Some("200x400"), Some("1")),
+            PresentationSelection {
+                mode: PresentationMode::CompositionPoc,
+                warning: None,
+                forced_clip: Some((200, 400)),
+                stale_controller_bounds: true,
+            }
+        );
+
+        let invalid_clip =
+            parse_presentation_selection(Some("composition-poc"), Some("200x0"), None);
+        assert_eq!(invalid_clip.mode, PresentationMode::CompositionPoc);
+        assert_eq!(invalid_clip.forced_clip, None);
+        assert!(invalid_clip
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains(COMPOSITION_POC_CLIP_ENV)));
+    }
+
+    #[test]
+    fn composition_root_poc_selection_is_canvas_free_mode() {
+        let selection =
+            parse_presentation_selection(Some("composition-root-poc"), Some("200x400"), Some("1"));
+        assert_eq!(selection.mode, PresentationMode::CompositionRootPoc);
+        assert_eq!(selection.forced_clip, None);
+        assert!(!selection.stale_controller_bounds);
+        assert_eq!(selection.warning, None);
+    }
+
+    #[test]
+    fn clip_host_tracks_canvas_bounds_parks_and_is_destroyed() {
+        let root = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("webview-clip-test-root"),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                480,
+                360,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("create clip-host test root")
+        });
+        unsafe {
+            let _ = ShowWindow(root.0, SW_SHOW);
+        }
+        let canvas = TestWindow(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("webview-clip-test-canvas"),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                320,
+                240,
+                Some(root.0),
+                None,
+                None,
+                None,
+            )
+            .expect("create clip-host test Canvas")
+        });
+
+        let (clip_hwnd, initial_bounds) =
+            create_clip_host_window(canvas.0).expect("create WebView2 clip host");
+        let clip_host = TestWindow(clip_hwnd);
+        assert_eq!(initial_bounds.right, 320);
+        assert_eq!(initial_bounds.bottom, 240);
+        assert_eq!(
+            unsafe { GetParent(clip_host.0) }.expect("read clip-host parent"),
+            canvas.0,
+            "the clip host must start as a direct child of the Canvas"
+        );
+        assert!(
+            unsafe { IsWindowVisible(clip_host.0) }.as_bool(),
+            "the clip host stays visible; controller visibility is managed separately"
+        );
+
+        let resized = RECT {
+            left: 0,
+            top: 0,
+            right: 123,
+            bottom: 77,
+        };
+        set_clip_host_bounds_window(clip_host.0, resized).expect("resize clip host");
+        let mut actual = RECT::default();
+        unsafe { GetClientRect(clip_host.0, &mut actual) }.expect("read resized clip host");
+        assert_eq!((actual.right, actual.bottom), (123, 77));
+
+        set_clip_host_bounds_window(clip_host.0, RECT::default())
+            .expect("shrink clip host to zero");
+        let holder = resolve_holder_window(canvas.0).expect("resolve clip-host parking holder");
+        set_clip_host_parent_window(clip_host.0, holder).expect("park clip host");
+        assert_eq!(
+            unsafe { GetParent(clip_host.0) }.expect("read parked clip-host parent"),
+            holder,
+            "parking moves the bridge-owned HWND instead of the WebView2 controller"
+        );
+        unsafe { GetClientRect(clip_host.0, &mut actual) }.expect("read parked clip host");
+        assert_eq!((actual.right, actual.bottom), (0, 0));
+
+        let destroyed = clip_host.0;
+        drop(clip_host);
+        assert!(
+            !unsafe { IsWindow(Some(destroyed)) }.as_bool(),
+            "the bridge-owned clip host must be destroyable without touching the Canvas"
+        );
+        assert!(
+            unsafe { IsWindow(Some(canvas.0)) }.as_bool(),
+            "destroying the clip host must leave the AWT-owned Canvas alive"
+        );
     }
 
     /// The owned-window case (a floating dialog parking under its owner) cannot be modeled here -

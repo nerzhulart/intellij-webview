@@ -18,6 +18,8 @@ plugins {
 group = "io.github.nerzhulart.webview"
 version = providers.gradleProperty("pluginVersion").get()
 
+val lightweightStandaloneSampleMainClass = "io.github.nerzhulart.webview.LightweightStandaloneSampleApp"
+
 allprojects {
   tasks.withType<Test>().configureEach {
     outputs.doNotCacheIf("Test results must not be restored from the build cache") { true }
@@ -71,6 +73,7 @@ sourceSets {
   }
   named("test") {
     resources.srcDir("tests/testResources")
+    runtimeClasspath += configurations["intellijPlatformTestClasspath"]
   }
 }
 
@@ -92,6 +95,7 @@ intellijPlatform {
 
 tasks {
   val testIdeaRoot = layout.buildDirectory.dir("test-idea-root")
+  val standaloneSystemDir = layout.buildDirectory.dir("standalone-system")
 
   named<PublishPluginTask>("publishPlugin") {
     providers.gradleProperty("pluginArchiveFile").orNull?.let {
@@ -119,20 +123,36 @@ tasks {
     providers.systemProperty("webview.win.paint.trace").orNull?.let {
       environment("WEBVIEW_WIN_PAINT_TRACE", it)
     }
+    providers.systemProperty("webview.win.presentation").orNull?.let {
+      environment("WEBVIEW_WIN_PRESENTATION", it)
+    }
   }
 
   register<JavaExec>("runWebViewSampleApp") {
     group = "webview"
     description = "Runs the standalone WebView sample app used for manual flicker checks."
-    dependsOn(prepareTestNativeLibraries)
-    mainClass.set("io.github.nerzhulart.webview.LightweightStandaloneSampleApp")
+    mainClass.set(lightweightStandaloneSampleMainClass)
     classpath = sourceSets["test"].runtimeClasspath
+  }
+
+  withType<JavaExec>().matching {
+    it.name == "runWebViewSampleApp" || it.name == "$lightweightStandaloneSampleMainClass.main()"
+  }.configureEach {
+    dependsOn(prepareTestNativeLibraries)
     systemProperty("idea.dev.project.root", testIdeaRoot.get().asFile.absolutePath)
+    systemProperty("idea.system.path", standaloneSystemDir.get().asFile.absolutePath)
     systemProperty("java.awt.headless", "false")
     systemProperty("idea.log.trace.categories", "#io.github.nerzhulart.webview")
+    jvmArgs(
+      "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
+      "--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED",
+    )
     // Flicker diagnostics: trace paint/placement window messages in the native bridge.
     providers.systemProperty("webview.win.paint.trace").orNull?.let {
       environment("WEBVIEW_WIN_PAINT_TRACE", it)
+    }
+    providers.systemProperty("webview.win.presentation").orNull?.let {
+      environment("WEBVIEW_WIN_PRESENTATION", it)
     }
   }
 
@@ -161,5 +181,11 @@ tasks {
     sandboxLogDirectory.set(allPluginsSandbox.flatMap { it.sandboxLogDirectory })
     testSandbox.set(allPluginsSandbox.flatMap { it.testSandbox })
     dependsOn(allPluginsSandbox)
+    providers.systemProperty("webview.win.paint.trace").orNull?.let {
+      environment("WEBVIEW_WIN_PAINT_TRACE", it)
+    }
+    providers.systemProperty("webview.win.presentation").orNull?.let {
+      environment("WEBVIEW_WIN_PRESENTATION", it)
+    }
   }
 }

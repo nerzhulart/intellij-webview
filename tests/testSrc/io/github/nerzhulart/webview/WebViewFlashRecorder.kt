@@ -29,6 +29,7 @@ internal fun webViewLogTimestamp(millis: Long = System.currentTimeMillis()): Str
 internal class WebViewFlashRecorder(
   private val screenRegion: Rectangle,
   private val reportName: String = "run-" + System.currentTimeMillis(),
+  private val saveAllFrames: Boolean = false,
 ) {
   private val robot = Robot()
   private val outputDir: Path = Path.of("build", "reports", "webview-flash", reportName)
@@ -37,6 +38,7 @@ internal class WebViewFlashRecorder(
   private var running = true
   private var samples = 0
   private var savedImages = 0
+  private val recordedFrames = ArrayList<BufferedImage>()
   private val events = StringBuilder()
   private val thread = Thread({ captureLoop() }, "webview-flash-recorder").apply { isDaemon = true }
 
@@ -56,6 +58,9 @@ internal class WebViewFlashRecorder(
   fun stopAndReport(): String {
     running = false
     thread.join(5_000)
+    recordedFrames.forEachIndexed { index, image ->
+      ImageIO.write(image, "png", outputDir.resolve("frame-${"%04d".format(index)}.png").toFile())
+    }
     return buildString {
       append(
         "[flash-recorder] $reportName samples=$samples" +
@@ -71,6 +76,9 @@ internal class WebViewFlashRecorder(
     while (running) {
       val image = robot.createScreenCapture(screenRegion)
       val now = System.currentTimeMillis()
+      if (saveAllFrames && recordedFrames.size < MAX_RECORDED_FRAMES) {
+        recordedFrames.add(image)
+      }
       val before = previous
       previous = image
       if (before == null) {
@@ -150,5 +158,6 @@ internal class WebViewFlashRecorder(
     private const val BIG_CHANGE_THRESHOLD = 0.30
     private const val BRIGHT_THRESHOLD = 0.10
     private const val MAX_SAVED_IMAGES = 40
+    private const val MAX_RECORDED_FRAMES = 120
   }
 }

@@ -17,11 +17,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.intellij.lang.annotations.Language
 import java.awt.BorderLayout
+import java.awt.Canvas
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
-import java.awt.GridLayout
+import java.awt.Rectangle
 import java.awt.event.HierarchyEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
@@ -33,10 +34,12 @@ import javax.swing.BorderFactory
 import javax.swing.ButtonGroup
 import javax.swing.JButton
 import javax.swing.JCheckBox
+import javax.swing.JComponent
 import javax.swing.JFrame
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JRadioButton
+import javax.swing.JSplitPane
 import javax.swing.SwingUtilities
 import javax.swing.WindowConstants
 
@@ -48,8 +51,11 @@ import javax.swing.WindowConstants
  * - the light path: the `Visible` checkbox only flips Swing visibility, the peer stays alive.
  */
 object LightweightStandaloneSampleApp {
+  private const val CANVAS_ONLY_ENV = "WEBVIEW_SAMPLE_CANVAS_ONLY"
+  private const val CANVAS_MIXING_CLIP_ENV = "WEBVIEW_SAMPLE_CANVAS_MIXING_CLIP"
   private const val RESOURCE_ROOT = "webview/views/sample-panel"
   private val ASSET_ROOT = WebViewAssetRoot.fromClasspath(LightweightStandaloneSampleApp::class.java, WebViewAssetPath.of(RESOURCE_ROOT))
+  private val CANVAS_BACKGROUND = Color(0xE040FB)
   private val STAGE_BACKGROUND = Color(0x1E1F22)
   private val STAGE_FOREGROUND = Color(0xD0D4DA)
   private val TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss,SSS")
@@ -59,6 +65,11 @@ object LightweightStandaloneSampleApp {
     SwingUtilities.invokeLater {
       @Suppress("RAW_SCOPE_CREATION") // Standalone sample: no parent scope available.
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+      if (System.getenv(CANVAS_ONLY_ENV) == "1") {
+        showCanvasOnlySample(scope)
+        return@invokeLater
+      }
+
       val provider: WebViewEngineProvider = when {
         SystemInfo.isMac -> MacWkWebViewEngineProvider()
         SystemInfo.isWindows -> WindowsWebView2EngineProvider()
@@ -73,12 +84,7 @@ object LightweightStandaloneSampleApp {
       val hostPanel = SwingWebViewHostPanel(scope, webViewEngine)
       val stage = Stage(hostPanel)
 
-      val frame = JFrame("WebView Lightweight Standalone Sample").apply {
-        defaultCloseOperation = WindowConstants.DISPOSE_ON_CLOSE
-        contentPane.background = STAGE_BACKGROUND
-        contentPane.layout = BorderLayout()
-        size = Dimension(1240, 760)
-        setLocationRelativeTo(null)
+      val frame = createFrame("WebView Lightweight Standalone Sample").apply {
         addWindowListener(object : WindowAdapter() {
           override fun windowClosing(event: WindowEvent) {
             scope.launch {
@@ -89,7 +95,7 @@ object LightweightStandaloneSampleApp {
         })
       }
 
-      frame.contentPane.add(buildControls(scope, webViewEngine, hostPanel, stage, frame), BorderLayout.NORTH)
+      frame.contentPane.add(buildWebViewControls(scope, webViewEngine, hostPanel, stage, frame), BorderLayout.NORTH)
       frame.contentPane.add(stage.root, BorderLayout.CENTER)
       frame.isVisible = true
 
@@ -102,10 +108,82 @@ object LightweightStandaloneSampleApp {
     }
   }
 
-  private fun buildControls(
+  private fun showCanvasOnlySample(scope: CoroutineScope) {
+    val canvas = Canvas().apply {
+      background = CANVAS_BACKGROUND
+      name = "Canvas-only diagnostic host"
+    }
+    val mixingClipEnabled = System.getenv(CANVAS_MIXING_CLIP_ENV) == "1"
+    val host = if (mixingClipEnabled) createCanvasMixingClipProbe(canvas) else canvas
+    val stage = Stage(host)
+    val frame = createFrame("Canvas-only Lightweight Standalone Sample").apply {
+      addWindowListener(object : WindowAdapter() {
+        override fun windowClosing(event: WindowEvent) {
+          scope.cancel()
+        }
+      })
+    }
+
+    frame.contentPane.add(buildHostControls(host, stage, frame), BorderLayout.NORTH)
+    frame.contentPane.add(stage.root, BorderLayout.CENTER)
+    frame.isVisible = true
+    stage.log("canvas-only mode: WebView was not created; mixingClip=$mixingClipEnabled")
+  }
+
+  /**
+   * Keeps a non-default HW/LW mixing region on the Canvas. AWT applies that region before it
+   * resizes the native peer, so the old HWND rectangle should already be clipped to the new
+   * logical bounds. The one-pixel hole makes the region non-default without changing the test
+   * visually in a meaningful way.
+   */
+  private fun createCanvasMixingClipProbe(canvas: Canvas): JComponent {
+    val cutout = object : JComponent() {
+      init {
+        isOpaque = false
+        setMixingCutoutShape(Rectangle(0, 0, 1, 1))
+      }
+
+      override fun contains(x: Int, y: Int): Boolean = false
+    }
+
+    return object : JPanel(null) {
+      init {
+        isOpaque = false
+        add(cutout)
+        add(canvas)
+      }
+
+      override fun doLayout() {
+        // The lightweight cutout must have its new bounds before Canvas.reshape() asks AWT to
+        // calculate and apply the heavyweight peer shape.
+        cutout.setBounds(0, 0, width, height)
+        canvas.setBounds(0, 0, width, height)
+      }
+    }
+  }
+
+  private fun createFrame(title: String): JFrame = JFrame(title).apply {
+    defaultCloseOperation = WindowConstants.DISPOSE_ON_CLOSE
+    contentPane.background = STAGE_BACKGROUND
+    contentPane.layout = BorderLayout()
+    size = Dimension(1240, 760)
+    setLocationRelativeTo(null)
+  }
+
+  private fun buildWebViewControls(
     scope: CoroutineScope,
     webViewEngine: WebViewEngine,
     hostPanel: SwingWebViewHostPanel,
+    stage: Stage,
+    frame: JFrame,
+  ): JPanel = buildHostControls(hostPanel, stage, frame).apply {
+    add(JButton("Reload sample HTML").apply {
+      addActionListener { loadSampleFromResources(scope, webViewEngine, stage) }
+    })
+  }
+
+  private fun buildHostControls(
+    host: Component,
     stage: Stage,
     frame: JFrame,
   ): JPanel {
@@ -122,15 +200,11 @@ object LightweightStandaloneSampleApp {
     detached.addActionListener { stage.moveHostTo(Stage.Target.DETACHED) }
 
     val visible = JCheckBox("Visible", true).apply {
-      addActionListener { hostPanel.isVisible = isSelected }
+      addActionListener { host.isVisible = isSelected }
     }
     val alwaysOnTop = JCheckBox("Always on top").apply {
       addActionListener { frame.isAlwaysOnTop = isSelected }
     }
-    val reload = JButton("Reload sample HTML").apply {
-      addActionListener { loadSampleFromResources(scope, webViewEngine, stage) }
-    }
-
     return JPanel(FlowLayout(FlowLayout.LEFT, 8, 4)).apply {
       background = STAGE_BACKGROUND
       add(themed(JLabel("Host:")))
@@ -139,7 +213,6 @@ object LightweightStandaloneSampleApp {
       add(themed(detached))
       add(themed(visible))
       add(themed(alwaysOnTop))
-      add(reload)
     }
   }
 
@@ -164,27 +237,30 @@ object LightweightStandaloneSampleApp {
   }
 
   /** Two side-by-side slots the host is moved between, plus a status line for eyeball runs. */
-  private class Stage(private val host: SwingWebViewHostPanel) {
+  private class Stage(private val host: Component) {
     enum class Target { SLOT_A, SLOT_B, DETACHED }
 
     private val statusLabel = JLabel("starting")
     private val slotA = createSlot("Slot A")
     private val slotB = createSlot("Slot B")
+    private val splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, slotA, slotB).apply {
+      setContinuousLayout(true)
+      resizeWeight = 0.5
+      dividerSize = 12
+      border = null
+    }
     private var current: JPanel? = slotA
 
     val root: JPanel = JPanel(BorderLayout(0, 8)).apply {
       background = STAGE_BACKGROUND
       border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
       add(statusLabel.apply { foreground = STAGE_FOREGROUND }, BorderLayout.SOUTH)
-      add(JPanel(GridLayout(1, 2, 12, 0)).apply {
-        background = STAGE_BACKGROUND
-        add(slotA)
-        add(slotB)
-      }, BorderLayout.CENTER)
+      add(splitPane, BorderLayout.CENTER)
     }
 
     init {
       slotA.add(host, BorderLayout.CENTER)
+      SwingUtilities.invokeLater { splitPane.setDividerLocation(0.5) }
       host.addHierarchyListener { event ->
         if (event.changeFlags and HierarchyEvent.DISPLAYABILITY_CHANGED.toLong() != 0L) {
           log("peer ${if (host.isDisplayable) "created" else "disposed"}")

@@ -39,6 +39,8 @@ import java.awt.BorderLayout
 import java.awt.Canvas
 import java.awt.Component
 import java.awt.Dimension
+import java.awt.IllegalComponentStateException
+import java.awt.Rectangle
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -52,11 +54,43 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import kotlin.time.measureTimedValue
 
 private val LOG = logger<WinWebViewEngine>()
+
+/**
+ * Forces AWT to keep a concrete native region on the Canvas. During reshape, HW/LW mixing applies
+ * the region before resizing the native peer; the one-pixel cutout keeps that path active while
+ * remaining visually negligible.
+ */
+private fun createCanvasMixingClipHost(canvas: Canvas): JComponent {
+  val cutout = object : JComponent() {
+    init {
+      isOpaque = false
+      setMixingCutoutShape(Rectangle(0, 0, 1, 1))
+    }
+
+    override fun contains(x: Int, y: Int): Boolean = false
+  }
+
+  return object : JPanel(null) {
+    init {
+      isOpaque = false
+      add(cutout)
+      add(canvas)
+    }
+
+    override fun doLayout() {
+      // Canvas.reshape() must observe the lightweight component's current bounds when AWT
+      // calculates the heavyweight peer region.
+      cutout.setBounds(0, 0, width, height)
+      canvas.setBounds(0, 0, width, height)
+    }
+  }
+}
 
 @ApiStatus.Internal
 internal class WinWebViewEngine(
@@ -68,6 +102,8 @@ internal class WinWebViewEngine(
   private val devToolsCpuProfilingEnabled: () -> Boolean = { Registry.get(DEVTOOLS_CPU_PROFILING_REGISTRY_KEY).asBoolean() },
   private val customSchemeAssetLoadingEnabled: () -> Boolean = { Registry.get(WINDOWS_ASSET_CUSTOM_SCHEME_REGISTRY_KEY).asBoolean() },
   private val componentHwndResolver: (Component) -> Long? = WindowsHwndUtil::resolveComponentHwnd,
+  private val rootHwndPresentation: Boolean = usesRootHwndPresentation(System.getenv(PRESENTATION_ENV)),
+  private val rootGeometryCoalesceMillis: Long = ROOT_GEOMETRY_COALESCE_MILLIS,
 ) : WebViewEngine {
   override val isHeavyweight: Boolean = true
 
@@ -109,11 +145,11 @@ internal class WinWebViewEngine(
     }
 
     /**
-     * The controller is a child window of this Canvas, so the Canvas rectangle - not the one of the
-     * host panel - is what the page is clipped to. Nothing else reports it: the host panel listens
-     * to itself and to its ancestors, and the layout pass that finally gives the Canvas its size
-     * produces no event any of those listeners would see. Without this hook the last snapshot the
-     * native side ever gets is the empty one from [addNotify].
+     * The controller lives in a native clip host under this Canvas, so the Canvas rectangle - not
+     * the one of the host panel - is the page's hard clipping boundary. Nothing else reports it:
+     * the host panel listens to itself and to its ancestors, and the layout pass that finally gives
+     * the Canvas its size produces no event any of those listeners would see. Without this hook the
+     * last snapshot the native side ever gets is the empty one from [addNotify].
      *
      * `super.reshape` has already resized the peer, so the reconcile that follows reads the final
      * client rect and reveals the controller once, at the size it will be seen at.
@@ -134,7 +170,19 @@ internal class WinWebViewEngine(
     isRequestFocusEnabled = true
     // Windows AWT peers report a Canvas's current bounds as its minimum size.
     minimumSize = Dimension(0, 0)
-    add(canvas, BorderLayout.CENTER)
+    if (rootHwndPresentation) {
+      LOG.info("Enabled Canvas-free WebView2 root-HWND host")
+    }
+    else {
+      val canvasHost = if (System.getenv(CANVAS_MIXING_CLIP_ENV) == "1") {
+        LOG.info("Enabled experimental WebView2 Canvas HW/LW mixing clip")
+        createCanvasMixingClipHost(canvas)
+      }
+      else {
+        canvas
+      }
+      add(canvasHost, BorderLayout.CENTER)
+    }
   }
 
   private enum class State { New, Creating, Active, Closing, Closed }
@@ -161,6 +209,9 @@ internal class WinWebViewEngine(
     val width: Int,
     val height: Int,
     val visible: Boolean,
+    /** Physical screen coordinates. Used only by Canvas-free root-HWND presentations. */
+    val screenX: Int = 0,
+    val screenY: Int = 0,
   )
 
   private val state = AtomicReference(State.New)
@@ -563,6 +614,8 @@ internal class WinWebViewEngine(
       bridge.setHostState(
         nativeHandle,
         desired.parentHwnd,
+        desired.screenX,
+        desired.screenY,
         desired.width,
         desired.height,
         desired.visible,
@@ -581,13 +634,26 @@ internal class WinWebViewEngine(
 
   private fun scheduleSync() {
     if (!syncScheduled.compareAndSet(false, true)) return
-    invokeOnWebView {
-      syncScheduled.set(false)
-      val handle = nativeHandle
-      if (handle == 0L || state.get() == State.Closed) return@invokeOnWebView
-      val desired = pendingState.get() ?: return@invokeOnWebView
-      applyHostState(handle, desired)
+    if (rootHwndPresentation && rootGeometryCoalesceMillis > 0) {
+      // AWT reports an interactive move and the layout resize as separate events. Keep a bounded,
+      // non-resetting window so their immutable snapshots collapse without starving a live drag.
+      scope.launch {
+        delay(rootGeometryCoalesceMillis)
+        invokeOnWebView { flushScheduledSync() }
+      }
+      return
     }
+    invokeOnWebView { flushScheduledSync() }
+  }
+
+  private fun flushScheduledSync() {
+    // Clear first: a state arriving while this snapshot is applied schedules the next bounded
+    // flush instead of being stranded behind the task that is already running.
+    syncScheduled.set(false)
+    val handle = nativeHandle
+    if (handle == 0L || state.get() == State.Closed) return
+    val desired = pendingState.get() ?: return
+    applyHostState(handle, desired)
   }
 
   /**
@@ -608,6 +674,8 @@ internal class WinWebViewEngine(
     bridge.setHostState(
       handle,
       desired.parentHwnd,
+      desired.screenX,
+      desired.screenY,
       desired.width,
       desired.height,
       desired.visible,
@@ -736,6 +804,8 @@ internal class WinWebViewEngine(
         bridge.setHostState(
           nativeHandle,
           it.parentHwnd,
+          it.screenX,
+          it.screenY,
           it.width,
           it.height,
           it.visible,
@@ -1061,12 +1131,19 @@ internal class WinWebViewEngine(
   }
 
   override fun detach() {
-    if (underlyingComponent == null) return
-    // No hide here: the Canvas peer disposal has already parked the controller, and parking hides
-    // it natively.
+    val component = underlyingComponent ?: return
+    if (rootHwndPresentation) {
+      // A floating root can be destroyed after this lightweight host leaves it. Move the stable
+      // clip-host to the surviving root-owner holder before Windows destroys all child HWNDs.
+      val root = SwingUtilities.getWindowAncestor(component)
+      val parked = root != null && parkControllerBeforePeerDisposal(root)
+      if (parked) pendingState.set(null)
+      else lastApplied?.let { requestHostState(it.copy(width = 0, height = 0, visible = false)) }
+    }
+    // In the Canvas path peer disposal has already parked and hidden the controller natively.
     setUnderlyingComponent(null)
     setFocusGainedHandler(null)
-    pendingState.set(null)
+    if (!rootHwndPresentation) pendingState.set(null)
     lastApplied = null
   }
 
@@ -1086,6 +1163,8 @@ internal class WinWebViewEngine(
    * reveal gate: the controller is shown once, already at the size it will be seen at.
    */
   private fun readHostState(host: Component): HostState {
+    if (rootHwndPresentation) return readRootHwndHostState(host)
+
     val width = canvas.width
     val height = canvas.height
     return HostState(
@@ -1096,9 +1175,39 @@ internal class WinWebViewEngine(
     )
   }
 
+  private fun readRootHwndHostState(host: Component): HostState {
+    val window = SwingUtilities.getWindowAncestor(host)
+    val parentHwnd = window?.let(componentHwndResolver) ?: 0L
+    val transform = host.graphicsConfiguration?.defaultTransform
+    val scaleX = transform?.scaleX ?: 1.0
+    val scaleY = transform?.scaleY ?: 1.0
+    val location = if (host.isShowing) {
+      try {
+        host.locationOnScreen
+      }
+      catch (_: IllegalComponentStateException) {
+        null
+      }
+    }
+    else {
+      null
+    }
+    val width = (host.width * scaleX).roundToInt().coerceAtLeast(0)
+    val height = (host.height * scaleY).roundToInt().coerceAtLeast(0)
+    return HostState(
+      parentHwnd = parentHwnd,
+      width = width,
+      height = height,
+      visible = parentHwnd != 0L && location != null && width > 0 && height > 0,
+      screenX = location?.let { (it.x * scaleX).roundToInt() } ?: 0,
+      screenY = location?.let { (it.y * scaleY).roundToInt() } ?: 0,
+    )
+  }
+
   private fun hostStateDiagnosticDetails(hostState: HostState, host: Component): String {
     return "parent=0x${java.lang.Long.toHexString(hostState.parentHwnd)}, " +
-           "canvas=${hostState.width}x${hostState.height}, host=${host.width}x${host.height}, " +
+           "screen=${hostState.screenX},${hostState.screenY}, native=${hostState.width}x${hostState.height}, " +
+           "host=${host.width}x${host.height}, " +
            "visible=${hostState.visible}"
   }
 
@@ -1108,14 +1217,14 @@ internal class WinWebViewEngine(
 
   /**
    * Runs before JBR synchronously destroys the Canvas peer. The native bridge sends a bounded
-   * barrier message to its own holder window, so the controller leaves the Canvas on AWT-Windows
-   * before that HWND can receive WM_NCDESTROY.
+   * barrier message to its own holder window, so the controller's clip-host HWND leaves the Canvas
+   * on AWT-Windows before that Canvas can receive WM_NCDESTROY.
    */
-  private fun parkControllerBeforePeerDisposal(component: Component) {
+  private fun parkControllerBeforePeerDisposal(component: Component): Boolean {
     val handle = nativeHandle
     val generation = hostGeneration.get()
-    if (handle == 0L || generation == 0L || state.get() == State.Closed) return
-    val hostHwnd = WindowsHwndUtil.resolveComponentHwnd(component) ?: return
+    if (handle == 0L || generation == 0L || state.get() == State.Closed) return false
+    val hostHwnd = componentHwndResolver(component) ?: return false
     val parked = runCatching {
       bridge.parkBeforePeerDispose(handle, hostHwnd, generation)
     }.onFailure {
@@ -1127,6 +1236,7 @@ internal class WinWebViewEngine(
     // The controller now hangs in the holder window, hidden, so nothing of the old placement is
     // applied any more and the next attach has to push the whole snapshot again.
     if (currentParentHwnd == hostHwnd) lastApplied = null
+    return parked
   }
 
   private fun reattachControllerAfterPeerCreation() {
@@ -1141,9 +1251,23 @@ internal class WinWebViewEngine(
      * without page content is indistinguishable from the host behind it. */
     private const val HOST_BACKGROUND_RGB = 0x1E1F22
     private const val HOST_BACKGROUND_ARGB = 0xFF000000.toInt() or HOST_BACKGROUND_RGB
+    private const val PRESENTATION_ENV = "WEBVIEW_WIN_PRESENTATION"
+    private const val LEGACY_WINDOWED_PRESENTATION = "windowed"
+    private const val CANVAS_COMPOSITION_PRESENTATION = "composition-poc"
+    // Swing can deliver the matching move and resize notifications up to 11 ms apart during a
+    // fast divider drag. One 60 Hz frame keeps those partial rectangles away from native code.
+    private const val ROOT_GEOMETRY_COALESCE_MILLIS = 16L
+    private const val CANVAS_MIXING_CLIP_ENV = "WEBVIEW_WIN_CANVAS_MIXING_CLIP"
     private const val NATIVE_DIAGNOSTIC_WARN = 3
     private const val NATIVE_DIAGNOSTIC_ERROR = 4
     private const val MAX_RECOVERY_ATTEMPTS = 2
+
+    private fun usesRootHwndPresentation(presentation: String?): Boolean {
+      return when (presentation?.trim()) {
+        LEGACY_WINDOWED_PRESENTATION, CANVAS_COMPOSITION_PRESENTATION -> false
+        else -> true
+      }
+    }
     private const val RECOVERY_WINDOW_MILLIS = 60_000L
     private const val MAX_RENDER_UNRESPONSIVE_BEFORE_RECOVERY = 2
     private const val NATIVE_EVENT_PROCESS_FAILED_FATAL = "process-failed.fatal"
