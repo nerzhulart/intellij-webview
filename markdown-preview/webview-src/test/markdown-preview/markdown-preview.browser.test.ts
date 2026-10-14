@@ -488,15 +488,24 @@ test("renders only host-resolved code paths as navigation buttons", async ({ pag
   await page.waitForSelector(".markdownRunButton")
   await page.waitForSelector(".markdownPreviewContent .hljs")
   await page.getByRole("button", { name: "docs/guide.md:12", exact: true }).click()
-  await page.waitForFunction(() => document.querySelector("#mock-run-log")?.textContent?.includes("navigatePathLink") ?? false)
-  const navigation = await page.evaluate(() => JSON.parse(document.querySelector("#mock-run-log")?.textContent ?? "{}") as {
-    rawPath?: string
-    clientX?: number
-    clientY?: number
+  // Read the bridge call instead of #mock-run-log: the click scrolls the preview, and the following previewScrolled
+  // call overwrites the log.
+  await page.waitForFunction(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
+    }).__WVI_MOCK__
+    return (mock?.calls.byMethod("markdown.preview/navigatePathLink").length ?? 0) > 0
+  })
+  const navigation = await page.evaluate(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/navigatePathLink") ?? []
+    return calls[calls.length - 1]?.params as { rawPath?: string, clientX?: number, clientY?: number } | undefined
   })
 
-  expect(navigation.rawPath === "docs/guide.md:12").toBe(true)
-  expect(Number.isFinite(navigation.clientX) && Number.isFinite(navigation.clientY)).toBe(true)
+  expect(navigation?.rawPath === "docs/guide.md:12").toBe(true)
+  expect(Number.isFinite(navigation?.clientX) && Number.isFinite(navigation?.clientY)).toBe(true)
 })
 
 test("defers markdown enhancements until idle without shifting code fences", async ({ page }) => {
