@@ -200,6 +200,11 @@ jobs:
         shell: bash
         run: echo "GRADLE_OPTS=-Dorg.gradle.project.org.jetbrains.intellij.platform.intellijPlatformIdesCacheEnabled=true" >> "$GITHUB_ENV"
 
+      # :markdown-preview:verifyPlugin resolves localPlugin(project(":")), which builds the runtime
+      # plugin from sources, including its WebView assets.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Set up Gradle 9.1.0
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -213,6 +218,7 @@ jobs:
         shell: bash
         env:
           ARCHIVE_NAME: ${{ matrix.archive }}-${{ inputs.version }}.zip
+          BUN_FEATURE_FLAG_DISABLE_STREAMING_INSTALL: "1"
           VERIFY_TASK: ${{ matrix.task }}
         run: |
           set -euo pipefail
