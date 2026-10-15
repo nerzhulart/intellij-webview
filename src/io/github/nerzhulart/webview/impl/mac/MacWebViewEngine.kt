@@ -31,6 +31,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -48,6 +49,8 @@ import javax.swing.SwingUtilities
 import kotlin.time.Duration.Companion.milliseconds
 
 private val LOG = logger<MacWebViewEngine>()
+
+private val nextEngineLogId = AtomicLong(0)
 
 /**
  * macOS implementation of [WebViewEngine] backed by a native `WKWebView`.
@@ -75,6 +78,9 @@ internal class MacWebViewEngine(
   private enum class State { New, Active, Closing, Closed }
 
   private val state = AtomicReference(State.New)
+
+  /** Correlates lifecycle and native attachment trace lines of one engine. */
+  private val logId = nextEngineLogId.incrementAndGet()
 
   @Suppress("RAW_SCOPE_CREATION") // Intentional: engine manages its own child scope lifecycle with close()
   private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
@@ -111,7 +117,7 @@ internal class MacWebViewEngine(
         State.New -> {
           if (!state.compareAndSet(State.New, State.Active)) continue
 
-          LOG.webViewLifecycle("create", "initializing WKWebView")
+          LOG.webViewLifecycle("create", "engine=$logId, initializing WKWebView")
           scope.launch(MacMainThreadDispatcher) {
             try {
               val createdHandles = LOG.traceWebViewPerf("wkwebview-create") {
@@ -132,7 +138,7 @@ internal class MacWebViewEngine(
               }
 
               handles = createdHandles
-              LOG.webViewLifecycle("create", "WKWebView ready")
+              LOG.webViewLifecycle("create", "engine=$logId, WKWebView ready")
             }
             catch (t: Throwable) {
               handlesReady.completeExceptionally(t)
@@ -255,7 +261,7 @@ internal class MacWebViewEngine(
             scope.cancel()
             cancelPendingEvaluations()
             handlesReady.cancel(CancellationException("Engine closed before initialization"))
-            LOG.webViewLifecycle("close", "closed from New state")
+            LOG.webViewLifecycle("close", "engine=$logId, closed from New state")
             return
           }
         }
@@ -265,13 +271,16 @@ internal class MacWebViewEngine(
           }
         }
         State.Closing, State.Closed -> {
-          LOG.webViewLifecycle("close", "already closing/closed, idempotent no-op")
+          LOG.webViewLifecycle("close", "engine=$logId, already closing/closed, idempotent no-op")
           return
         }
       }
     }
 
-    LOG.webViewLifecycle("close", "state=${state.get()}")
+    LOG.webViewLifecycle(
+      "close",
+      "engine=$logId, state=${state.get()}, attachmentRequested=$attachmentRequested, generation=$attachmentGeneration",
+    )
     cancelPendingEvaluations()
 
     scope.cancel()
@@ -282,14 +291,17 @@ internal class MacWebViewEngine(
     if (currentHandles != null) {
       MacObjectiveC.executeOnMainThread {
         WKWebViewBridge.release(currentHandles)
+        // Covers a close without a preceding detach: the painted container must not outlive the WebView.
+        releaseAttachment("close")
         handlesReady.cancel(CancellationException("Engine closed"))
         state.set(State.Closed)
-        LOG.webViewLifecycle("close", "native cleanup complete")
+        LOG.webViewLifecycle("close", "engine=$logId, native cleanup complete")
       }
     }
     else {
       handlesReady.cancel(CancellationException("Engine closed"))
       state.set(State.Closed)
+      LOG.webViewLifecycle("close", "engine=$logId, no native handles to release")
     }
   }
 
@@ -468,6 +480,9 @@ internal class MacWebViewEngine(
   /** Accessed only on the macOS main thread. */
   private var lastAppliedLayout: MacNativeLayout? = null
 
+  /** Diagnostics only, accessed on the macOS main thread: the last visibility pushed to the container. */
+  private var lastNativeHidden: Boolean? = null
+
   /**
    * Throttle queue for resize/move coalescing. The first event arms a 16 ms timer;
    * subsequent events collapse into the latest layout without starving continuous drags.
@@ -484,16 +499,29 @@ internal class MacWebViewEngine(
   override val editShortcutPolicy: WebViewEditShortcutPolicy = WebViewEditShortcutPolicy.HANDLE_IN_NATIVE_PEER
 
   override fun attach(host: Component): Boolean {
-    if (attachmentRequested) return true
+    if (attachmentRequested) {
+      traceAttachment("attach.skip") { "host=${host.nativeLogId()}, already requested, generation=$attachmentGeneration" }
+      return true
+    }
 
     initialize()
 
-    val contentView = resolveParentContentView(host) ?: return false
-    val initialLayout = resolveLayout(host) ?: return false
+    val contentView = resolveParentContentView(host) ?: run {
+      traceAttachment("attach.skip") { "host=${host.nativeLogId()}, no NSWindow content view, showing=${host.isShowing}" }
+      return false
+    }
+    val initialLayout = resolveLayout(host) ?: run {
+      traceAttachment("attach.skip") { "host=${host.nativeLogId()}, no layout anchor, showing=${host.isShowing}" }
+      return false
+    }
     WebViewLogger.LOG.info("Attaching WKWebView host: layout=$initialLayout, showing=${host.isShowing}")
 
     attachmentRequested = true
     val generation = ++attachmentGeneration
+    traceAttachment("attach.request") {
+      "host=${host.nativeLogId()}, generation=$generation, state=${state.get()}, scopeActive=${scope.isActive}, " +
+      "contentView=${contentView.nativeLogId()}"
+    }
     hostHidden = true
     // The Swing host is the right boundary for mirroring native input into AWT because it owns
     // attach/detach lifecycle. Both callbacks are invalidated by this attachment generation.
@@ -501,12 +529,22 @@ internal class MacWebViewEngine(
     setNativeMousePressedHandler { event -> postNativeMousePressed(host, generation, event) }
     hostBackground.listenTo(host)
 
-    scope.launch(MacMainThreadDispatcher) {
-      if (!awaitReadyForAttachment() || !isCurrentAttachment(generation)) return@launch
+    val attachJob = scope.launch(MacMainThreadDispatcher) {
+      if (!awaitReadyForAttachment() || !isCurrentAttachment(generation)) {
+        traceAttachment("attach.abandon") {
+          "generation=$generation, currentGeneration=$attachmentGeneration, requested=$attachmentRequested, " +
+          "state=${state.get()}, before container creation"
+        }
+        return@launch
+      }
 
       val clipView = WKWebViewBridge.createClippingContainer(contentView)
       if (!isCurrentAttachment(generation)) {
         WKWebViewBridge.releaseClippingContainer(clipView)
+        traceAttachment("attach.abandon") {
+          "generation=$generation, currentGeneration=$attachmentGeneration, released fresh container ${clipView.nativeLogId()}, " +
+          "contentSubviews=${contentSubviews(contentView)}"
+        }
         return@launch
       }
       WKWebViewBridge.setContainerBackgroundColor(clipView, hostBackground.argb)
@@ -515,11 +553,20 @@ internal class MacWebViewEngine(
       if (!webViewAttached || !isCurrentAttachment(generation)) {
         detachFromParent()
         WKWebViewBridge.releaseClippingContainer(clipView)
+        traceAttachment("attach.abandon") {
+          "generation=$generation, currentGeneration=$attachmentGeneration, webViewAttached=$webViewAttached, " +
+          "released fresh container ${clipView.nativeLogId()}, contentSubviews=${contentSubviews(contentView)}"
+        }
         return@launch
       }
 
       attachment = Attachment(contentView, clipView)
       lastAppliedLayout = null
+      lastNativeHidden = null
+      traceAttachment("attach.done") {
+        "generation=$generation, container=${clipView.nativeLogId()}, contentView=${contentView.nativeLogId()}, " +
+        "contentSubviews=${contentSubviews(contentView)}"
+      }
       applyLayout(initialLayout)
 
       SwingUtilities.invokeLater {
@@ -529,25 +576,45 @@ internal class MacWebViewEngine(
         }
       }
     }
+    attachJob.invokeOnCompletion { cause ->
+      // A launch cancelled before it was dispatched never runs its body, so only this callback sees it.
+      if (cause != null) {
+        traceAttachment("attach.cancelled") { "generation=$generation, state=${state.get()}, cause=$cause" }
+      }
+    }
     return true
   }
 
   override fun detach() {
-    if (!attachmentRequested) return
+    if (!attachmentRequested) {
+      traceAttachment("detach.skip") { "not requested, generation=$attachmentGeneration" }
+      return
+    }
 
     attachmentRequested = false
     attachmentGeneration++
+    traceAttachment("detach.request") {
+      "generation=$attachmentGeneration, state=${state.get()}, scopeActive=${scope.isActive}"
+    }
     hostHidden = true
     setModifierKeyHandler(null)
     setNativeMousePressedHandler(null)
     hostBackground.stopListening()
-    scope.launch(MacMainThreadDispatcher) {
-      releaseAttachment()
+    // Not through the scope: the host is usually closed after the WebView scope is cancelled, and a
+    // cancelled launch never runs, leaving the painted clipping container over Swing.
+    MacObjectiveC.executeOnMainThread {
+      releaseAttachment("detach")
     }
   }
 
   override fun syncHostState(host: Component) {
     if (!attachmentRequested) return
+    if (!scope.isActive) {
+      // Native geometry and visibility updates go through the scope and are dropped from here on.
+      traceAttachment("sync.dropped") {
+        "host=${host.nativeLogId()}, scope cancelled, showing=${host.isShowing}, state=${state.get()}"
+      }
+    }
     // Geometry and visibility are one snapshot: an empty layout already reads as hidden in
     // updateNativeVisibility, so the only extra bit to carry is whether Swing shows the host.
     hostHidden = !host.isShowing
@@ -662,15 +729,44 @@ internal class MacWebViewEngine(
     val currentAttachment = attachment ?: return
     val hidden = hostHidden || lastAppliedLayout?.hasVisibleBounds != true
     WKWebViewBridge.setHidden(currentAttachment.clipView, hidden)
+    if (hidden != lastNativeHidden) {
+      lastNativeHidden = hidden
+      traceAttachment("visibility") {
+        "container=${currentAttachment.clipView.nativeLogId()}, hidden=$hidden, hostHidden=$hostHidden, " +
+        "visibleBounds=${lastAppliedLayout?.hasVisibleBounds}"
+      }
+    }
   }
 
-  private fun releaseAttachment() {
-    val currentAttachment = attachment ?: return
+  private fun releaseAttachment(reason: String) {
+    val currentAttachment = attachment ?: run {
+      traceAttachment("release.skip") { "reason=$reason, no attachment" }
+      return
+    }
     attachment = null
     lastAppliedLayout = null
+    lastNativeHidden = null
     detachFromParent()
     WKWebViewBridge.releaseClippingContainer(currentAttachment.clipView)
+    traceAttachment("release.done") {
+      "reason=$reason, container=${currentAttachment.clipView.nativeLogId()}, " +
+      "contentView=${currentAttachment.parentContentView.nativeLogId()}, " +
+      "contentSubviews=${contentSubviews(currentAttachment.parentContentView)}"
+    }
   }
+
+  private inline fun traceAttachment(event: String, details: () -> String) {
+    LOG.trace { "native-attachment: engine=$logId $event - ${details()}" }
+  }
+
+  /** Must be called on the macOS main thread. */
+  private fun contentSubviews(contentView: ID): String {
+    return runCatching { WKWebViewBridge.subviewCount(contentView).toString() }.getOrElse { "?" }
+  }
+
+  private fun ID.nativeLogId(): String = "0x" + java.lang.Long.toHexString(toLong())
+
+  private fun Component.nativeLogId(): String = Integer.toHexString(System.identityHashCode(this))
 
   private fun isCurrentAttachment(generation: Long): Boolean {
     return attachmentRequested && attachmentGeneration == generation
