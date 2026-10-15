@@ -363,6 +363,12 @@ internal object WKWebViewBridge {
     invoke(clipView, SEL_RELEASE)
   }
 
+  /**
+   * Diagnostics only: the number of direct subviews of [view]. A count that keeps growing in the
+   * window content view exposes clipping containers that outlived their WebView.
+   */
+  fun subviewCount(view: ID): Long = invoke(invoke(view, "subviews"), "count").toLong()
+
   fun detachFromParent(webView: ID) {
     invoke(webView, SEL_REMOVE_FROM_SUPERVIEW)
   }

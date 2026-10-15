@@ -5,6 +5,7 @@ import com.intellij.ide.KeyboardAwareFocusOwner
 import com.intellij.ide.IdeEventQueue
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.util.concurrency.annotations.RequiresEdt
@@ -252,6 +253,7 @@ class SwingWebViewHostPanel internal constructor(
   @RequiresEdt
   override fun addNotify() {
     super.addNotify()
+    logHostLifecycle("addNotify") { "scopeActive=${scope.isActive}, engineAttached=$engineAttached" }
     // TODO: bad pattern?
     if (!scope.isActive) return
     installListeners()
@@ -261,6 +263,7 @@ class SwingWebViewHostPanel internal constructor(
 
   @RequiresEdt
   override fun removeNotify() {
+    logHostLifecycle("removeNotify") { "scopeActive=${scope.isActive}, engineAttached=$engineAttached" }
     unregisterHeavyweight()
     if (engineAttached) {
         engine.detach()
@@ -303,6 +306,8 @@ class SwingWebViewHostPanel internal constructor(
     if (!isDisplayable) return false
     engineAttached = engine.attach(this)
     if (engineAttached) {
+      // Failed attempts repeat on every Swing event; the engine traces why they fail.
+      logHostLifecycle("attach") { "showing=$isShowing" }
       ensureHeavyweightRegistered()
     }
     return engineAttached
@@ -510,6 +515,7 @@ class SwingWebViewHostPanel internal constructor(
 
   @RequiresEdt
   internal fun close() {
+    logHostLifecycle("close") { "scopeActive=${scope.isActive}, engineAttached=$engineAttached, displayable=$isDisplayable" }
     unregisterHeavyweight()
     if (engineAttached) {
       engine.detach()
@@ -694,6 +700,10 @@ class SwingWebViewHostPanel internal constructor(
 
   private fun containsFocusComponent(component: Component?): Boolean {
     return component === this || component != null && SwingUtilities.isDescendingFrom(component, this)
+  }
+
+  private inline fun logHostLifecycle(event: String, details: () -> String) {
+    LOG.trace { "[wvi-host] host $event; hostId=$focusLogId, ${details()}" }
   }
 
   private fun logFocus(event: String, details: String = "") {

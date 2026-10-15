@@ -165,6 +165,7 @@ class WebViewRuntime {
                 runtimeInfo = runtimeInfo,
                 debugName = options.debugName,
               )
+              LOG.trace { "session ready - debugName=$debugName, hostId=${Integer.toHexString(System.identityHashCode(host))}" }
               ready.complete(session)
               awaitCancellation()
             }
@@ -179,6 +180,7 @@ class WebViewRuntime {
         }
         finally {
           withContext(NonCancellable) {
+            LOG.trace { "session teardown: closing engine - debugName=$debugName" }
             runCatching { engine.close() }
               .onFailure { LOG.warn("Failed to close WebView engine: $debugName", it) }
           }
@@ -221,6 +223,7 @@ class WebViewRuntime {
    * [ModalityState.any] requires.
    */
   private suspend fun closeHost(host: SwingWebViewHostPanel, debugName: String?) {
+    LOG.trace { "session teardown: closing host - debugName=$debugName, hostId=${Integer.toHexString(System.identityHashCode(host))}" }
     withContext(NonCancellable + Dispatchers.EDT + ModalityState.any().asContextElement()) {
       runCatching { host.close() }
         .onFailure { LOG.warn("Failed to close WebView Swing host: $debugName", it) }

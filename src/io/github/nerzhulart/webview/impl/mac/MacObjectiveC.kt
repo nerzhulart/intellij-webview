@@ -148,8 +148,9 @@ private interface MacObjectiveCRuntime : Library {
   fun CFStringConvertEncodingToNSStringEncoding(encoding: Int): Long
 }
 
+// JNA reads the fields reflectively, so the class must be public in bytecode: a private Kotlin class is not.
 @Structure.FieldOrder("receiver", "superclass")
-private class ObjcSuper() : Structure() {
+internal class ObjcSuper() : Structure() {
   @JvmField var receiver: Long = 0
   @JvmField var superclass: Long = 0
 
