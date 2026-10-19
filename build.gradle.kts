@@ -23,6 +23,17 @@ allprojects {
   tasks.withType<Test>().configureEach {
     outputs.doNotCacheIf("Test results must not be restored from the build cache") { true }
   }
+
+  // An IDE resolved with `useInstaller = false` ships `plugins/jcef-plugin` without its native CEF bundle, so JCEF
+  // never initializes in the sandbox IDE and every JCEF panel stays blank. The JetBrains Runtime with JCEF ships a
+  // bundle for the same platform build in `lib` on Linux; `jcef.native.bundle.path` takes priority over the plugin one.
+  tasks.withType<RunIdeTask>().configureEach {
+    val runtimeLibDirectory = runtimeDirectory.dir("lib")
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
+      val bundle = runtimeLibDirectory.get().asFile
+      if (bundle.resolve("libcef.so").isFile) listOf("-Djcef.native.bundle.path=${bundle.absolutePath}") else emptyList()
+    })
+  }
 }
 
 base {
