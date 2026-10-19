@@ -47,12 +47,13 @@ html.is-over-change-marker body::-webkit-scrollbar-track {
   --markdown-mark-bg: #5B4A1C;
   --markdown-source-selection-bg: var(--ij-bg-selected, rgba(53, 132, 228, 0.24));
   --markdown-source-selection-border: var(--ij-accent, #3574F0);
-  --markdown-vcs-added-bg: var(--ij-success-soft, rgba(72, 169, 105, 0.16));
-  --markdown-vcs-added-border: var(--ij-success-border, var(--ij-success, #6DB083));
-  --markdown-vcs-modified-bg: var(--ij-accent-soft, rgba(53, 132, 228, 0.16));
-  --markdown-vcs-modified-border: var(--ij-accent-soft-border, var(--ij-accent, #3574F0));
-  --markdown-vcs-removed-bg: var(--ij-danger-soft, rgba(199, 84, 80, 0.16));
-  --markdown-vcs-removed-border: var(--ij-danger-border, var(--markdown-error));
+  /* `--markdown-diff-*` come from the `Diff & Merge` colors of the IDE color scheme, see `setChangeColors` in main.tsx. */
+  --markdown-vcs-added-bg: var(--markdown-diff-added-bg, var(--ij-success-soft, rgba(72, 169, 105, 0.16)));
+  --markdown-vcs-added-border: var(--markdown-diff-added-stripe, var(--ij-success-border, var(--ij-success, #6DB083)));
+  --markdown-vcs-modified-bg: var(--markdown-diff-modified-bg, var(--ij-accent-soft, rgba(53, 132, 228, 0.16)));
+  --markdown-vcs-modified-border: var(--markdown-diff-modified-stripe, var(--ij-accent-soft-border, var(--ij-accent, #3574F0)));
+  --markdown-vcs-removed-bg: var(--markdown-diff-removed-bg, var(--ij-danger-soft, rgba(199, 84, 80, 0.16)));
+  --markdown-vcs-removed-border: var(--markdown-diff-removed-stripe, var(--ij-danger-border, var(--markdown-error)));
   box-sizing: border-box;
   max-width: 980px;
   padding: 20px 28px 48px;

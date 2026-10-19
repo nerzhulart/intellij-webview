@@ -3,6 +3,7 @@
 import { apiId, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 import { defineWebViewMock } from "@nerzhulart/intellij-webview-sdk-testkit"
 import type {
+  MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandDescriptor,
   MarkdownNavigatePathLinkRequest,
@@ -41,6 +42,7 @@ interface MarkdownPreviewPageApi extends WebViewImplementable {
   scrollToLine(params: MarkdownScrollToLineParams): void
   selectionChanged(params: MarkdownSelectionChangedParams): void
   setPageZoom(params: MarkdownPageZoomParams): void
+  setChangeColors(params: MarkdownChangeColors): void
 }
 
 interface MarkdownPreviewHostApi extends WebViewCallable {
@@ -83,6 +85,19 @@ const diffChanges: MarkdownChangedBlockDescriptor[] = [
 const resolvedPathLinks = new Set(["docs/guide.md:12", "src/Main.kt", "src\\WindowsPath.kt", "index.h", "index.html", "style.css", "requirements.txt", "my_django_project/", "my_django_app/"])
 const longDiff = longDiffMarkdown()
 const defaultFontSize = 13
+// Distinct palettes in the style of the `Diff & Merge` colors of an IDE color scheme, so tests can tell them apart.
+const ideChangeColorPalettes: MarkdownChangeColors[] = [
+  {
+    added: { background: "#294436", stripe: "#2E8B57" },
+    modified: { background: "#385570", stripe: "#4A7FB5" },
+    removed: { background: "#484A4A", stripe: "#8A8F94" },
+  },
+  {
+    added: { background: "#3D2B5C", stripe: "#B05CE6" },
+    modified: { background: "#5C4A1E", stripe: "#E0A82E" },
+    removed: { background: "#5C1E2B", stripe: "#E6455F" },
+  },
+]
 const fontSizeOptions = [8, 9, 10, 11, 12, defaultFontSize, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
 
 export default defineWebViewMock(({ host, page, theme }) => {
@@ -91,6 +106,7 @@ export default defineWebViewMock(({ host, page, theme }) => {
   let currentMarkdown = sampleMarkdown
   let currentChanges = changes
   let currentFontSize = defaultFontSize
+  let ideChangeColorPaletteIndex = 0
 
   function updatePreview(): void {
     page.callable(markdownPreviewPageApiId).contentChanged({
@@ -131,6 +147,12 @@ export default defineWebViewMock(({ host, page, theme }) => {
     currentMarkdown = longDiff.markdown
     currentChanges = longDiff.changes
     updatePreview()
+  })
+
+  toolbar.ideDiffColorsButton.addEventListener("click", () => {
+    const palette = ideChangeColorPalettes[ideChangeColorPaletteIndex]
+    ideChangeColorPaletteIndex = (ideChangeColorPaletteIndex + 1) % ideChangeColorPalettes.length
+    page.callable(markdownPreviewPageApiId).setChangeColors(palette)
   })
 
   theme.set("light")
@@ -201,6 +223,7 @@ function installMockToolbar(): {
   dollarMarkdownButton: HTMLButtonElement,
   diffMarkdownButton: HTMLButtonElement,
   longDiffMarkdownButton: HTMLButtonElement,
+  ideDiffColorsButton: HTMLButtonElement,
   log: HTMLSpanElement,
 } {
   const content = document.getElementById("content")
@@ -237,13 +260,18 @@ function installMockToolbar(): {
   longDiffMarkdownButton.textContent = "Long diff markdown"
   toolbar.append(longDiffMarkdownButton)
 
+  const ideDiffColorsButton = document.createElement("button")
+  ideDiffColorsButton.type = "button"
+  ideDiffColorsButton.textContent = "IDE diff colors"
+  toolbar.append(ideDiffColorsButton)
+
   const log = document.createElement("span")
   log.id = "mock-run-log"
   toolbar.append(log)
 
   content.before(toolbar)
   installMockToolbarStyles()
-  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, diffMarkdownButton, longDiffMarkdownButton, log }
+  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, diffMarkdownButton, longDiffMarkdownButton, ideDiffColorsButton, log }
 }
 
 /**
