@@ -159,6 +159,7 @@ window.addEventListener("scroll", scheduleScrollReport, { passive: true })
 webViewTheme.onChanged(nextTheme => {
   theme = nextTheme
   applyTheme(nextTheme)
+  renderPreview("themeChanged")
   refreshScrollbarChangeMarkers()
 })
 void markdownPreviewHostApi.pageReady()
