@@ -12,6 +12,7 @@ import { FloatingMarkdownControls } from "./FloatingMarkdownControls"
 import { setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { codeNodeFromPreNode, type HastNode } from "./markdownHastUtils"
+import { inlineChangeRanges, remarkInlineChanges } from "./markdownInlineChanges"
 import type { MarkdownPageZoom } from "./markdownPageZoom"
 import { collectPathLinkCandidates, renderPathLinks } from "./markdownPathLinks"
 import type {
@@ -85,7 +86,7 @@ type WindowWithIdleCallback = Window & {
   cancelIdleCallback: ((handle: IdleCallbackHandle) => void) | undefined
 }
 
-const remarkPlugins: Options["remarkPlugins"] = [
+const baseRemarkPlugins: NonNullable<Options["remarkPlugins"]> = [
   remarkGfm,
   [remarkFrontmatter, ["yaml", "toml"]],
   remarkFrontmatterBlocks,
@@ -133,6 +134,11 @@ export function MarkdownPreviewApp({
   const commands = commandsReady ? resolvedCommands.commands : []
   const resolvedRawPaths = pathLinksReady ? resolvedPathLinks.rawPaths : emptyPathSet
   const commandLookup = createCommandLookup(commands)
+  const remarkPlugins = useMemo<Options["remarkPlugins"]>(() => {
+    const ranges = inlineChangeRanges(changes)
+    if (ranges.length === 0) return baseRemarkPlugins
+    return [...baseRemarkPlugins, [remarkInlineChanges, { markdown, ranges }]]
+  }, [changes, markdown])
   const [rehypeHighlightState, setRehypeHighlightState] = useState<{ contentVersion: number, plugin: RehypePlugin } | undefined>()
   const rehypeHighlightPlugin = rehypeHighlightState?.contentVersion === contentVersion ? rehypeHighlightState.plugin : undefined
   const rehypePlugins = useMemo<Options["rehypePlugins"]>(() => {

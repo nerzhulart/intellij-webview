@@ -17,6 +17,7 @@ interface MarkdownChangedBlockDescriptor {
   kind: "ADDED" | "MODIFIED" | "REMOVED"
   startLine: number
   endLine: number
+  inlineChanges?: readonly unknown[]
 }
 
 export interface ChangedBlockElements {
@@ -26,7 +27,9 @@ export interface ChangedBlockElements {
 }
 
 const sourcePositionPattern = /^(\d+):(\d+)-(\d+):(\d+)$/
-const sourceDecorationClassNames = ["is-source-selected", "is-vcs-added", "is-vcs-modified", "is-vcs-removed"]
+const inlineChangesClassName = "has-vcs-inline-changes"
+const inlineChangeSelector = "[data-vcs-inline]"
+const sourceDecorationClassNames = ["is-source-selected", "is-vcs-added", "is-vcs-modified", "is-vcs-removed", inlineChangesClassName]
 const sourceDecorationClassSelector = sourceDecorationClassNames.map(className => `.${className}`).join(", ")
 const sourceDecorationBlockTagNames = new Set([
   "BLOCKQUOTE",
@@ -126,8 +129,10 @@ export function decorateSourceBlocks(selection: SourcePositionRange | undefined,
   for (const change of changes) {
     const className = changeClassName(change.kind)
     const changedElements = changedBlockElements(elements, change)
+    const hasInlineChanges = (change.inlineChanges?.length ?? 0) > 0 && changedElements.some(containsInlineChange)
     for (const element of changedElements) {
       element.classList.add(className)
+      if (hasInlineChanges) element.classList.add(inlineChangesClassName)
     }
     if (changedElements.length > 0) {
       changedBlocks.push({ kind: change.kind, startLine: change.startLine, elements: changedElements })
@@ -203,6 +208,14 @@ function sourceDecorationTarget(element: HTMLElement): HTMLElement | undefined {
   if (sourceDecorationBlockTagNames.has(element.tagName)) return element
   if (element.tagName === "CODE" && element.parentElement?.tagName === "PRE") return element.parentElement
   return undefined
+}
+
+/**
+ * A block whose inline changes are not rendered, for example in a fenced code block or in a standalone image, keeps the
+ * full highlighting, so the change stays visible.
+ */
+function containsInlineChange(element: HTMLElement): boolean {
+  return element.matches(inlineChangeSelector) || element.querySelector(inlineChangeSelector) !== null
 }
 
 function sourceRangesIntersect(first: SourcePositionRange, second: SourcePositionRange): boolean {

@@ -58,6 +58,10 @@ html.is-over-change-marker body::-webkit-scrollbar-track {
   --markdown-vcs-modified-border: var(--markdown-diff-modified-stripe, var(--ij-accent-soft-border, var(--ij-accent, #3574F0)));
   --markdown-vcs-removed-bg: var(--markdown-diff-removed-bg, var(--ij-danger-soft, rgba(199, 84, 80, 0.16)));
   --markdown-vcs-removed-border: var(--markdown-diff-removed-stripe, var(--ij-danger-border, var(--markdown-error)));
+  /* A block with inline changes is filled with the pale color, its changed words with the full one, as in the diff editor. */
+  --markdown-vcs-added-ignored-bg: var(--markdown-diff-added-ignored-bg, color-mix(in srgb, var(--markdown-vcs-added-bg) 40%, transparent));
+  --markdown-vcs-modified-ignored-bg: var(--markdown-diff-modified-ignored-bg, color-mix(in srgb, var(--markdown-vcs-modified-bg) 40%, transparent));
+  --markdown-vcs-removed-ignored-bg: var(--markdown-diff-removed-ignored-bg, color-mix(in srgb, var(--markdown-vcs-removed-bg) 40%, transparent));
   box-sizing: border-box;
   max-width: 980px;
   padding: 20px 28px 48px;
@@ -116,19 +120,31 @@ html[data-theme="light"] .markdownPreview {
 .markdownPreview .is-vcs-added {
   --markdown-current-decoration-bg: var(--markdown-vcs-added-bg);
   background: var(--markdown-vcs-added-bg);
-  box-shadow: inset 3px 0 0 var(--markdown-vcs-added-border);
 }
 
 .markdownPreview .is-vcs-modified {
   --markdown-current-decoration-bg: var(--markdown-vcs-modified-bg);
   background: var(--markdown-vcs-modified-bg);
-  box-shadow: inset 3px 0 0 var(--markdown-vcs-modified-border);
 }
 
 .markdownPreview .is-vcs-removed {
   --markdown-current-decoration-bg: var(--markdown-vcs-removed-bg);
   background: var(--markdown-vcs-removed-bg);
-  box-shadow: inset 3px 0 0 var(--markdown-vcs-removed-border);
+}
+
+.markdownPreview .is-vcs-added.has-vcs-inline-changes {
+  --markdown-current-decoration-bg: var(--markdown-vcs-added-ignored-bg);
+  background: var(--markdown-vcs-added-ignored-bg);
+}
+
+.markdownPreview .is-vcs-modified.has-vcs-inline-changes {
+  --markdown-current-decoration-bg: var(--markdown-vcs-modified-ignored-bg);
+  background: var(--markdown-vcs-modified-ignored-bg);
+}
+
+.markdownPreview .is-vcs-removed.has-vcs-inline-changes {
+  --markdown-current-decoration-bg: var(--markdown-vcs-removed-ignored-bg);
+  background: var(--markdown-vcs-removed-ignored-bg);
 }
 
 .markdownPreview .is-source-selected code,
@@ -171,6 +187,40 @@ html[data-theme="light"] .markdownPreview {
 .markdownPreview .is-source-selected.is-vcs-removed {
   outline: 1px solid var(--markdown-source-selection-border);
   outline-offset: 1px;
+}
+
+/* The block selector outweighs the rule that paints code and table headers of a changed block. */
+.markdownPreview [data-vcs-inline],
+.markdownPreview .has-vcs-inline-changes [data-vcs-inline] {
+  border-radius: 2px;
+}
+
+.markdownPreview [data-vcs-inline="ADDED"],
+.markdownPreview .has-vcs-inline-changes [data-vcs-inline="ADDED"] {
+  background: var(--markdown-vcs-added-bg);
+}
+
+.markdownPreview [data-vcs-inline="MODIFIED"],
+.markdownPreview .has-vcs-inline-changes [data-vcs-inline="MODIFIED"] {
+  background: var(--markdown-vcs-modified-bg);
+}
+
+.markdownPreview [data-vcs-inline="REMOVED"],
+.markdownPreview .has-vcs-inline-changes [data-vcs-inline="REMOVED"] {
+  background: var(--markdown-vcs-removed-bg);
+}
+
+/* An opaque image hides its background, so a changed image is outlined. */
+.markdownPreview img[data-vcs-inline="ADDED"] {
+  outline: 2px solid var(--markdown-vcs-added-border);
+}
+
+.markdownPreview img[data-vcs-inline="MODIFIED"] {
+  outline: 2px solid var(--markdown-vcs-modified-border);
+}
+
+.markdownPreview img[data-vcs-inline="REMOVED"] {
+  outline: 2px solid var(--markdown-vcs-removed-border);
 }
 
 .markdownPreview .markdownFloatingRail,

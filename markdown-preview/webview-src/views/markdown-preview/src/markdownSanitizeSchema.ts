@@ -22,7 +22,7 @@ export const markdownSanitizeSchema: Options = {
   ]),
   attributes: {
     ...defaultAttributes,
-    "*": mergeAttributes("*", [["dataSourcepos"]]),
+    "*": mergeAttributes("*", [["dataSourcepos"], ["dataVcsInline", "ADDED", "MODIFIED", "REMOVED"]]),
     a: mergeAttributes("a", [["ariaLabel"], ["dataFootnoteBackref"]]),
     code: mergeAttributes("code", [["className", /^language-./, "frontmatterCode", "no-highlight", "nohighlight"], ["dataFrontmatter", "yaml", "toml"]]),
     details: mergeAttributes("details", [["open"]]),

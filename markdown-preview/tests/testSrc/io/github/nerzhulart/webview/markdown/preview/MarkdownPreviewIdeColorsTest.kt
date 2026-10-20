@@ -17,20 +17,22 @@ internal class MarkdownPreviewIdeColorsTest : TestCase() {
     assertEquals("#FF000080", Color(255, 0, 0, 128).toCssHex())
   }
 
-  fun `test change colors payload has background and stripe per change kind`() {
+  fun `test change colors payload has background stripe and ignored background per change kind`() {
     val payload = Json.encodeToJsonElement(
       MarkdownChangeColorsParams.serializer(),
       MarkdownChangeColorsParams(
-        added = MarkdownChangeColorParams(background = "#294436", stripe = "#384C38"),
-        modified = MarkdownChangeColorParams(background = "#385570", stripe = "#43698D"),
-        removed = MarkdownChangeColorParams(background = "#484A4A", stripe = "#656E76"),
+        added = MarkdownChangeColorParams(background = "#294436", stripe = "#384C38", ignoredBackground = "#25302B"),
+        modified = MarkdownChangeColorParams(background = "#385570", stripe = "#43698D", ignoredBackground = "#2B3540"),
+        removed = MarkdownChangeColorParams(background = "#484A4A", stripe = "#656E76", ignoredBackground = "#363838"),
       ),
     ).jsonObject
 
     assertEquals(setOf("added", "modified", "removed"), payload.keys)
     val removed = payload.getValue("removed").jsonObject
+    assertEquals(setOf("background", "stripe", "ignoredBackground"), removed.keys)
     assertEquals("#484A4A", removed.getValue("background").jsonPrimitive.content)
     assertEquals("#656E76", removed.getValue("stripe").jsonPrimitive.content)
+    assertEquals("#363838", removed.getValue("ignoredBackground").jsonPrimitive.content)
   }
 
   fun `test link colors follow the Link keys of the current UI theme`() {

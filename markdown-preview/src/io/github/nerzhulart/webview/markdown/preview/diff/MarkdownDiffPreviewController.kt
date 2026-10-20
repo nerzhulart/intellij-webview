@@ -200,6 +200,11 @@ internal class MarkdownDiffPreviewController private constructor(
     }
   }
 
+  /**
+   * The provider follows the `Highlighting` setting of the viewer: it fills the inner fragments of [computed] for the
+   * by word and by symbol policies, which become inline changes of the blocks, and returns `null` for `Do not highlight`.
+   * A `null` result, which a failed comparison gives as well, leaves the previews without changed blocks.
+   */
   private fun applyChanges(requestId: Int, computed: List<LineFragment>?) {
     if (requestId != changesRequestId || !isRenderedMode) return
 
