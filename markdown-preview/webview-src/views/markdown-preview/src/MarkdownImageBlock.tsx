@@ -8,6 +8,7 @@ import {
   MARKDOWN_ZOOM_BUTTON_FACTOR,
   MARKDOWN_ZOOM_SCALE_EXTENT,
   MarkdownZoomToolbar,
+  fitToContentTransform,
   shouldHandleZoomEvent,
 } from "./MarkdownZoomControls"
 import { attachMarkdownWheelZoom, type MarkdownWheelZoom } from "./markdownWheelZoom"
@@ -23,7 +24,7 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
   const imageRef = useRef<HTMLImageElement>(null)
   const zoomBehaviorRef = useRef<ZoomBehavior<HTMLDivElement, unknown> | null>(null)
   const wheelZoomRef = useRef<MarkdownWheelZoom | null>(null)
-  const [aspectRatio, setAspectRatio] = useState<number | undefined>()
+  const [naturalSize, setNaturalSize] = useState<{ width: number, height: number } | undefined>()
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -54,7 +55,7 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
   }, [src])
 
   useEffect(() => {
-    updateAspectRatio()
+    updateNaturalSize()
   }, [src])
 
   function zoomBy(factor: number): void {
@@ -73,29 +74,61 @@ export function MarkdownImageBlock({ src, alt, title, className, style, ...props
     select<HTMLDivElement, unknown>(viewport).call(zoomBehavior.transform, zoomIdentity)
   }
 
-  function updateAspectRatio(): void {
+  // By default the image is laid out to fit the column, so 1:1 needs a scale of natural width over laid-out width.
+  function actualSize(): void {
+    const viewport = viewportRef.current
+    const image = imageRef.current
+    const zoomBehavior = zoomBehaviorRef.current
+    if (!viewport || !image || !zoomBehavior || image.offsetWidth <= 0 || image.naturalWidth <= 0) return
+    const [minScale, maxScale] = MARKDOWN_ZOOM_SCALE_EXTENT
+    const scale = Math.min(maxScale, Math.max(minScale, image.naturalWidth / image.offsetWidth))
+    viewport.scrollLeft = 0
+    viewport.scrollTop = 0
+    wheelZoomRef.current?.cancel()
+    select<HTMLDivElement, unknown>(viewport).call(zoomBehavior.transform, zoomIdentity.scale(scale))
+  }
+
+  function fitToContent(): void {
+    const viewport = viewportRef.current
+    const image = imageRef.current
+    const zoomBehavior = zoomBehaviorRef.current
+    if (!viewport || !image || !zoomBehavior) return
+    const transform = fitToContentTransform(viewport.clientWidth, viewport.clientHeight, image.offsetWidth, image.offsetHeight)
+    if (!transform) return
+    viewport.scrollLeft = 0
+    viewport.scrollTop = 0
+    wheelZoomRef.current?.cancel()
+    select<HTMLDivElement, unknown>(viewport).call(zoomBehavior.transform, transform)
+  }
+
+  function updateNaturalSize(): void {
     const image = imageRef.current
     const width = image?.naturalWidth ?? 0
     const height = image?.naturalHeight ?? 0
-    setAspectRatio(width > 0 && height > 0 ? width / height : undefined)
+    setNaturalSize(width > 0 && height > 0 ? { width, height } : undefined)
   }
 
-  const blockStyle = aspectRatio === undefined
+  const blockStyle = naturalSize === undefined
     ? style
-    : ({ ...style, "--markdown-image-aspect-ratio": String(aspectRatio) } as CSSProperties)
+    : ({
+      ...style,
+      "--markdown-image-natural-width": `${naturalSize.width}px`,
+      "--markdown-image-natural-height": `${naturalSize.height}px`,
+    } as CSSProperties)
 
   return (
     <div {...props} className={classNames("markdownImageBlock", "isInteractive", className)} style={blockStyle}>
       <div className="markdownImageViewport" ref={viewportRef}>
-        <img className="markdownImage" ref={imageRef} src={src} alt={alt ?? ""} title={title} draggable={false} onLoad={updateAspectRatio} />
+        <img className="markdownImage" ref={imageRef} src={src} alt={alt ?? ""} title={title} draggable={false} onLoad={updateNaturalSize} />
       </div>
       <MarkdownZoomToolbar
         targetLabel="image"
         className="markdownImageToolbar"
         buttonClassName="markdownImageToolbarButton"
         onZoomOut={() => zoomBy(1 / MARKDOWN_ZOOM_BUTTON_FACTOR)}
-        onResetZoom={resetZoom}
+        onResetZoom={actualSize}
         onZoomIn={() => zoomBy(MARKDOWN_ZOOM_BUTTON_FACTOR)}
+        onFitToContent={fitToContent}
       />
     </div>
   )

@@ -38,6 +38,7 @@ type ConsoleMessage = {
 
 type Page = {
   addInitScript(pageFunction: () => void): Promise<void>
+  setViewportSize(size: { width: number; height: number }): Promise<void>
   goto(url: string): Promise<void>
   getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator
   locator(selector: string): Locator
@@ -550,7 +551,7 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
     return block != null && getComputedStyle(block).resize === "vertical"
   })
   expect(resizeEnabled).toBe(true)
-  expect(await mermaidSvgFillsViewport(page)).toBe(true)
+  expect(await mermaidSvgHasNaturalSize(page)).toBe(true)
   expect(await mermaidViewportUsesMoveCursor(page)).toBe(true)
 
   await page.getByRole("button", { name: "Zoom in diagram" }).click()
@@ -559,7 +560,7 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
     return transform.includes("scale(") && !transform.endsWith("scale(1)")
   })
 
-  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.getByRole("button", { name: "Reset diagram to actual size" }).click()
   await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
   expect(await mermaidViewBoxContainsContent(page)).toBe(true)
 
@@ -576,7 +577,7 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
   // Ctrl+wheel over a diagram zooms only the diagram, not the whole page.
   expect((await pageZoom(page)) === 1).toBe(true)
 
-  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.getByRole("button", { name: "Reset diagram to actual size" }).click()
   await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
 
   // A dense stream of fine Ctrl+wheel deltas (macOS trackpad pinch) keeps d3-zoom's per-event scaling.
@@ -591,7 +592,7 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
     return Math.abs(scale - 2 ** 0.2) < 0.01
   })
 
-  await page.getByRole("button", { name: "Reset diagram zoom" }).click()
+  await page.getByRole("button", { name: "Reset diagram to actual size" }).click()
   await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
 
   const transformBeforeDrag = await mermaidTransform(page)
@@ -601,6 +602,53 @@ test("zooms, pans, and exposes native resize for Mermaid diagrams", async ({ pag
     return transform.includes("translate(") && !transform.startsWith("translate(0,0)")
   })
   expect((await mermaidTransform(page)) !== transformBeforeDrag).toBe(true)
+})
+
+test("scrolls and fits wide Mermaid diagrams and images in narrow viewports", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.setViewportSize({ width: 260, height: 800 })
+  await page.route(/.*\/__markdown-preview-resource\/.*/, route => route.fulfill({ contentType: "image/svg+xml", body: mockMarkdownPreviewImageSvg }))
+  await page.goto(preview.url)
+  await page.waitForSelector(".mermaidBlock svg")
+  await page.waitForFunction(() => document.querySelector<HTMLImageElement>(".markdownImageViewport img")?.naturalWidth === 960)
+  await waitForMermaidToolbarIcons(page)
+
+  expect(await mermaidTextMatchesBodyFontSize(page)).toBe(true)
+  const mermaidOverflow = await viewportOverflowState(page, ".mermaidViewport")
+  expect(mermaidOverflow?.overflowX === "auto").toBe(true)
+  expect((mermaidOverflow?.scrollWidth ?? 0) > (mermaidOverflow?.clientWidth ?? 0)).toBe(true)
+
+  await page.getByRole("button", { name: "Fit diagram to content" }).click()
+  await page.waitForFunction(() => {
+    const transform = document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? ""
+    return Number(/scale\(([^)]+)\)/.exec(transform)?.[1]) < 1
+  })
+  expect(await contentFitsViewport(page, ".mermaidViewport", ".mermaidPanZoom")).toBe(true)
+  await page.getByRole("button", { name: "Reset diagram to actual size" }).click()
+  await page.waitForFunction(() => (document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "") === "translate(0,0) scale(1)")
+
+  // Images fit the column by default; Actual size scales them to their natural width and scrolls.
+  // A wider page keeps the actual-size scale within the maximum zoom.
+  await page.setViewportSize({ width: 480, height: 800 })
+  await page.locator(".markdownImageViewport").scrollIntoViewIfNeeded()
+  const imageOverflow = await viewportOverflowState(page, ".markdownImageViewport")
+  expect(imageOverflow?.overflowX === "auto").toBe(true)
+  expect((imageOverflow?.scrollWidth ?? 0) <= (imageOverflow?.clientWidth ?? 0) + 1).toBe(true)
+  expect(await contentFitsViewport(page, ".markdownImageViewport", ".markdownImageViewport img")).toBe(true)
+
+  await page.getByRole("button", { name: "Reset image to actual size" }).click()
+  await page.waitForFunction(() => {
+    const image = document.querySelector<HTMLImageElement>(".markdownImageViewport img")
+    return image != null && Math.abs(image.getBoundingClientRect().width - image.naturalWidth) <= 1
+  })
+  const zoomedOverflow = await viewportOverflowState(page, ".markdownImageViewport")
+  expect((zoomedOverflow?.scrollWidth ?? 0) > (zoomedOverflow?.clientWidth ?? 0)).toBe(true)
+
+  await page.getByRole("button", { name: "Fit image to content" }).click()
+  await page.waitForFunction(() => (document.querySelector<HTMLElement>(".markdownImage")?.style.transform ?? "") === "translate(0px, 0px) scale(1)")
+  expect(await contentFitsViewport(page, ".markdownImageViewport", ".markdownImageViewport img")).toBe(true)
 })
 
 test("zooms standalone image blocks without changing inline or linked images", async ({ page }) => {
@@ -631,14 +679,15 @@ test("zooms standalone image blocks without changing inline or linked images", a
   expect(imageState.linkedHasZoomBlock).toBe(false)
   expect(imageState.imageToolbarCount === 1).toBe(true)
   await page.waitForFunction(() => {
-    const block = document.querySelector(".markdownImageBlock")
     const image = document.querySelector<HTMLImageElement>(".markdownImageViewport img")
-    if (!block || !image || image.naturalWidth <= 0 || image.naturalHeight <= 0) return false
-    const box = block.getBoundingClientRect()
-    const expectedHeight = box.width * image.naturalHeight / image.naturalWidth
-    return Math.abs(box.height - expectedHeight) <= 1
+    if (!image || image.naturalWidth <= 0 || image.naturalHeight <= 0) return false
+    const viewport = image.parentElement
+    if (!viewport) return false
+    const box = image.getBoundingClientRect()
+    const expectedWidth = Math.min(image.naturalWidth, viewport.clientWidth)
+    return Math.abs(box.width - expectedWidth) <= 1 && Math.abs(box.height - expectedWidth * image.naturalHeight / image.naturalWidth) <= 1
   })
-  expect(await markdownImageFillsViewport(page)).toBe(true)
+  expect(await markdownImageBlockFitsImageHeight(page)).toBe(true)
 
   await page.getByRole("button", { name: "Zoom in image" }).click()
   await page.waitForFunction(() => {
@@ -646,7 +695,7 @@ test("zooms standalone image blocks without changing inline or linked images", a
     return transform.includes("scale(") && !transform.endsWith("scale(1)")
   })
 
-  await page.getByRole("button", { name: "Reset image zoom" }).click()
+  await page.getByRole("button", { name: "Fit image to content" }).click()
   await page.waitForFunction(() => (document.querySelector<HTMLElement>(".markdownImage")?.style.transform ?? "") === "translate(0px, 0px) scale(1)")
 
   const transformBeforeWheel = await markdownImageTransform(page)
@@ -866,12 +915,26 @@ function markdownImageTransform(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector<HTMLElement>(".markdownImage")?.style.transform ?? "")
 }
 
-function mermaidSvgFillsViewport(page: Page): Promise<boolean> {
+/** The SVG is drawn at 1:1 with its viewBox, and the block is tall enough to show it without vertical clipping. */
+function mermaidSvgHasNaturalSize(page: Page): Promise<boolean> {
   return page.evaluate(() => {
-    const viewport = document.querySelector(".mermaidViewport")
-    const svg = document.querySelector(".mermaidViewport svg")
+    const viewport = document.querySelector<HTMLElement>(".mermaidViewport")
+    const svg = document.querySelector<SVGSVGElement>(".mermaidViewport svg")
     if (!viewport || !svg) return false
-    return Math.abs(svg.getBoundingClientRect().width - viewport.getBoundingClientRect().width) <= 1
+    const viewBox = svg.viewBox.baseVal
+    const box = svg.getBoundingClientRect()
+    return Math.abs(box.width - viewBox.width) <= 1
+      && Math.abs(box.height - viewBox.height) <= 1
+      && viewport.scrollHeight <= viewport.clientHeight + 1
+  })
+}
+
+function mermaidTextMatchesBodyFontSize(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const content = document.querySelector(".markdownPreviewContent")
+    const label = document.querySelector(".mermaidViewport .nodeLabel, .mermaidViewport text")
+    if (!content || !label) return false
+    return getComputedStyle(label).fontSize === getComputedStyle(content).fontSize
   })
 }
 
@@ -886,21 +949,21 @@ function mermaidViewportUsesMoveCursor(page: Page): Promise<boolean> {
 async function waitForMermaidToolbarIcons(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".mermaidToolbar img"))
-    return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
+    return icons.length === 4 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
 }
 
 function mermaidToolbarButtonsUseDefaultCursor(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".mermaidToolbarButton"))
-    return buttons.length === 3 && buttons.every(button => getComputedStyle(button).cursor === "default")
+    return buttons.length === 4 && buttons.every(button => getComputedStyle(button).cursor === "default")
   })
 }
 
 async function waitForMarkdownImageToolbarIcons(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const icons = Array.from(document.querySelectorAll<HTMLImageElement>(".markdownImageToolbar img"))
-    return icons.length === 3 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
+    return icons.length === 4 && icons.every(icon => icon.complete && icon.naturalWidth > 0 && icon.naturalHeight > 0)
   })
 }
 
@@ -1038,15 +1101,37 @@ function hasKatex(page: Page): Promise<boolean> {
   return page.evaluate(() => document.querySelector(".katex") != null)
 }
 
-function markdownImageFillsViewport(page: Page): Promise<boolean> {
+/** The image block grows to the natural image height, so the image is never clipped vertically. */
+function markdownImageBlockFitsImageHeight(page: Page): Promise<boolean> {
   return page.evaluate(() => {
-    const viewport = document.querySelector(".markdownImageViewport")
-    const image = document.querySelector(".markdownImageViewport img")
+    const viewport = document.querySelector<HTMLElement>(".markdownImageViewport")
+    const image = document.querySelector<HTMLImageElement>(".markdownImageViewport img")
     if (!viewport || !image) return false
-    const viewportBox = viewport.getBoundingClientRect()
-    const imageBox = image.getBoundingClientRect()
-    return Math.abs(imageBox.width - viewportBox.width) <= 1 && Math.abs(imageBox.height - viewportBox.height) <= 1
+    return getComputedStyle(viewport).overflowX === "auto" && viewport.scrollHeight <= viewport.clientHeight + 1
   })
+}
+
+function viewportOverflowState(page: Page, selector: string): Promise<{ overflowX: string, scrollWidth: number, clientWidth: number } | null> {
+  return page.evaluate(selector => {
+    const viewport = document.querySelector<HTMLElement>(selector)
+    if (!viewport) return null
+    return { overflowX: getComputedStyle(viewport).overflowX, scrollWidth: viewport.scrollWidth, clientWidth: viewport.clientWidth }
+  }, selector)
+}
+
+function transformScale(transform: string): number {
+  return Number(/scale\(([^)]+)\)/.exec(transform)?.[1] ?? "NaN")
+}
+
+/** The rendered content box lies inside the viewport box. */
+function contentFitsViewport(page: Page, viewportSelector: string, contentSelector: string): Promise<boolean> {
+  return page.evaluate(([viewportSelector, contentSelector]) => {
+    const viewport = document.querySelector(viewportSelector)?.getBoundingClientRect()
+    const content = document.querySelector(contentSelector)?.getBoundingClientRect()
+    if (!viewport || !content) return false
+    return content.left >= viewport.left - 1 && content.right <= viewport.right + 1
+      && content.top >= viewport.top - 1 && content.bottom <= viewport.bottom + 1
+  }, [viewportSelector, contentSelector] as const)
 }
 
 function mermaidHasNoRunGutter(page: Page): Promise<boolean> {

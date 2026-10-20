@@ -8,6 +8,7 @@ import {
   MARKDOWN_ZOOM_BUTTON_FACTOR,
   MARKDOWN_ZOOM_SCALE_EXTENT,
   MarkdownZoomToolbar,
+  fitToContentTransform,
   shouldHandleZoomEvent,
 } from "./MarkdownZoomControls"
 import { attachMarkdownWheelZoom, type MarkdownWheelZoom } from "./markdownWheelZoom"
@@ -92,6 +93,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     prepareSvg(svgElement, "mermaidSvg")
     const panZoomGroup = wrapSvgContent(svgElement, "mermaidPanZoom")
     fitSvgViewBoxToContent(svgElement, panZoomGroup)
+    applyNaturalSvgSize(svgElement)
     svgRef.current = svgElement
 
     const zoomBehavior = zoom<SVGSVGElement, unknown>()
@@ -134,6 +136,31 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     select<SVGSVGElement, unknown>(svgElement).call(zoomBehavior.transform, zoomIdentity)
   }
 
+  function fitToContent(): void {
+    const svgElement = svgRef.current
+    const zoomBehavior = zoomBehaviorRef.current
+    const viewport = hostRef.current
+    if (!svgElement || !zoomBehavior || !viewport) return
+    const viewBox = svgElement.viewBox.baseVal
+    if (!viewBox) return
+    // The SVG element clips its content, so the fitted diagram must stay within both the viewport and the SVG box.
+    const fitted = fitToContentTransform(
+      Math.min(viewport.clientWidth, viewBox.width),
+      Math.min(viewport.clientHeight, viewBox.height),
+      viewBox.width,
+      viewBox.height,
+    )
+    if (!fitted) return
+    viewport.scrollLeft = 0
+    viewport.scrollTop = 0
+    wheelZoomRef.current?.cancel()
+    // The transform applies in viewBox units, so shift it by the viewBox origin to keep the content centered.
+    const transform = zoomIdentity
+      .translate(fitted.x + viewBox.x * (1 - fitted.k), fitted.y + viewBox.y * (1 - fitted.k))
+      .scale(fitted.k)
+    select<SVGSVGElement, unknown>(svgElement).call(zoomBehavior.transform, transform)
+  }
+
   return (
     <div className="mermaidBlock isInteractive">
       <div className="mermaidViewport" ref={hostRef} />
@@ -144,6 +171,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
         onZoomOut={() => zoomBy(1 / MARKDOWN_ZOOM_BUTTON_FACTOR)}
         onResetZoom={resetZoom}
         onZoomIn={() => zoomBy(MARKDOWN_ZOOM_BUTTON_FACTOR)}
+        onFitToContent={fitToContent}
       />
     </div>
   )
@@ -193,6 +221,13 @@ function fitSvgViewBoxToContent(svgElement: SVGSVGElement, contentElement: SVGGr
   }
 }
 
+function applyNaturalSvgSize(svgElement: SVGSVGElement): void {
+  const viewBox = svgElement.viewBox.baseVal
+  if (!viewBox || viewBox.width <= 0 || viewBox.height <= 0) return
+  svgElement.style.width = `${viewBox.width}px`
+  svgElement.style.height = `${viewBox.height}px`
+}
+
 function svgDimension(value: string | null): number | undefined {
   if (!value) return undefined
   const dimension = Number.parseFloat(value)
@@ -222,7 +257,7 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
     suppressErrorRendering: true,
     themeVariables: {
       fontFamily: font,
-      fontSize: "13px",
+      fontSize: bodyFontSize(),
       primaryColor: panel,
       primaryBorderColor: border,
       primaryTextColor: textPrimary,
@@ -284,6 +319,13 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
       }
     `,
   })
+}
+
+function bodyFontSize(): string {
+  const content = document.querySelector(".markdownPreviewContent")
+  const measured = content ? Number.parseFloat(getComputedStyle(content).fontSize) : Number.NaN
+  if (Number.isFinite(measured) && measured > 0) return `${measured}px`
+  return cssVariable("--ij-font-size", "13px")
 }
 
 function cssVariable(name: string, fallback: string): string {
