@@ -2,20 +2,24 @@
 package io.github.nerzhulart.webview.markdown.preview
 
 import com.intellij.diff.util.TextDiffType
+import com.intellij.util.ui.JBUI
 import io.github.nerzhulart.webview.api.WebViewApiId
 import io.github.nerzhulart.webview.api.WebViewCallable
 import kotlinx.serialization.Serializable
 import java.awt.Color
 
 /**
- * Delivers the `Diff & Merge` colors of the IDE color scheme to the changed blocks of the preview. It shares the
- * `markdown.preview` namespace with [MarkdownPreviewPageApi], so the payload types stay internal to this module.
+ * Delivers the IDE colors the preview mirrors: the `Diff & Merge` colors of the color scheme for the changed blocks and
+ * the `Link.*` colors of the UI theme for the hyperlinks. It shares the `markdown.preview` namespace with
+ * [MarkdownPreviewPageApi], so the payload types stay internal to this module.
  */
-internal interface MarkdownPreviewChangeColorsPageApi : WebViewCallable {
+internal interface MarkdownPreviewIdeColorsPageApi : WebViewCallable {
   fun setChangeColors(params: MarkdownChangeColorsParams)
 
+  fun setLinkColors(params: MarkdownLinkColorsParams)
+
   companion object {
-    val ID: WebViewApiId<MarkdownPreviewChangeColorsPageApi> = WebViewApiId.of("markdown.preview")
+    val ID: WebViewApiId<MarkdownPreviewIdeColorsPageApi> = WebViewApiId.of("markdown.preview")
   }
 }
 
@@ -51,6 +55,27 @@ private fun TextDiffType.toChangeColorParams(): MarkdownChangeColorParams {
   return MarkdownChangeColorParams(
     background = background.toCssHex(),
     stripe = (getMarkerColor(null) ?: background).toCssHex(),
+  )
+}
+
+/**
+ * [foreground] paints a link, [hover] a link under the mouse, [pressed] a link being clicked.
+ */
+@Serializable
+internal data class MarkdownLinkColorsParams(
+  val foreground: String,
+  val hover: String,
+  val pressed: String,
+)
+
+/**
+ * Reads the `Link.activeForeground`, `Link.hoverForeground` and `Link.pressedForeground` colors of the current UI theme.
+ */
+internal fun currentMarkdownLinkColors(): MarkdownLinkColorsParams {
+  return MarkdownLinkColorsParams(
+    foreground = JBUI.CurrentTheme.Link.Foreground.ENABLED.toCssHex(),
+    hover = JBUI.CurrentTheme.Link.Foreground.HOVERED.toCssHex(),
+    pressed = JBUI.CurrentTheme.Link.Foreground.PRESSED.toCssHex(),
   )
 }
 

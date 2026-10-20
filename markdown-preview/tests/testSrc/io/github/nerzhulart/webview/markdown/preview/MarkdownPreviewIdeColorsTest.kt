@@ -6,8 +6,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.awt.Color
+import javax.swing.UIManager
 
-internal class MarkdownPreviewChangeColorsTest : TestCase() {
+internal class MarkdownPreviewIdeColorsTest : TestCase() {
   fun `test opaque color is serialized as six hex digits`() {
     assertEquals("#0A7F00", Color(10, 127, 0).toCssHex())
   }
@@ -30,5 +31,33 @@ internal class MarkdownPreviewChangeColorsTest : TestCase() {
     val removed = payload.getValue("removed").jsonObject
     assertEquals("#484A4A", removed.getValue("background").jsonPrimitive.content)
     assertEquals("#656E76", removed.getValue("stripe").jsonPrimitive.content)
+  }
+
+  fun `test link colors follow the Link keys of the current UI theme`() {
+    val keys = listOf("Link.activeForeground", "Link.hoverForeground", "Link.pressedForeground")
+    val previous = keys.associateWith { UIManager.get(it) }
+    try {
+      UIManager.put("Link.activeForeground", Color(0x11, 0x22, 0x33))
+      UIManager.put("Link.hoverForeground", Color(0x44, 0x55, 0x66))
+      UIManager.put("Link.pressedForeground", Color(0x77, 0x88, 0x99))
+
+      assertEquals(
+        MarkdownLinkColorsParams(foreground = "#112233", hover = "#445566", pressed = "#778899"),
+        currentMarkdownLinkColors(),
+      )
+    }
+    finally {
+      previous.forEach { (key, value) -> UIManager.put(key, value) }
+    }
+  }
+
+  fun `test link colors payload has foreground hover and pressed`() {
+    val payload = Json.encodeToJsonElement(
+      MarkdownLinkColorsParams.serializer(),
+      MarkdownLinkColorsParams(foreground = "#548AF7", hover = "#548AF7", pressed = "#2E55A3"),
+    ).jsonObject
+
+    assertEquals(setOf("foreground", "hover", "pressed"), payload.keys)
+    assertEquals("#2E55A3", payload.getValue("pressed").jsonPrimitive.content)
   }
 }

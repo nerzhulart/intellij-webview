@@ -6,6 +6,7 @@ import type {
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandDescriptor,
+  MarkdownLinkColors,
   MarkdownNavigatePathLinkRequest,
   MarkdownPreviewSettings,
   MarkdownResolvePathLinksRequest,
@@ -43,6 +44,7 @@ interface MarkdownPreviewPageApi extends WebViewImplementable {
   selectionChanged(params: MarkdownSelectionChangedParams): void
   setPageZoom(params: MarkdownPageZoomParams): void
   setChangeColors(params: MarkdownChangeColors): void
+  setLinkColors(params: MarkdownLinkColors): void
 }
 
 interface MarkdownPreviewHostApi extends WebViewCallable {
@@ -98,6 +100,11 @@ const ideChangeColorPalettes: MarkdownChangeColors[] = [
     removed: { background: "#5C1E2B", stripe: "#E6455F" },
   },
 ]
+// Distinct palettes in the style of the `Link.*` colors of an IDE UI theme.
+const ideLinkColorPalettes: MarkdownLinkColors[] = [
+  { foreground: "#2E8B57", hover: "#1F6E43", pressed: "#145230" },
+  { foreground: "#B05CE6", hover: "#8E3DC4", pressed: "#6A2696" },
+]
 const fontSizeOptions = [8, 9, 10, 11, 12, defaultFontSize, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
 
 export default defineWebViewMock(({ host, page, theme }) => {
@@ -107,6 +114,7 @@ export default defineWebViewMock(({ host, page, theme }) => {
   let currentChanges = changes
   let currentFontSize = defaultFontSize
   let ideChangeColorPaletteIndex = 0
+  let ideLinkColorPaletteIndex = 0
 
   function updatePreview(): void {
     page.callable(markdownPreviewPageApiId).contentChanged({
@@ -153,6 +161,12 @@ export default defineWebViewMock(({ host, page, theme }) => {
     const palette = ideChangeColorPalettes[ideChangeColorPaletteIndex]
     ideChangeColorPaletteIndex = (ideChangeColorPaletteIndex + 1) % ideChangeColorPalettes.length
     page.callable(markdownPreviewPageApiId).setChangeColors(palette)
+  })
+
+  toolbar.ideLinkColorsButton.addEventListener("click", () => {
+    const palette = ideLinkColorPalettes[ideLinkColorPaletteIndex]
+    ideLinkColorPaletteIndex = (ideLinkColorPaletteIndex + 1) % ideLinkColorPalettes.length
+    page.callable(markdownPreviewPageApiId).setLinkColors(palette)
   })
 
   theme.set("light")
@@ -224,6 +238,7 @@ function installMockToolbar(): {
   diffMarkdownButton: HTMLButtonElement,
   longDiffMarkdownButton: HTMLButtonElement,
   ideDiffColorsButton: HTMLButtonElement,
+  ideLinkColorsButton: HTMLButtonElement,
   log: HTMLSpanElement,
 } {
   const content = document.getElementById("content")
@@ -265,13 +280,27 @@ function installMockToolbar(): {
   ideDiffColorsButton.textContent = "IDE diff colors"
   toolbar.append(ideDiffColorsButton)
 
+  const ideLinkColorsButton = document.createElement("button")
+  ideLinkColorsButton.type = "button"
+  ideLinkColorsButton.textContent = "IDE link colors"
+  toolbar.append(ideLinkColorsButton)
+
   const log = document.createElement("span")
   log.id = "mock-run-log"
   toolbar.append(log)
 
   content.before(toolbar)
   installMockToolbarStyles()
-  return { toggleThemeButton, shortMarkdownButton, dollarMarkdownButton, diffMarkdownButton, longDiffMarkdownButton, ideDiffColorsButton, log }
+  return {
+    toggleThemeButton,
+    shortMarkdownButton,
+    dollarMarkdownButton,
+    diffMarkdownButton,
+    longDiffMarkdownButton,
+    ideDiffColorsButton,
+    ideLinkColorsButton,
+    log,
+  }
 }
 
 /**

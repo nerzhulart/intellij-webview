@@ -22,6 +22,7 @@ import {
 import type {
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
+  MarkdownLinkColors,
   MarkdownNavigatePathLinkRequest,
   MarkdownPreviewSettings,
   MarkdownResolvePathLinksRequest,
@@ -55,6 +56,7 @@ interface MarkdownPreviewPageApi extends WebViewImplementable {
   selectionChanged(params: MarkdownSelectionChangedParams): void
   setPageZoom(params: MarkdownPageZoomParams): void
   setChangeColors(params: MarkdownChangeColors): void
+  setLinkColors(params: MarkdownLinkColors): void
 }
 
 interface MarkdownSelectionChangedParams {
@@ -139,6 +141,9 @@ webView.implement(markdownPreviewPageApiId, {
   setChangeColors(params) {
     applyChangeColors(params)
     refreshScrollbarChangeMarkers()
+  },
+  setLinkColors(params) {
+    applyLinkColors(params)
   },
 })
 
@@ -259,6 +264,13 @@ function applyChangeColors(colors: MarkdownChangeColors): void {
     setColorProperty(style, `--markdown-diff-${kind}-bg`, color?.background)
     setColorProperty(style, `--markdown-diff-${kind}-stripe`, color?.stripe)
   }
+}
+
+function applyLinkColors(colors: MarkdownLinkColors): void {
+  const style = document.documentElement.style
+  setColorProperty(style, "--markdown-ide-link", colors.foreground)
+  setColorProperty(style, "--markdown-ide-link-hover", colors.hover)
+  setColorProperty(style, "--markdown-ide-link-pressed", colors.pressed)
 }
 
 function setColorProperty(style: CSSStyleDeclaration, property: string, value: unknown): void {

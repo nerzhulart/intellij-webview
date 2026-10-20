@@ -57,6 +57,16 @@ export interface MarkdownChangeColors {
   removed: MarkdownChangeColor
 }
 
+/**
+ * `Link.*` colors of the IDE UI theme as `#RRGGBB` or `#RRGGBBAA`: `foreground` paints a link, `hover` a link under
+ * the mouse, `pressed` a link being clicked.
+ */
+export interface MarkdownLinkColors {
+  foreground: string
+  hover: string
+  pressed: string
+}
+
 export interface MarkdownPreviewSettings {
   fontSize?: number | null
   effectiveFontSize: number

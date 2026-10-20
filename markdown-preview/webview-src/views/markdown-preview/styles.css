@@ -44,6 +44,10 @@ html.is-over-change-marker body::-webkit-scrollbar-track {
   --markdown-code-tag: #E8BF6A;
   --markdown-code-type: #A9B7C6;
   --markdown-error: #C75450;
+  /* `--markdown-ide-link*` come from the `Link.*` colors of the IDE UI theme, see `setLinkColors` in main.tsx. */
+  --markdown-link: var(--markdown-ide-link, var(--ij-accent, #3574F0));
+  --markdown-link-hover: var(--markdown-ide-link-hover, var(--markdown-link));
+  --markdown-link-pressed: var(--markdown-ide-link-pressed, var(--markdown-link));
   --markdown-mark-bg: #5B4A1C;
   --markdown-source-selection-bg: var(--ij-bg-selected, rgba(53, 132, 228, 0.24));
   --markdown-source-selection-border: var(--ij-accent, #3574F0);
@@ -539,19 +543,24 @@ html[data-theme="light"] .markdownPreview {
 }
 
 .markdownPreview a {
-  color: var(--ij-accent);
+  color: var(--markdown-link);
   text-decoration: none;
 }
 
 .markdownPreview a:hover {
+  color: var(--markdown-link-hover);
   text-decoration: underline;
+}
+
+.markdownPreview a:active {
+  color: var(--markdown-link-pressed);
 }
 
 .markdownPreview .markdownPathLink {
   margin: 0;
   padding: 0;
   border: 0;
-  color: var(--ij-accent);
+  color: var(--markdown-link);
   background: transparent;
   cursor: pointer;
   font: inherit;
@@ -561,7 +570,12 @@ html[data-theme="light"] .markdownPreview {
 
 .markdownPreview .markdownPathLink:hover,
 .markdownPreview .markdownPathLink:focus-visible {
+  color: var(--markdown-link-hover);
   text-decoration: underline;
+}
+
+.markdownPreview .markdownPathLink:active {
+  color: var(--markdown-link-pressed);
 }
 
 .markdownPreview .markdownPathLink:focus-visible {
@@ -1009,12 +1023,12 @@ html[data-theme="light"] .markdownPreview {
 @keyframes markdownPathLinkReveal {
   from {
     color: var(--ij-text-primary);
-    background-color: color-mix(in srgb, var(--ij-accent) 14%, transparent);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ij-accent) 10%, transparent);
+    background-color: color-mix(in srgb, var(--markdown-link) 14%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--markdown-link) 10%, transparent);
   }
 
   to {
-    color: var(--ij-accent);
+    color: var(--markdown-link);
     background-color: transparent;
     box-shadow: none;
   }

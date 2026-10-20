@@ -112,8 +112,8 @@ class WebViewMarkdownPreviewPanel(
       MarkdownPreviewSettings.ChangeListener.TOPIC,
       MarkdownPreviewSettings.ChangeListener { sendContentUpdate() },
     )
-    connection.subscribe(EditorColorsManager.TOPIC, EditorColorsListener { sendChangeColors() })
-    connection.subscribe(LafManagerListener.TOPIC, LafManagerListener { sendChangeColors() })
+    connection.subscribe(EditorColorsManager.TOPIC, EditorColorsListener { sendIdeColors() })
+    connection.subscribe(LafManagerListener.TOPIC, LafManagerListener { sendIdeColors() })
     loadWebView()
   }
 
@@ -207,17 +207,19 @@ class WebViewMarkdownPreviewPanel(
     }
   }
 
-  private fun sendChangeColors() {
+  private fun sendIdeColors() {
     if (!pageReady) return
     val panel = webViewPanel ?: return
     try {
-      panel.interop.callable(MarkdownPreviewChangeColorsPageApi.ID).setChangeColors(currentMarkdownChangeColors())
+      val ideColorsApi = panel.interop.callable(MarkdownPreviewIdeColorsPageApi.ID)
+      ideColorsApi.setChangeColors(currentMarkdownChangeColors())
+      ideColorsApi.setLinkColors(currentMarkdownLinkColors())
     }
     catch (e: CancellationException) {
       throw e
     }
     catch (t: Throwable) {
-      LOG.warn("Failed to set Markdown WebView preview change colors", t)
+      LOG.warn("Failed to set Markdown WebView preview IDE colors", t)
     }
   }
 
@@ -271,7 +273,7 @@ class WebViewMarkdownPreviewPanel(
           panelCreatedAt,
           markdownDiagnosticDetails(lastUpdate),
         )
-        sendChangeColors()
+        sendIdeColors()
         sendContentUpdate()
         if (pageZoom != DEFAULT_PAGE_ZOOM) sendPageZoom()
       }

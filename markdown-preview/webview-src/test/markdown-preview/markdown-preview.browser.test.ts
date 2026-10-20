@@ -9,6 +9,7 @@ type Locator = {
   click(): Promise<void>
   dispatchEvent(type: string, eventInit?: Record<string, unknown>): Promise<void>
   first(): Locator
+  hover(): Promise<void>
   scrollIntoViewIfNeeded(): Promise<void>
 }
 
@@ -46,6 +47,7 @@ type Page = {
   on(event: "console", handler: (message: ConsoleMessage) => void): void
   on(event: "pageerror", handler: (error: Error) => void): void
   waitForFunction(pageFunction: () => boolean): Promise<unknown>
+  waitForFunction<Arg>(pageFunction: (arg: Arg) => boolean, arg: Arg): Promise<unknown>
   waitForSelector(selector: string): Promise<unknown>
   mouse: Mouse
 }
@@ -715,6 +717,44 @@ test("renders only host-resolved code paths as navigation buttons", async ({ pag
   expect(Number.isFinite(navigation?.clientX) && Number.isFinite(navigation?.clientY)).toBe(true)
 })
 
+test("paints links with the IDE link colors", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPathLink")
+
+  // Without colors from the host, links keep the accent color of the WebView theme.
+  const fallbackState = await page.evaluate(() => {
+    const link = document.querySelector<HTMLAnchorElement>(".markdownPreview a[href^='https://']")
+    const probe = document.createElement("span")
+    probe.style.color = "var(--ij-accent)"
+    document.querySelector(".markdownPreview")?.append(probe)
+    const accent = getComputedStyle(probe).color
+    probe.remove()
+    return { link: link ? getComputedStyle(link).color : "", accent }
+  })
+  expect(fallbackState.link !== "" && fallbackState.link === fallbackState.accent).toBe(true)
+
+  await page.getByRole("button", { name: "IDE link colors" }).click()
+  // The path link reveal animation also ends with the link color.
+  await waitForLinkColors(page, { link: "rgb(46, 139, 87)", pathLink: "rgb(46, 139, 87)" })
+
+  const externalLink = page.getByRole("link", { name: "External link", exact: true })
+  await externalLink.hover()
+  await waitForLinkColors(page, { link: "rgb(31, 110, 67)" })
+
+  await page.mouse.down()
+  await waitForLinkColors(page, { link: "rgb(20, 82, 48)" })
+  // Release away from the link, so the press does not open it.
+  await page.mouse.move(0, 0)
+  await page.mouse.up()
+
+  await page.getByRole("button", { name: "IDE link colors" }).click()
+  await waitForLinkColors(page, { link: "rgb(176, 92, 230)", pathLink: "rgb(176, 92, 230)" })
+  expect(await methodCallCount(page, "markdown.preview/openLink") === 0).toBe(true)
+})
+
 test("defers markdown enhancements until idle without shifting code fences", async ({ page }) => {
   if (!preview) {
     throw new Error("Markdown preview mock preview server was not started")
@@ -887,6 +927,19 @@ function openLinkCallCount(page: Page): Promise<number> {
     }).__WVI_MOCK__
     return mock?.calls.byMethod("markdown.preview/openLink").length ?? 0
   })
+}
+
+/**
+ * Waits until the first external link and, when `expected.pathLink` is set, the first path link have the given
+ * computed colors.
+ */
+async function waitForLinkColors(page: Page, expected: { link: string, pathLink?: string }): Promise<void> {
+  await page.waitForFunction(({ link, pathLink }) => {
+    const linkElement = document.querySelector(".markdownPreview a[href^='https://']")
+    const pathLinkElement = document.querySelector(".markdownPathLink")
+    if (!linkElement || getComputedStyle(linkElement).color !== link) return false
+    return pathLink === undefined || (pathLinkElement != null && getComputedStyle(pathLinkElement).color === pathLink)
+  }, expected)
 }
 
 function methodCallCount(page: Page, method: string): Promise<number> {
