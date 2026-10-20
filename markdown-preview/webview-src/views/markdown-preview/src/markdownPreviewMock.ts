@@ -6,6 +6,7 @@ import type {
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandDescriptor,
+  MarkdownInlineChangeDescriptor,
   MarkdownLinkColors,
   MarkdownNavigatePathLinkRequest,
   MarkdownPreviewSettings,
@@ -90,14 +91,14 @@ const defaultFontSize = 13
 // Distinct palettes in the style of the `Diff & Merge` colors of an IDE color scheme, so tests can tell them apart.
 const ideChangeColorPalettes: MarkdownChangeColors[] = [
   {
-    added: { background: "#294436", stripe: "#2E8B57" },
-    modified: { background: "#385570", stripe: "#4A7FB5" },
-    removed: { background: "#484A4A", stripe: "#8A8F94" },
+    added: { background: "#294436", stripe: "#2E8B57", ignoredBackground: "#1F2E27" },
+    modified: { background: "#385570", stripe: "#4A7FB5", ignoredBackground: "#2A3542" },
+    removed: { background: "#484A4A", stripe: "#8A8F94", ignoredBackground: "#353636" },
   },
   {
-    added: { background: "#3D2B5C", stripe: "#B05CE6" },
-    modified: { background: "#5C4A1E", stripe: "#E0A82E" },
-    removed: { background: "#5C1E2B", stripe: "#E6455F" },
+    added: { background: "#3D2B5C", stripe: "#B05CE6", ignoredBackground: "#2C2340" },
+    modified: { background: "#5C4A1E", stripe: "#E0A82E", ignoredBackground: "#3F3519" },
+    removed: { background: "#5C1E2B", stripe: "#E6455F", ignoredBackground: "#3F1A22" },
   },
 ]
 // Distinct palettes in the style of the `Link.*` colors of an IDE UI theme.
@@ -154,6 +155,13 @@ export default defineWebViewMock(({ host, page, theme }) => {
   toolbar.longDiffMarkdownButton.addEventListener("click", () => {
     currentMarkdown = longDiff.markdown
     currentChanges = longDiff.changes
+    updatePreview()
+  })
+
+  toolbar.inlineDiffMarkdownButton.addEventListener("click", () => {
+    const inlineDiff = inlineDiffMarkdown()
+    currentMarkdown = inlineDiff.markdown
+    currentChanges = inlineDiff.changes
     updatePreview()
   })
 
@@ -237,6 +245,7 @@ function installMockToolbar(): {
   dollarMarkdownButton: HTMLButtonElement,
   diffMarkdownButton: HTMLButtonElement,
   longDiffMarkdownButton: HTMLButtonElement,
+  inlineDiffMarkdownButton: HTMLButtonElement,
   ideDiffColorsButton: HTMLButtonElement,
   ideLinkColorsButton: HTMLButtonElement,
   log: HTMLSpanElement,
@@ -275,6 +284,11 @@ function installMockToolbar(): {
   longDiffMarkdownButton.textContent = "Long diff markdown"
   toolbar.append(longDiffMarkdownButton)
 
+  const inlineDiffMarkdownButton = document.createElement("button")
+  inlineDiffMarkdownButton.type = "button"
+  inlineDiffMarkdownButton.textContent = "Inline diff"
+  toolbar.append(inlineDiffMarkdownButton)
+
   const ideDiffColorsButton = document.createElement("button")
   ideDiffColorsButton.type = "button"
   ideDiffColorsButton.textContent = "IDE diff colors"
@@ -297,9 +311,33 @@ function installMockToolbar(): {
     dollarMarkdownButton,
     diffMarkdownButton,
     longDiffMarkdownButton,
+    inlineDiffMarkdownButton,
     ideDiffColorsButton,
     ideLinkColorsButton,
     log,
+  }
+}
+
+/**
+ * Changed blocks with inline changes, as the IDE diff reports them for the `By word` highlighting: changed words of a
+ * paragraph, a changed link URL, a changed inline code span, escaped text, and a change in a fenced code block.
+ */
+function inlineDiffMarkdown(): { markdown: string, changes: MarkdownChangedBlockDescriptor[] } {
+  const markdown = inlineDiffMarkdownText
+  const inline = (kind: MarkdownInlineChangeDescriptor["kind"], text: string): MarkdownInlineChangeDescriptor => {
+    const startOffset = markdown.indexOf(text)
+    if (startOffset < 0) throw new Error(`Missing inline change text: ${text}`)
+    return { kind, startOffset, endOffset: startOffset + text.length }
+  }
+  return {
+    markdown,
+    changes: [
+      { kind: "MODIFIED", startLine: 5, endLine: 5, inlineChanges: [inline("MODIFIED", "brown"), inline("ADDED", "keeps running")] },
+      { kind: "MODIFIED", startLine: 7, endLine: 7, inlineChanges: [inline("MODIFIED", "new-notes")] },
+      { kind: "MODIFIED", startLine: 9, endLine: 9, inlineChanges: [inline("MODIFIED", "build")] },
+      { kind: "MODIFIED", startLine: 11, endLine: 11, inlineChanges: [inline("MODIFIED", "\\*stars\\*")] },
+      { kind: "MODIFIED", startLine: 14, endLine: 14, inlineChanges: [inline("MODIFIED", "42")] },
+    ],
   }
 }
 
@@ -455,6 +493,23 @@ This mock document has no table of contents.
 const ordinaryDollarMarkdown = `# Dollar Markdown
 
 This document mentions $5, $10, and an escaped \\$placeholder without math.
+`
+
+const inlineDiffMarkdownText = `# Inline Diff Markdown
+
+Unchanged intro paragraph.
+
+The quick brown fox jumps over the lazy dog and keeps running.
+
+See the [release notes](https://example.com/new-notes) for details.
+
+Run \`gradle build\` before pushing.
+
+Escaped \\*stars\\* stay literal here.
+
+\`\`\`kotlin
+val answer = 42
+\`\`\`
 `
 
 const diffMarkdown = `# Diff Markdown

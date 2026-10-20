@@ -36,19 +36,34 @@ export interface MarkdownResolvedRunCommandsResponse {
 
 export type MarkdownChangedBlockKind = "ADDED" | "MODIFIED" | "REMOVED"
 
+/**
+ * `inlineChanges` lists the changed text inside the block when the IDE diff highlights differences by word or by symbol.
+ */
 export interface MarkdownChangedBlockDescriptor {
   kind: MarkdownChangedBlockKind
   startLine: number
   endLine: number
+  inlineChanges?: MarkdownInlineChangeDescriptor[]
+}
+
+/**
+ * A changed text range as 0-based, end-exclusive UTF-16 offsets in the whole Markdown document.
+ */
+export interface MarkdownInlineChangeDescriptor {
+  kind: MarkdownChangedBlockKind
+  startOffset: number
+  endOffset: number
 }
 
 /**
  * `Diff & Merge` colors of the IDE color scheme as `#RRGGBB` or `#RRGGBBAA`: `background` fills a changed block,
- * `stripe` paints its left border and its scrollbar marker.
+ * `stripe` paints its left border and its scrollbar marker. `ignoredBackground` is the pale color that fills a block
+ * with inline changes, while `background` fills its changed words.
  */
 export interface MarkdownChangeColor {
   background: string
   stripe: string
+  ignoredBackground?: string
 }
 
 export interface MarkdownChangeColors {

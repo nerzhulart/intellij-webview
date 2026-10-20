@@ -264,6 +264,7 @@ function applyChangeColors(colors: MarkdownChangeColors): void {
     const color = colors[kind]
     setColorProperty(style, `--markdown-diff-${kind}-bg`, color?.background)
     setColorProperty(style, `--markdown-diff-${kind}-stripe`, color?.stripe)
+    setColorProperty(style, `--markdown-diff-${kind}-ignored-bg`, color?.ignoredBackground)
   }
 }
 

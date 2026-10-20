@@ -31,12 +31,15 @@ internal data class MarkdownChangeColorsParams(
 )
 
 /**
- * [background] fills a changed block, [stripe] paints its left border and its scrollbar marker.
+ * [background] fills a changed block, [stripe] paints its left border and its scrollbar marker. [ignoredBackground] is
+ * the pale color that fills a block with inline changes, while [background] fills its changed words, as in the diff
+ * editor.
  */
 @Serializable
 internal data class MarkdownChangeColorParams(
   val background: String,
   val stripe: String,
+  val ignoredBackground: String,
 )
 
 /**
@@ -55,6 +58,7 @@ private fun TextDiffType.toChangeColorParams(): MarkdownChangeColorParams {
   return MarkdownChangeColorParams(
     background = background.toCssHex(),
     stripe = (getMarkerColor(null) ?: background).toCssHex(),
+    ignoredBackground = getIgnoredColor(null).toCssHex(),
   )
 }
 

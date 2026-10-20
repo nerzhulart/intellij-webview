@@ -157,12 +157,28 @@ enum class MarkdownPreviewCommandKind {
   INLINE,
 }
 
+/**
+ * [inlineChanges] lists the changed text inside the block when the diff highlights differences by word or by symbol;
+ * it is empty when the whole block is highlighted.
+ */
 @ApiStatus.Internal
 @Serializable
 data class MarkdownChangedBlockDescriptor(
   val kind: MarkdownChangedBlockKind,
   val startLine: Int,
   val endLine: Int,
+  val inlineChanges: List<MarkdownInlineChangeDescriptor> = emptyList(),
+)
+
+/**
+ * A changed text range inside a [MarkdownChangedBlockDescriptor]: [startOffset] and [endOffset] are 0-based,
+ * end-exclusive UTF-16 offsets in the whole Markdown document.
+ */
+@Serializable
+data class MarkdownInlineChangeDescriptor(
+  val kind: MarkdownChangedBlockKind,
+  val startOffset: Int,
+  val endOffset: Int,
 )
 
 @ApiStatus.Internal
