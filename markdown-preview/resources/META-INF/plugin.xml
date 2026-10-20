@@ -1,18 +1,17 @@
 <idea-plugin allow-bundled-update="true">
   <id>io.github.nerzhulart.markdown</id>
-  <name>Markdown Lens</name>
+  <name>Markdown Lens – Preview and Diff</name>
   <vendor>nerzhulart</vendor>
   <category>Languages</category>
   <description><![CDATA[
-    A polished, feature-rich Markdown preview that keeps up with your document as you edit.
+    A polished, feature-rich Markdown preview for JetBrains IDEs with Mermaid diagrams and rendered Markdown diffs. Diffs show both versions rendered side by side, with synchronized scrolling and change markers.
     <ul>
-      <li>GitHub Flavored Markdown with tables, task lists, strikethrough, and syntax-highlighted code blocks.</li>
-      <li>Mermaid diagrams and LaTeX math for rich technical documentation.</li>
-      <li>Interactive zoom and pan controls for diagrams and standalone images.</li>
-      <li>Automatic table of contents, in-document anchor navigation, and clickable project file paths.</li>
-      <li>YAML and TOML frontmatter presented as clean, collapsible metadata.</li>
-      <li>Editor-synchronized scrolling for effortless navigation between source and preview.</li>
-      <li>Light and dark themes with adjustable preview font size.</li>
+      <li>GitHub Flavored Markdown: Mermaid diagrams, LaTeX math (KaTeX), tables, task lists, strikethrough, footnotes, highlighted code blocks.</li>
+      <li>Zoom and pan for diagrams and images: buttons, mouse wheel, fit to content, actual size.</li>
+      <li>YAML and TOML frontmatter shown as a collapsible metadata block.</li>
+      <li>Table of contents panel, heading anchors, and file paths that open in the editor.</li>
+      <li>Scroll and selection sync between the editor and the preview.</li>
+      <li>Follows IDE theme colors; separate font size and page zoom settings.</li>
     </ul>
   ]]></description>
   <resource-bundle>messages.MarkdownWebViewPreviewBundle</resource-bundle>
