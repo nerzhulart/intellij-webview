@@ -42,6 +42,31 @@ export interface MarkdownChangedBlockDescriptor {
   endLine: number
 }
 
+/**
+ * `Diff & Merge` colors of the IDE color scheme as `#RRGGBB` or `#RRGGBBAA`: `background` fills a changed block,
+ * `stripe` paints its left border and its scrollbar marker.
+ */
+export interface MarkdownChangeColor {
+  background: string
+  stripe: string
+}
+
+export interface MarkdownChangeColors {
+  added: MarkdownChangeColor
+  modified: MarkdownChangeColor
+  removed: MarkdownChangeColor
+}
+
+/**
+ * `Link.*` colors of the IDE UI theme as `#RRGGBB` or `#RRGGBBAA`: `foreground` paints a link, `hover` a link under
+ * the mouse, `pressed` a link being clicked.
+ */
+export interface MarkdownLinkColors {
+  foreground: string
+  hover: string
+  pressed: string
+}
+
 export interface MarkdownPreviewSettings {
   fontSize?: number | null
   effectiveFontSize: number

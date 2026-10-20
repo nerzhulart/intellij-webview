@@ -2,6 +2,7 @@
 package io.github.nerzhulart.webview.markdown.preview
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.AnAction
@@ -14,6 +15,8 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.colors.EditorColorsListener
+import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.UserDataHolder
 import com.intellij.openapi.util.UserDataHolderBase
@@ -104,10 +107,13 @@ class WebViewMarkdownPreviewPanel(
   private val panelCreatedAt = TimeSource.Monotonic.markNow()
 
   init {
-    ApplicationManager.getApplication().messageBus.connect(coroutineScope.asDisposable()).subscribe(
+    val connection = ApplicationManager.getApplication().messageBus.connect(coroutineScope.asDisposable())
+    connection.subscribe(
       MarkdownPreviewSettings.ChangeListener.TOPIC,
       MarkdownPreviewSettings.ChangeListener { sendContentUpdate() },
     )
+    connection.subscribe(EditorColorsManager.TOPIC, EditorColorsListener { sendIdeColors() })
+    connection.subscribe(LafManagerListener.TOPIC, LafManagerListener { sendIdeColors() })
     loadWebView()
   }
 
@@ -201,6 +207,22 @@ class WebViewMarkdownPreviewPanel(
     }
   }
 
+  private fun sendIdeColors() {
+    if (!pageReady) return
+    val panel = webViewPanel ?: return
+    try {
+      val ideColorsApi = panel.interop.callable(MarkdownPreviewIdeColorsPageApi.ID)
+      ideColorsApi.setChangeColors(currentMarkdownChangeColors())
+      ideColorsApi.setLinkColors(currentMarkdownLinkColors())
+    }
+    catch (e: CancellationException) {
+      throw e
+    }
+    catch (t: Throwable) {
+      LOG.warn("Failed to set Markdown WebView preview IDE colors", t)
+    }
+  }
+
   private fun loadWebView() {
     coroutineScope.launch {
       try {
@@ -251,6 +273,7 @@ class WebViewMarkdownPreviewPanel(
           panelCreatedAt,
           markdownDiagnosticDetails(lastUpdate),
         )
+        sendIdeColors()
         sendContentUpdate()
         if (pageZoom != DEFAULT_PAGE_ZOOM) sendPageZoom()
       }

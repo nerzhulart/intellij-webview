@@ -20,7 +20,9 @@ import {
   topVisibleSourceLine,
 } from "./markdownSourcePositions"
 import type {
+  MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
+  MarkdownLinkColors,
   MarkdownNavigatePathLinkRequest,
   MarkdownPreviewSettings,
   MarkdownResolvePathLinksRequest,
@@ -53,6 +55,8 @@ interface MarkdownPreviewPageApi extends WebViewImplementable {
   scrollToLine(params: MarkdownScrollToLineParams): void
   selectionChanged(params: MarkdownSelectionChangedParams): void
   setPageZoom(params: MarkdownPageZoomParams): void
+  setChangeColors(params: MarkdownChangeColors): void
+  setLinkColors(params: MarkdownLinkColors): void
 }
 
 interface MarkdownSelectionChangedParams {
@@ -87,6 +91,7 @@ interface MarkdownOpenLinkParams {
 const markdownPreviewPageApiId = apiId<MarkdownPreviewPageApi>()("markdown.preview")
 const markdownPreviewHostApi = webView.callable(apiId<MarkdownPreviewHostApi>()("markdown.preview"))
 const markdownLogger = getPerfLogger("markdown")
+const cssHexColorPattern = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/
 const contentElement = requiredElement<HTMLElement>("content")
 const root = createRoot(contentElement)
 let markdown = ""
@@ -132,6 +137,13 @@ webView.implement(markdownPreviewPageApiId, {
     markProgrammaticMarkdownPreviewScroll()
     pageZoom.setZoom(params.zoom, "host")
     reportedPageZoom = pageZoom.zoom()
+  },
+  setChangeColors(params) {
+    applyChangeColors(params)
+    refreshScrollbarChangeMarkers()
+  },
+  setLinkColors(params) {
+    applyLinkColors(params)
   },
 })
 
@@ -242,6 +254,31 @@ function applyPreviewSettings(settings: MarkdownPreviewSettings): void {
   }
   else {
     document.documentElement.style.removeProperty("--markdown-preview-font-size")
+  }
+}
+
+function applyChangeColors(colors: MarkdownChangeColors): void {
+  const style = document.documentElement.style
+  for (const kind of ["added", "modified", "removed"] as const) {
+    const color = colors[kind]
+    setColorProperty(style, `--markdown-diff-${kind}-bg`, color?.background)
+    setColorProperty(style, `--markdown-diff-${kind}-stripe`, color?.stripe)
+  }
+}
+
+function applyLinkColors(colors: MarkdownLinkColors): void {
+  const style = document.documentElement.style
+  setColorProperty(style, "--markdown-ide-link", colors.foreground)
+  setColorProperty(style, "--markdown-ide-link-hover", colors.hover)
+  setColorProperty(style, "--markdown-ide-link-pressed", colors.pressed)
+}
+
+function setColorProperty(style: CSSStyleDeclaration, property: string, value: unknown): void {
+  if (typeof value === "string" && cssHexColorPattern.test(value)) {
+    style.setProperty(property, value)
+  }
+  else {
+    style.removeProperty(property)
   }
 }
 

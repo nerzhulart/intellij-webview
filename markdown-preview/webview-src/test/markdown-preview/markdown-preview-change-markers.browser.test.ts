@@ -197,6 +197,51 @@ test("re-resolves marker colors after a theme change", async ({ page }) => {
   expect(dark.markers[0].color === dark.colors.added).toBe(true)
 })
 
+test("paints changed blocks and markers with the IDE diff colors", async ({ page }) => {
+  await openLongDiff(page)
+  const fallback = await markerState(page)
+
+  await page.getByRole("button", { name: "IDE diff colors", exact: true }).click()
+  await waitForMarkerCssChange(page, fallback.css)
+  const ide = await markerState(page)
+
+  expect(ide.colors.added === "rgb(46, 139, 87)").toBe(true)
+  expect(ide.colors.modified === "rgb(74, 127, 181)").toBe(true)
+  expect(ide.colors.removed === "rgb(138, 143, 148)").toBe(true)
+  expect(ide.markers.map(marker => marker.color).join() === [
+    ide.colors.added,
+    ide.colors.modified,
+    ide.colors.removed,
+    ide.colors.added,
+  ].join()).toBe(true)
+  expect(await blockBackground(page, ".is-vcs-added") === "rgb(41, 68, 54)").toBe(true)
+  expect(await blockBackground(page, ".is-vcs-modified") === "rgb(56, 85, 112)").toBe(true)
+  expect(await blockBackground(page, ".is-vcs-removed") === "rgb(72, 74, 74)").toBe(true)
+
+  const bottomMarker = ide.markers[3]
+  const markerPixel = await pixelAt(page, ide.innerWidth - 5, bottomMarker.top + bottomMarker.height / 2)
+  expect(colorsClose(markerPixel, [46, 139, 87])).toBe(true)
+})
+
+test("repaints markers when only the IDE diff colors change", async ({ page }) => {
+  await openLongDiff(page)
+  const fallback = await markerState(page)
+  const colorsButton = page.getByRole("button", { name: "IDE diff colors", exact: true })
+
+  await colorsButton.click()
+  await waitForMarkerCssChange(page, fallback.css)
+  const first = await markerState(page)
+  await colorsButton.click()
+  await waitForMarkerCssChange(page, first.css)
+  const second = await markerState(page)
+
+  expect(await page.evaluate(() => document.documentElement.dataset.theme) === "light").toBe(true)
+  expect(second.markers[0].color === "rgb(176, 92, 230)").toBe(true)
+  expect(second.markers[1].color === "rgb(224, 168, 46)").toBe(true)
+  expect(second.markers[2].color === "rgb(230, 69, 95)").toBe(true)
+  expect(await blockBackground(page, ".is-vcs-added") === "rgb(61, 43, 92)").toBe(true)
+})
+
 test("navigates to a change on a click on its scrollbar marker", async ({ page }) => {
   await openLongDiff(page)
   await waitForProgrammaticScrollQuietPeriod(page)
@@ -302,6 +347,20 @@ async function waitForMarkersInSync(page: Page): Promise<void> {
     if (await page.evaluate(markersInSync)) return
   }
   throw new Error("Scrollbar change markers do not settle")
+}
+
+function waitForMarkerCssChange(page: Page, previousCss: string | null): Promise<unknown> {
+  return page.waitForFunction((css) => {
+    const current = document.getElementById("markdown-change-markers")?.textContent
+    return current != null && current !== css
+  }, previousCss)
+}
+
+function blockBackground(page: Page, selector: string): Promise<string> {
+  return page.evaluate((blockSelector) => {
+    const block = document.querySelector<HTMLElement>(blockSelector)
+    return block ? getComputedStyle(block).backgroundColor : ""
+  }, selector)
 }
 
 function methodCallCount(page: Page, method: string): Promise<number> {
