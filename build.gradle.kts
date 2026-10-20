@@ -7,6 +7,7 @@ import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.platform.gradle.tasks.PublishPluginTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
+import org.jetbrains.intellij.platform.gradle.tasks.aware.RuntimeAware
 
 plugins {
   kotlin("jvm") version "2.4.10"
@@ -18,6 +19,8 @@ plugins {
 
 group = "io.github.nerzhulart.webview"
 version = providers.gradleProperty("pluginVersion").get()
+
+val jetbrainsRuntimeCopy = layout.projectDirectory.dir(".intellijPlatform/jetbrains-runtime")
 
 allprojects {
   tasks.withType<Test>().configureEach {
@@ -33,6 +36,34 @@ allprojects {
       val bundle = runtimeLibDirectory.get().asFile
       if (bundle.resolve("libcef.so").isFile) listOf("-Djcef.native.bundle.path=${bundle.absolutePath}") else emptyList()
     })
+  }
+
+  // On Linux and Windows, Chromium creates its external extensions directory `extensions` next to libcef. Started from
+  // the `jetbrainsRuntime` dependency, JCEF writes it into an immutable Gradle transform workspace. Every new Gradle
+  // daemon then fails to resolve the runtime, and the IntelliJ Platform Gradle Plugin silently falls back to the Java
+  // toolchain, usually the JDK the daemon runs on. A JBR of another build ships another CEF, and JCEF never starts in
+  // runIde. So the IDE and the tests run on a mutable copy of the runtime that already has this directory. On macOS,
+  // Chromium keeps the directory outside the runtime, and a Gradle copy would break the symlinks of its bundle.
+  if (!System.getProperty("os.name").startsWith("Mac")) {
+    afterEvaluate {
+      val prepareJetBrainsRuntime = rootProject.tasks.named("prepareJetBrainsRuntime")
+      tasks.matching { it is RuntimeAware }.configureEach {
+        dependsOn(prepareJetBrainsRuntime)
+        (this as RuntimeAware).runtimeDirectory.set(jetbrainsRuntimeCopy)
+      }
+      tasks.withType<Test>().configureEach {
+        dependsOn(prepareJetBrainsRuntime)
+      }
+    }
+  }
+
+  // Tests load the whole IDE into one core classloader. In the obfuscated IntelliJ IDEA release builds (both the
+  // installer and the Maven archive), the classes of `plugins/ultimate-plugin/lib/ultimate-plugin.jar` share names with
+  // `lib/product-backend.jar`, so its only extension, a postStartupActivity `Z.Z.Z.Z.Z`, resolves to an interface from
+  // product-backend.jar and every opened test project logs "Cannot create extension", which TestLoggerFactory turns into
+  // a test failure.
+  tasks.withType<PrepareSandboxTask>().matching { it.name == "prepareTestSandbox" }.configureEach {
+    disabledPlugins.add("com.intellij.modules.ultimate")
   }
 }
 
@@ -153,6 +184,18 @@ tasks {
             unexpectedUsages.joinToString("\n"),
         )
       }
+    }
+  }
+
+  register<Sync>("prepareJetBrainsRuntime") {
+    description = "Copies the JetBrains Runtime out of the immutable Gradle transform cache for running the IDE and tests."
+    val jetbrainsRuntime = configurations.named("jetbrainsRuntime")
+    from(jetbrainsRuntime.map { runtime -> runtime.singleFile.listFiles { file -> file.name.startsWith("jbr") }!!.single() })
+    into(jetbrainsRuntimeCopy)
+    doLast {
+      listOf("lib", "bin").map { destinationDir.resolve(it) }
+        .filter { directory -> directory.listFiles { file -> file.name.startsWith("libcef.") }.orEmpty().isNotEmpty() }
+        .forEach { it.resolve("extensions").mkdirs() }
     }
   }
 
