@@ -907,20 +907,23 @@ html[data-theme="light"] .markdownPreview {
 }
 
 .markdownImageBlock.isInteractive {
-  width: 100%;
-  aspect-ratio: var(--markdown-image-aspect-ratio, 16 / 9);
+  width: fit-content;
+  min-width: 160px;
+  max-width: 100%;
+  min-height: 80px;
+  height: auto;
 }
 
 .mermaidBlock.isInteractive {
-  height: clamp(200px, 34vw, 420px);
-  max-height: min(80vh, 720px);
+  min-height: 80px;
+  height: auto;
 }
 
 .markdownImageViewport,
 .mermaidViewport {
   width: 100%;
   height: 100%;
-  overflow: hidden;
+  overflow: auto;
   cursor: move;
   touch-action: none;
 }
@@ -932,10 +935,9 @@ html[data-theme="light"] .markdownPreview {
 
 .markdownImageViewport img.markdownImage {
   display: block;
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  object-fit: contain;
+  width: var(--markdown-image-natural-width, auto);
+  height: auto;
+  max-width: 100%;
   pointer-events: none;
   transform-origin: 0 0;
   will-change: transform;
@@ -943,8 +945,7 @@ html[data-theme="light"] .markdownPreview {
 
 .mermaidViewport svg {
   display: block;
-  width: 100%;
-  height: 100%;
+  max-width: none;
 }
 
 .markdownZoomToolbar {

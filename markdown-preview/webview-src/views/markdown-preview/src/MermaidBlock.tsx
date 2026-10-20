@@ -8,6 +8,7 @@ import {
   MARKDOWN_ZOOM_BUTTON_FACTOR,
   MARKDOWN_ZOOM_SCALE_EXTENT,
   MarkdownZoomToolbar,
+  fitToContentTransform,
   shouldHandleZoomEvent,
 } from "./MarkdownZoomControls"
 import { attachMarkdownWheelZoom, type MarkdownWheelZoom } from "./markdownWheelZoom"
@@ -35,7 +36,8 @@ export function MermaidBlock({ chart, theme }: MermaidBlockProps) {
     let cancelled = false
     const renderId = `${hostId.current}-${++mermaidRenderId}`
 
-    setState({ kind: "rendering" })
+    // Keep the previous diagram visible while the new theme renders to avoid flicker.
+    setState(current => current.kind === "rendered" ? current : { kind: "rendering" })
     loadMermaid()
       .then(mermaid => {
         configureMermaid(mermaid, theme)
@@ -92,6 +94,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     prepareSvg(svgElement, "mermaidSvg")
     const panZoomGroup = wrapSvgContent(svgElement, "mermaidPanZoom")
     fitSvgViewBoxToContent(svgElement, panZoomGroup)
+    applyNaturalSvgSize(svgElement)
     svgRef.current = svgElement
 
     const zoomBehavior = zoom<SVGSVGElement, unknown>()
@@ -134,6 +137,31 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
     select<SVGSVGElement, unknown>(svgElement).call(zoomBehavior.transform, zoomIdentity)
   }
 
+  function fitToContent(): void {
+    const svgElement = svgRef.current
+    const zoomBehavior = zoomBehaviorRef.current
+    const viewport = hostRef.current
+    if (!svgElement || !zoomBehavior || !viewport) return
+    const viewBox = svgElement.viewBox.baseVal
+    if (!viewBox) return
+    // The SVG element clips its content, so the fitted diagram must stay within both the viewport and the SVG box.
+    const fitted = fitToContentTransform(
+      Math.min(viewport.clientWidth, viewBox.width),
+      Math.min(viewport.clientHeight, viewBox.height),
+      viewBox.width,
+      viewBox.height,
+    )
+    if (!fitted) return
+    viewport.scrollLeft = 0
+    viewport.scrollTop = 0
+    wheelZoomRef.current?.cancel()
+    // The transform applies in viewBox units, so shift it by the viewBox origin to keep the content centered.
+    const transform = zoomIdentity
+      .translate(fitted.x + viewBox.x * (1 - fitted.k), fitted.y + viewBox.y * (1 - fitted.k))
+      .scale(fitted.k)
+    select<SVGSVGElement, unknown>(svgElement).call(zoomBehavior.transform, transform)
+  }
+
   return (
     <div className="mermaidBlock isInteractive">
       <div className="mermaidViewport" ref={hostRef} />
@@ -144,6 +172,7 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
         onZoomOut={() => zoomBy(1 / MARKDOWN_ZOOM_BUTTON_FACTOR)}
         onResetZoom={resetZoom}
         onZoomIn={() => zoomBy(MARKDOWN_ZOOM_BUTTON_FACTOR)}
+        onFitToContent={fitToContent}
       />
     </div>
   )
@@ -193,6 +222,13 @@ function fitSvgViewBoxToContent(svgElement: SVGSVGElement, contentElement: SVGGr
   }
 }
 
+function applyNaturalSvgSize(svgElement: SVGSVGElement): void {
+  const viewBox = svgElement.viewBox.baseVal
+  if (!viewBox || viewBox.width <= 0 || viewBox.height <= 0) return
+  svgElement.style.width = `${viewBox.width}px`
+  svgElement.style.height = `${viewBox.height}px`
+}
+
 function svgDimension(value: string | null): number | undefined {
   if (!value) return undefined
   const dimension = Number.parseFloat(value)
@@ -208,12 +244,24 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
   const isLight = theme === "light"
   const panel = cssVariable("--ij-bg-panel", isLight ? "#F7F8F9" : "#212326")
   const panelAlt = cssVariable("--ij-bg-panel-alt", isLight ? "#FFFFFF" : "#26282C")
-  const hover = cssVariable("--ij-bg-hover", isLight ? "#00000012" : "#FFFFFF17")
   const border = cssVariable("--ij-border-strong", isLight ? "#D1D3D9" : "#40434A")
   const textPrimary = cssVariable("--ij-text-primary", isLight ? "#000000" : "#D1D3D9")
   const textSecondary = cssVariable("--ij-text-secondary", "#73767C")
   const accent = cssVariable("--ij-accent", "#3871E1")
   const font = cssVariable("--ij-font", "Inter, Segoe UI, -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif")
+  const palette = isLight ? LIGHT_PALETTE : DARK_PALETTE
+  const scale: Record<string, string> = {}
+  palette.scale.forEach((color, index) => {
+    scale[`cScale${index}`] = color.fill
+    scale[`cScalePeer${index}`] = color.border
+    scale[`cScaleLabel${index}`] = textPrimary
+    scale[`pie${index + 1}`] = color.solid
+    scale[`git${index}`] = color.solid
+    scale[`gitInv${index}`] = color.fill
+    scale[`gitBranchLabel${index}`] = isLight ? "#FFFFFF" : "#000000"
+    scale[`cScaleInv${index}`] = color.border
+    scale[`fillType${index}`] = color.fill
+  })
 
   mermaid.initialize({
     startOnLoad: false,
@@ -222,32 +270,71 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
     suppressErrorRendering: true,
     themeVariables: {
       fontFamily: font,
-      fontSize: "13px",
-      primaryColor: panel,
-      primaryBorderColor: border,
+      fontSize: bodyFontSize(),
+      darkMode: !isLight,
+      background: panel,
+      ...scale,
+      primaryColor: palette.primary.fill,
+      primaryBorderColor: palette.primary.border,
       primaryTextColor: textPrimary,
-      secondaryColor: hover,
-      secondaryBorderColor: border,
+      secondaryColor: palette.secondary.fill,
+      secondaryBorderColor: palette.secondary.border,
       secondaryTextColor: textPrimary,
-      tertiaryColor: panelAlt,
-      tertiaryBorderColor: border,
+      tertiaryColor: palette.tertiary.fill,
+      tertiaryBorderColor: palette.tertiary.border,
       tertiaryTextColor: textPrimary,
-      mainBkg: panel,
+      mainBkg: palette.primary.fill,
       clusterBkg: panelAlt,
       clusterBorder: border,
+      pieStrokeColor: panel,
+      pieOuterStrokeColor: border,
+      pieSectionTextColor: isLight ? "#FFFFFF" : "#000000",
+      pieTitleTextColor: textPrimary,
+      pieLegendTextColor: textPrimary,
       lineColor: textSecondary,
       textColor: textPrimary,
       titleColor: textPrimary,
-      nodeBorder: border,
+      nodeBorder: palette.primary.border,
       edgeLabelBackground: panel,
       signalColor: textPrimary,
-      actorBorder: border,
-      actorBkg: panel,
+      actorBorder: palette.primary.border,
+      actorBkg: palette.primary.fill,
       actorTextColor: textPrimary,
-      noteBkgColor: panelAlt,
-      noteBorderColor: border,
+      actorLineColor: textSecondary,
+      labelBoxBkgColor: palette.secondary.fill,
+      labelBoxBorderColor: palette.secondary.border,
+      noteBkgColor: palette.note.fill,
+      noteBorderColor: palette.note.border,
       noteTextColor: textPrimary,
-      activationBkgColor: hover,
+      labelTextColor: textPrimary,
+      loopTextColor: textPrimary,
+      sequenceNumberColor: isLight ? "#FFFFFF" : "#000000",
+      classText: textPrimary,
+      nodeTextColor: textPrimary,
+      stateLabelColor: textPrimary,
+      altBackground: panelAlt,
+      compositeBackground: panelAlt,
+      compositeTitleBackground: panel,
+      attributeBackgroundColorOdd: panel,
+      attributeBackgroundColorEven: panelAlt,
+      taskTextColor: textPrimary,
+      taskTextDarkColor: textPrimary,
+      taskTextOutsideColor: textPrimary,
+      sectionBkgColor: palette.primary.fill,
+      altSectionBkgColor: panel,
+      sectionBkgColor2: palette.secondary.fill,
+      taskBkgColor: palette.primary.fill,
+      taskBorderColor: palette.primary.border,
+      activeTaskBkgColor: palette.tertiary.fill,
+      activeTaskBorderColor: palette.tertiary.border,
+      doneTaskBkgColor: palette.secondary.fill,
+      doneTaskBorderColor: palette.secondary.border,
+      gridColor: border,
+      todayLineColor: accent,
+      relationColor: textSecondary,
+      relationLabelColor: textPrimary,
+      relationLabelBackground: panel,
+      activationBkgColor: palette.tertiary.fill,
       activationBorderColor: accent,
     },
     themeCSS: `
@@ -284,6 +371,62 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
       }
     `,
   })
+}
+
+interface MermaidSwatch {
+  fill: string
+  border: string
+  solid: string
+}
+
+interface MermaidPalette {
+  primary: MermaidSwatch
+  secondary: MermaidSwatch
+  tertiary: MermaidSwatch
+  note: MermaidSwatch
+  scale: MermaidSwatch[]
+}
+
+const LIGHT_SWATCHES: Record<string, MermaidSwatch> = {
+  blue: { fill: "#E3ECFC", border: "#3871E1", solid: "#3871E1" },
+  green: { fill: "#E2F5E6", border: "#3E9B4F", solid: "#4DAA5E" },
+  purple: { fill: "#EFE6FB", border: "#8C5AD6", solid: "#9B6BE0" },
+  orange: { fill: "#FDEBDC", border: "#D9792B", solid: "#E8893A" },
+  teal: { fill: "#DDF3F3", border: "#2A9A9A", solid: "#30A8A8" },
+  pink: { fill: "#FBE4EE", border: "#C94F84", solid: "#D95C93" },
+  yellow: { fill: "#FDF4D3", border: "#C9A227", solid: "#E0B532" },
+  red: { fill: "#FCE3E3", border: "#D14B4B", solid: "#E05555" },
+}
+
+const DARK_SWATCHES: Record<string, MermaidSwatch> = {
+  blue: { fill: "#25324D", border: "#548AF7", solid: "#548AF7" },
+  green: { fill: "#233B2A", border: "#57A866", solid: "#5FB86F" },
+  purple: { fill: "#352A4A", border: "#A57BEA", solid: "#A57BEA" },
+  orange: { fill: "#45321F", border: "#E0914A", solid: "#E89A55" },
+  teal: { fill: "#1F3A3B", border: "#3FB2B2", solid: "#45BDBD" },
+  pink: { fill: "#45263A", border: "#E06C9F", solid: "#E57BAA" },
+  yellow: { fill: "#40391F", border: "#D6B443", solid: "#DDBE50" },
+  red: { fill: "#472729", border: "#E06666", solid: "#E57373" },
+}
+
+function mermaidPalette(swatches: Record<string, MermaidSwatch>): MermaidPalette {
+  return {
+    primary: swatches.blue,
+    secondary: swatches.green,
+    tertiary: swatches.purple,
+    note: swatches.yellow,
+    scale: [swatches.blue, swatches.green, swatches.purple, swatches.orange, swatches.teal, swatches.pink, swatches.yellow, swatches.red],
+  }
+}
+
+const LIGHT_PALETTE = mermaidPalette(LIGHT_SWATCHES)
+const DARK_PALETTE = mermaidPalette(DARK_SWATCHES)
+
+function bodyFontSize(): string {
+  const content = document.querySelector(".markdownPreviewContent")
+  const measured = content ? Number.parseFloat(getComputedStyle(content).fontSize) : Number.NaN
+  if (Number.isFinite(measured) && measured > 0) return `${measured}px`
+  return cssVariable("--ij-font-size", "13px")
 }
 
 function cssVariable(name: string, fallback: string): string {
