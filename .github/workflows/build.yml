@@ -471,12 +471,16 @@ jobs:
           set -euo pipefail
           unset NODE_AUTH_TOKEN
 
-          publish_or_verify() {
+          # A successful `npm publish` is authoritative. Do not poll `npm view` afterwards:
+          # npm can take 10+ minutes to expose a new version, and that check only raced.
+          publish_one() {
             local published_name="$1"
             local file="$2"
             local expected_integrity="$3"
-            local view_error
+            local view_error publish_log
             view_error="$(mktemp)"
+            publish_log="$(mktemp)"
+
 
             if existing_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>"$view_error" | jq -r '.')"; then
               if [[ "$existing_integrity" != "$expected_integrity" ]]; then
@@ -492,26 +496,31 @@ jobs:
               exit 1
             fi
 
-            npm publish "./release-npm/$file" --access public --tag "$DIST_TAG"
-            actual_integrity=""
-            for attempt in {1..60}; do
-              if actual_integrity="$(npm view "$published_name@$VERSION" dist.integrity --json 2>/dev/null | jq -r '.')"; then
+            local published=false
+            for attempt in 1 2 3; do
+              if npm publish "./release-npm/$file" --access public --tag "$DIST_TAG" 2>&1 | tee "$publish_log"; then
+                published=true
                 break
               fi
-              if [[ "$attempt" -eq 60 ]]; then
-                echo "::error::Unable to verify $published_name@$VERSION after publishing."
-                exit 1
+              # Version already exists (e.g. previous run published it, but `npm view` still returns 404).
+              if grep -Eq 'previously published|cannot publish over|E409' "$publish_log"; then
+                echo "$published_name@$VERSION already exists in the registry."
+                published=true
+                break
               fi
-              sleep 5
+              if [[ "$attempt" -lt 3 ]]; then
+                echo "npm publish failed for $published_name@$VERSION; retrying in $((attempt * 15)) seconds."
+                sleep $((attempt * 15))
+              fi
             done
-            if [[ "$actual_integrity" != "$expected_integrity" ]]; then
-              echo "::error::Registry integrity mismatch after publishing $published_name@$VERSION."
+            if [[ "$published" != true ]]; then
+              echo "::error::Failed to publish $published_name@$VERSION."
               exit 1
             fi
           }
 
           while IFS=$'\t' read -r published_name file integrity; do
-            publish_or_verify "$published_name" "$file" "$integrity"
+            publish_one "$published_name" "$file" "$integrity"
           done < <(jq -r '.packages | sort_by(.publishedName)[] | [.publishedName, .file, .integrity] | @tsv' release-npm/npm-packages.json)
 
       - name: Publish plugins to JetBrains Marketplace
