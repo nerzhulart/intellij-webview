@@ -120,19 +120,16 @@ html[data-theme="light"] .markdownPreview {
 .markdownPreview .is-vcs-added {
   --markdown-current-decoration-bg: var(--markdown-vcs-added-bg);
   background: var(--markdown-vcs-added-bg);
-  box-shadow: inset 3px 0 0 var(--markdown-vcs-added-border);
 }
 
 .markdownPreview .is-vcs-modified {
   --markdown-current-decoration-bg: var(--markdown-vcs-modified-bg);
   background: var(--markdown-vcs-modified-bg);
-  box-shadow: inset 3px 0 0 var(--markdown-vcs-modified-border);
 }
 
 .markdownPreview .is-vcs-removed {
   --markdown-current-decoration-bg: var(--markdown-vcs-removed-bg);
   background: var(--markdown-vcs-removed-bg);
-  box-shadow: inset 3px 0 0 var(--markdown-vcs-removed-border);
 }
 
 .markdownPreview .is-vcs-added.has-vcs-inline-changes {

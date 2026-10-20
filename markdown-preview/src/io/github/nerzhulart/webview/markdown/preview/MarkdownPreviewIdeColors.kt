@@ -31,7 +31,7 @@ internal data class MarkdownChangeColorsParams(
 )
 
 /**
- * [background] fills a changed block, [stripe] paints its left border and its scrollbar marker. [ignoredBackground] is
+ * [background] fills a changed block, [stripe] paints its scrollbar marker. [ignoredBackground] is
  * the pale color that fills a block with inline changes, while [background] fills its changed words, as in the diff
  * editor.
  */

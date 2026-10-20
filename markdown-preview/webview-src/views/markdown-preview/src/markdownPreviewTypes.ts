@@ -57,7 +57,7 @@ export interface MarkdownInlineChangeDescriptor {
 
 /**
  * `Diff & Merge` colors of the IDE color scheme as `#RRGGBB` or `#RRGGBBAA`: `background` fills a changed block,
- * `stripe` paints its left border and its scrollbar marker. `ignoredBackground` is the pale color that fills a block
+ * `stripe` paints its scrollbar marker. `ignoredBackground` is the pale color that fills a block
  * with inline changes, while `background` fills its changed words.
  */
 export interface MarkdownChangeColor {
