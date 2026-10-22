@@ -8,8 +8,10 @@ type Locator = {
   boundingBox(): Promise<BoundingBox | null>
   click(): Promise<void>
   dispatchEvent(type: string, eventInit?: Record<string, unknown>): Promise<void>
+  fill(value: string): Promise<void>
   first(): Locator
   hover(): Promise<void>
+  press(key: string): Promise<void>
   scrollIntoViewIfNeeded(): Promise<void>
 }
 
@@ -865,6 +867,146 @@ test("updates after KaTeX rendering without React DOM commit errors", async ({ p
   await page.waitForFunction(() => document.querySelector(".katex") != null && document.querySelector(".markdownPathLink") != null)
 
   expect(errors.length === 0).toBe(true)
+})
+
+test("adds selected preview text and optional comment to agent context", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreviewContent p")
+
+  await page.evaluate(() => {
+    const paragraph = Array.from(document.querySelectorAll<HTMLElement>(".markdownPreviewContent p"))
+      .find(element => element.textContent?.includes("This page runs the real Markdown preview entry"))
+    if (!paragraph) throw new Error("Missing target paragraph")
+    const range = document.createRange()
+    range.selectNodeContents(paragraph)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    document.dispatchEvent(new Event("selectionchange"))
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+  })
+
+  await expect(page.getByRole("dialog", { name: "Add quote to agent context" })).toBeVisible()
+  const initialHighlightCount = await page.evaluate(() => {
+    const highlights = Array.from(document.querySelectorAll<HTMLElement>(".markdownAgentContextSelectionHighlight"))
+    return highlights.filter(el => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0).length
+  })
+  expect(initialHighlightCount > 0).toBe(true)
+
+  const commentInput = page.getByRole("textbox", { name: "Comment for agent context" })
+  await commentInput.click()
+  await commentInput.fill("Explain how the mock bridge works")
+  const highlightCountWhileTyping = await page.evaluate(() => {
+    const highlights = Array.from(document.querySelectorAll<HTMLElement>(".markdownAgentContextSelectionHighlight"))
+    return highlights.filter(el => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0).length
+  })
+  expect(highlightCountWhileTyping === initialHighlightCount).toBe(true)
+
+  await page.getByRole("button", { name: "Add to Agent Context" }).click()
+
+  await page.waitForFunction(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
+    }).__WVI_MOCK__
+    return (mock?.calls.byMethod("markdown.preview/addToAgentContext").length ?? 0) > 0
+  })
+
+  const callParams = await page.evaluate(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/addToAgentContext") ?? []
+    return calls[calls.length - 1]?.params as { selectedText?: string, comment?: string } | undefined
+  })
+
+  expect(callParams?.selectedText === "This page runs the real Markdown preview entry through the WebView testkit mock bridge.").toBe(true)
+  expect(callParams?.comment === "Explain how the mock bridge works").toBe(true)
+  expect(await page.evaluate(() => document.querySelector(".markdownAgentContextPopover") == null)).toBe(true)
+  expect(await page.evaluate(() => document.querySelector(".markdownAgentContextSelectionHighlight") == null)).toBe(true)
+
+  // Submitting without a comment sends an empty comment string.
+  await page.evaluate(() => {
+    const heading = document.querySelector<HTMLElement>(".markdownPreviewContent h1")
+    if (!heading) throw new Error("Missing target heading")
+    const range = document.createRange()
+    range.selectNodeContents(heading)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    document.dispatchEvent(new Event("selectionchange"))
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+  })
+  await expect(page.getByRole("dialog", { name: "Add quote to agent context" })).toBeVisible()
+  await page.getByRole("button", { name: "Add to Agent Context" }).click()
+  await page.waitForFunction(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly unknown[] } }
+    }).__WVI_MOCK__
+    return (mock?.calls.byMethod("markdown.preview/addToAgentContext").length ?? 0) >= 2
+  })
+  const secondCallParams = await page.evaluate(() => {
+    const mock = (window as Window & {
+      __WVI_MOCK__?: { calls: { byMethod(method: string): readonly { params: unknown }[] } }
+    }).__WVI_MOCK__
+    const calls = mock?.calls.byMethod("markdown.preview/addToAgentContext") ?? []
+    return calls[calls.length - 1]?.params as { selectedText?: string, comment?: string } | undefined
+  })
+  expect(secondCallParams?.selectedText === "Markdown Preview Mock").toBe(true)
+  expect(secondCallParams?.comment === "").toBe(true)
+
+  // When `canAddToAgentContext` is false, selecting text does not show the popover.
+  await page.evaluate(() => {
+    const mock = (window as unknown as {
+      __WVI_MOCK__: {
+        page: {
+          callable(id: { namespace: string }): {
+            contentChanged(params: {
+              markdown: string
+              scrollLine: number
+              settings: {
+                fontSize: number | null
+                effectiveFontSize: number
+                defaultFontSize: number
+                fontSizeOptions: number[]
+                canAddToAgentContext: boolean
+              }
+              contentVersion: number
+              changes: unknown[]
+            }): void
+          }
+        }
+      }
+    }).__WVI_MOCK__
+    mock.page.callable({ namespace: "markdown.preview" }).contentChanged({
+      markdown: "# Disabled Agent Context\n\nParagraph text.",
+      scrollLine: 0,
+      settings: {
+        fontSize: null,
+        effectiveFontSize: 13,
+        defaultFontSize: 13,
+        fontSizeOptions: [13],
+        canAddToAgentContext: false,
+      },
+      contentVersion: 99,
+      changes: [],
+    })
+  })
+  await page.waitForFunction(() => document.querySelector(".markdownPreviewContent h1")?.textContent === "Disabled Agent Context")
+  await page.evaluate(() => {
+    const paragraph = document.querySelector<HTMLElement>(".markdownPreviewContent p")
+    if (!paragraph) throw new Error("Missing paragraph")
+    const range = document.createRange()
+    range.selectNodeContents(paragraph)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    document.dispatchEvent(new Event("selectionchange"))
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
+  })
+  expect(await page.evaluate(() => document.querySelector(".markdownAgentContextPopover") == null)).toBe(true)
 })
 
 function mermaidTransform(page: Page): Promise<string> {

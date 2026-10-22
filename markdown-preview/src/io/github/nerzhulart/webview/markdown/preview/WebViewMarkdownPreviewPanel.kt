@@ -319,6 +319,27 @@ class WebViewMarkdownPreviewPanel(
           pageZoomListener?.invoke(params.zoom)
         }
       }
+
+      override suspend fun addToAgentContext(params: MarkdownAddToAgentContextParams): MarkdownAddToAgentContextResultParams {
+        val currentFile = lastUpdate?.document ?: virtualFile
+        val fileName = currentFile?.name ?: DEFAULT_MARKDOWN_FILE_NAME
+        LOG.trace {
+          "markdown.webview.addToAgentContext - file=${currentFile?.path ?: fileName}, " +
+          "selectedChars=${params.selectedText.length}, commentChars=${params.comment.length}"
+        }
+        val added = MarkdownAgentContextSupport.addQuoteToAgentContext(
+          project = project,
+          fileName = fileName,
+          selectedText = params.selectedText,
+          userComment = params.comment,
+          contextComponent = rootComponent,
+          virtualFile = currentFile,
+        )
+        LOG.trace {
+          "markdown.webview.addToAgentContext.result - file=${currentFile?.path ?: fileName}, added=$added"
+        }
+        return MarkdownAddToAgentContextResultParams(added = added)
+      }
     }
   }
 
@@ -472,6 +493,7 @@ class WebViewMarkdownPreviewPanel(
       effectiveFontSize = fontSize,
       defaultFontSize = defaultFontSize,
       fontSizeOptions = previewFontSizeOptions(fontSize, defaultFontSize),
+      canAddToAgentContext = MarkdownAgentContextSupport.isAvailable(project),
     )
   }
 
@@ -510,6 +532,7 @@ class WebViewMarkdownPreviewPanel(
 
   private companion object {
     private const val DEFAULT_PAGE_ZOOM = 1.0
+    private const val DEFAULT_MARKDOWN_FILE_NAME = "Markdown"
 
     private val ASSET_ROOT = WebViewAssetRoot
       .forView("markdown-preview")

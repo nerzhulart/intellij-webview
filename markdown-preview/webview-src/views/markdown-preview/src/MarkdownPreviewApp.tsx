@@ -9,6 +9,7 @@ import rehypeSlug from "rehype-slug"
 import remarkFrontmatter from "remark-frontmatter"
 import remarkGfm from "remark-gfm"
 import { FloatingMarkdownControls } from "./FloatingMarkdownControls"
+import { MarkdownAgentContextPopover } from "./markdownAgentContextPopover"
 import { setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
 import { codeNodeFromPreNode, type HastNode } from "./markdownHastUtils"
@@ -16,6 +17,8 @@ import { inlineChangeRanges, remarkInlineChanges } from "./markdownInlineChanges
 import type { MarkdownPageZoom } from "./markdownPageZoom"
 import { collectPathLinkCandidates, renderPathLinks } from "./markdownPathLinks"
 import type {
+  MarkdownAddToAgentContextParams,
+  MarkdownAddToAgentContextResultParams,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandCandidate,
   MarkdownCommandDescriptor,
@@ -72,6 +75,7 @@ interface MarkdownPreviewAppProps {
   onResolvePathLinks: (request: MarkdownResolvePathLinksRequest) => Promise<MarkdownResolvedPathLinksResponse>
   onNavigatePathLink: (request: MarkdownNavigatePathLinkRequest) => void
   onSetFontSize: (fontSize: number) => void
+  onAddToAgentContext: (params: MarkdownAddToAgentContextParams) => Promise<MarkdownAddToAgentContextResultParams>
 }
 
 const emptyPathSet = new Set<string>()
@@ -113,6 +117,7 @@ export function MarkdownPreviewApp({
   onResolvePathLinks,
   onNavigatePathLink,
   onSetFontSize,
+  onAddToAgentContext,
 }: MarkdownPreviewAppProps) {
   const commandCandidates: MarkdownCommandCandidate[] = []
   const pathLinkCandidates = useMemo(() => {
@@ -374,6 +379,11 @@ export function MarkdownPreviewApp({
         </ReactMarkdown>
       </div>
       <FloatingMarkdownControls markdown={markdown} settings={settings} pageZoom={pageZoom} onSetFontSize={onSetFontSize} />
+      <MarkdownAgentContextPopover
+        contentVersion={contentVersion}
+        enabled={Boolean(settings.canAddToAgentContext)}
+        onAddToAgentContext={onAddToAgentContext}
+      />
     </>
   )
 }

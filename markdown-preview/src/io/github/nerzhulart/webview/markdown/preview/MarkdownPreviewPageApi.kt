@@ -44,6 +44,8 @@ interface MarkdownPreviewHostApi : WebViewImplementable {
 
   suspend fun pageZoomChanged(params: MarkdownPageZoomChangedParams)
 
+  suspend fun addToAgentContext(params: MarkdownAddToAgentContextParams): MarkdownAddToAgentContextResultParams
+
   companion object {
     val ID: WebViewApiId<MarkdownPreviewHostApi> = WebViewApiId.of("markdown.preview")
   }
@@ -66,6 +68,7 @@ data class MarkdownPreviewSettingsParams(
   val effectiveFontSize: Int,
   val defaultFontSize: Int,
   val fontSizeOptions: List<Int>,
+  val canAddToAgentContext: Boolean = false,
 )
 
 @ApiStatus.Internal
@@ -227,4 +230,15 @@ data class MarkdownPageZoomParams(val zoom: Double)
 data class MarkdownPageZoomChangedParams(
   val zoom: Double,
   val sequence: Int,
+)
+
+@Serializable
+data class MarkdownAddToAgentContextParams(
+  val selectedText: String,
+  val comment: String = "",
+)
+
+@Serializable
+data class MarkdownAddToAgentContextResultParams(
+  val added: Boolean,
 )

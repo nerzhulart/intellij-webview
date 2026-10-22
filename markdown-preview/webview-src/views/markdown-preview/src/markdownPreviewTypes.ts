@@ -87,6 +87,16 @@ export interface MarkdownPreviewSettings {
   effectiveFontSize: number
   defaultFontSize: number
   fontSizeOptions: number[]
+  canAddToAgentContext?: boolean
+}
+
+export interface MarkdownAddToAgentContextParams {
+  selectedText: string
+  comment: string
+}
+
+export interface MarkdownAddToAgentContextResultParams {
+  added: boolean
 }
 
 export interface MarkdownRunCommandRequest {

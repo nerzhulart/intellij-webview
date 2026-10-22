@@ -149,6 +149,33 @@ internal class MarkdownPreviewPageApiTest : TestCase() {
     assertEquals("34", payload.getValue("clientY").jsonPrimitive.content)
   }
 
+  fun `test settings payload includes canAddToAgentContext flag`() {
+    val payload = Json.encodeToJsonElement(
+      MarkdownPreviewSettingsParams.serializer(),
+      previewSettings(fontSize = 14).copy(canAddToAgentContext = true),
+    ).jsonObject
+
+    assertEquals("true", payload.getValue("canAddToAgentContext").jsonPrimitive.content)
+  }
+
+  fun `test addToAgentContext request and result payloads serialize fields`() {
+    val requestPayload = Json.encodeToJsonElement(
+      MarkdownAddToAgentContextParams.serializer(),
+      MarkdownAddToAgentContextParams(
+        selectedText = "Selected preview text",
+        comment = "Check this",
+      ),
+    ).jsonObject
+    val resultPayload = Json.encodeToJsonElement(
+      MarkdownAddToAgentContextResultParams.serializer(),
+      MarkdownAddToAgentContextResultParams(added = true),
+    ).jsonObject
+
+    assertEquals("Selected preview text", requestPayload.getValue("selectedText").jsonPrimitive.content)
+    assertEquals("Check this", requestPayload.getValue("comment").jsonPrimitive.content)
+    assertEquals("true", resultPayload.getValue("added").jsonPrimitive.content)
+  }
+
   private fun previewSettings(fontSize: Int?): MarkdownPreviewSettingsParams {
     val defaultFontSize = 13
     val effectiveFontSize = fontSize ?: defaultFontSize
