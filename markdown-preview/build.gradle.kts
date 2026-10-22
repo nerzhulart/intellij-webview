@@ -82,6 +82,12 @@ intellijPlatform {
 }
 
 tasks {
+  prepareSandbox {
+    preserve {
+      include("**")
+    }
+  }
+
   named<PublishPluginTask>("publishPlugin") {
     providers.gradleProperty("pluginArchiveFile").orNull?.let {
       archiveFile.set(rootProject.layout.projectDirectory.file(it))

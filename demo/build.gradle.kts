@@ -61,6 +61,12 @@ intellijPlatform {
 }
 
 tasks {
+  prepareSandbox {
+    preserve {
+      include("**")
+    }
+  }
+
   buildPlugin {
     archiveFileName.set("webview-demo-${providers.gradleProperty("pluginVersion").get()}.zip")
   }
