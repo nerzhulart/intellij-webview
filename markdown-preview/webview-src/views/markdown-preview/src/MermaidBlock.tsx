@@ -26,7 +26,9 @@ type RenderState =
 let mermaidBlockId = 0
 let mermaidRenderId = 0
 let mermaidModule: Promise<Mermaid> | undefined
+let mermaidRenderQueue: Promise<unknown> = Promise.resolve()
 const PRESERVED_SVG_TAGS = new Set(["defs", "style", "title", "desc", "metadata", "marker"])
+const THEME_COLOR_LIMIT = 12
 
 export function MermaidBlock({ chart, theme }: MermaidBlockProps) {
   const hostId = useRef(`markdown-preview-mermaid-${++mermaidBlockId}`)
@@ -38,14 +40,18 @@ export function MermaidBlock({ chart, theme }: MermaidBlockProps) {
 
     // Keep the previous diagram visible while the new theme renders to avoid flicker.
     setState(current => current.kind === "rendered" ? current : { kind: "rendering" })
-    loadMermaid()
-      .then(mermaid => {
-        configureMermaid(mermaid, theme)
-        return mermaid.render(renderId, chart)
-      })
-      .then(({ svg }) => {
-        if (!cancelled) {
-          setState({ kind: "rendered", svg })
+    const renderTask = mermaidRenderQueue.catch(() => undefined).then(async () => {
+      if (cancelled) return undefined
+      const mermaid = await loadMermaid()
+      if (cancelled) return undefined
+      configureMermaid(mermaid, theme)
+      return mermaid.render(renderId, chart)
+    })
+    mermaidRenderQueue = renderTask
+    renderTask
+      .then(result => {
+        if (!cancelled && result) {
+          setState({ kind: "rendered", svg: result.svg })
         }
       })
       .catch(error => {
@@ -236,7 +242,23 @@ function svgDimension(value: string | null): number | undefined {
 }
 
 function loadMermaid(): Promise<Mermaid> {
-  mermaidModule ||= import("mermaid").then(module => module.default)
+  if (!mermaidModule) {
+    mermaidModule = Promise.all([
+      import("mermaid"),
+      import("@mermaid-js/layout-tidy-tree"),
+      import("@mermaid-js/mermaid-zenuml"),
+    ]).then(async ([mermaidPkg, tidyTreePkg, zenumlPkg]) => {
+      const mermaid = mermaidPkg.default
+      mermaid.registerLayoutLoaders(tidyTreePkg.default)
+      await mermaid.registerExternalDiagrams([zenumlPkg.default])
+      mermaid.registerIconPacks([
+        { name: "lucide", loader: () => import("@iconify-json/lucide/icons.json").then(module => module.default) },
+        { name: "logos", loader: () => import("@iconify-json/logos/icons.json").then(module => module.default) },
+        { name: "mdi", loader: () => import("@iconify-json/mdi/icons.json").then(module => module.default) },
+      ])
+      return mermaid
+    })
+  }
   return mermaidModule
 }
 
@@ -251,17 +273,25 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
   const font = cssVariable("--ij-font", "Inter, Segoe UI, -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif")
   const palette = isLight ? LIGHT_PALETTE : DARK_PALETTE
   const scale: Record<string, string> = {}
-  palette.scale.forEach((color, index) => {
+  const borderColorArray: string[] = []
+  const bkgColorArray: string[] = []
+  for (let index = 0; index < THEME_COLOR_LIMIT; index++) {
+    const color = palette.scale[index % palette.scale.length]
     scale[`cScale${index}`] = color.fill
     scale[`cScalePeer${index}`] = color.border
     scale[`cScaleLabel${index}`] = textPrimary
-    scale[`pie${index + 1}`] = color.solid
-    scale[`git${index}`] = color.solid
-    scale[`gitInv${index}`] = color.fill
-    scale[`gitBranchLabel${index}`] = isLight ? "#FFFFFF" : "#000000"
     scale[`cScaleInv${index}`] = color.border
-    scale[`fillType${index}`] = color.fill
-  })
+    scale[`pie${index + 1}`] = color.solid
+    borderColorArray.push(color.border)
+    bkgColorArray.push(color.fill)
+    if (index < 8) {
+      scale[`git${index}`] = color.solid
+      scale[`gitInv${index}`] = color.fill
+      scale[`gitBranchLabel${index}`] = isLight ? "#FFFFFF" : "#000000"
+      scale[`fillType${index}`] = color.fill
+      scale[`venn${index + 1}`] = color.solid
+    }
+  }
 
   mermaid.initialize({
     startOnLoad: false,
@@ -274,6 +304,8 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
       darkMode: !isLight,
       background: panel,
       ...scale,
+      borderColorArray,
+      bkgColorArray,
       primaryColor: palette.primary.fill,
       primaryBorderColor: palette.primary.border,
       primaryTextColor: textPrimary,
@@ -286,6 +318,20 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
       mainBkg: palette.primary.fill,
       clusterBkg: panelAlt,
       clusterBorder: border,
+      flowContainerStroke: border,
+      usecaseActorBkg: palette.primary.fill,
+      usecaseActorBorder: palette.primary.border,
+      usecaseBkg: palette.primary.fill,
+      usecaseBorder: palette.primary.border,
+      usecaseBoundaryBkg: panelAlt,
+      usecaseBoundaryBorder: border,
+      usecaseIncludeLine: textSecondary,
+      usecaseExtendLine: textSecondary,
+      archEdgeColor: textSecondary,
+      archEdgeArrowColor: textSecondary,
+      archGroupBorderColor: border,
+      vennTitleTextColor: textPrimary,
+      vennSetTextColor: textPrimary,
       pieStrokeColor: panel,
       pieOuterStrokeColor: border,
       pieSectionTextColor: isLight ? "#FFFFFF" : "#000000",
@@ -336,6 +382,56 @@ function configureMermaid(mermaid: Mermaid, theme: "light" | "dark"): void {
       relationLabelBackground: panel,
       activationBkgColor: palette.tertiary.fill,
       activationBorderColor: accent,
+      packet: {
+        startByteColor: textSecondary,
+        endByteColor: textSecondary,
+        labelColor: textPrimary,
+        titleColor: textPrimary,
+        blockStrokeColor: palette.primary.border,
+        blockFillColor: palette.primary.fill,
+      },
+      treeView: {
+        labelColor: textPrimary,
+        lineColor: border,
+        iconColor: textSecondary,
+        descriptionColor: textSecondary,
+      },
+      treemap: {
+        sectionStrokeColor: border,
+        sectionFillColor: panelAlt,
+        leafStrokeColor: border,
+        leafFillColor: palette.primary.fill,
+      },
+      xyChart: {
+        backgroundColor: panel,
+        titleColor: textPrimary,
+        xAxisTitleColor: textPrimary,
+        xAxisLabelColor: textPrimary,
+        xAxisTickColor: border,
+        xAxisLineColor: border,
+        yAxisTitleColor: textPrimary,
+        yAxisLabelColor: textPrimary,
+        yAxisTickColor: border,
+        yAxisLineColor: border,
+        plotColorPalette: palette.scale.map(color => color.solid).join(","),
+      },
+      radar: {
+        axisColor: textSecondary,
+        axisLabelColor: textPrimary,
+        graticuleColor: border,
+        legendTextColor: textPrimary,
+      },
+      cynefin: {
+        complexBg: palette.scale[2].fill,
+        complicatedBg: palette.scale[0].fill,
+        chaoticBg: palette.scale[7].fill,
+        clearBg: palette.scale[1].fill,
+        confusionBg: panelAlt,
+        textColor: textPrimary,
+        labelColor: textPrimary,
+        boundaryColor: border,
+        arrowColor: textSecondary,
+      },
     },
     themeCSS: `
       .node rect,

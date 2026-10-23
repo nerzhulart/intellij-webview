@@ -510,6 +510,7 @@ test("shows the options panel on page zoom and closes it on an outside click", a
   })
   await page.locator(".markdownPreview h1").dispatchEvent("wheel", { deltaY: -100, ctrlKey: true, ...heading, bubbles: true, cancelable: true })
   await expect(page.getByRole("button", { name: "Reset page zoom" })).toBeVisible()
+  await page.waitForFunction(() => Math.abs(Number(document.documentElement.style.getPropertyValue("--wvi-page-zoom")) - 1.2) < 0.001)
   await page.waitForFunction(() => document.querySelectorAll(".markdownFontSizeValue")[1]?.textContent === "120%")
   expect(await page.evaluate(() => document.querySelector("[aria-label='Show preview options']")?.getAttribute("aria-expanded") === "true")).toBe(true)
 
@@ -1007,6 +1008,71 @@ test("adds selected preview text and optional comment to agent context", async (
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }))
   })
   expect(await page.evaluate(() => document.querySelector(".markdownAgentContextPopover") == null)).toBe(true)
+})
+
+test("renders Mermaid 12 diagrams, extensions, GitHub alerts, and emoji shortcodes in light and dark themes", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.goto(preview.url)
+  await page.waitForSelector(".markdownPreviewContent")
+
+  await page.getByRole("button", { name: "Mermaid 12", exact: true }).click()
+  await page.waitForFunction(() => document.querySelectorAll(".mermaidViewport > svg.mermaidSvg").length === 6)
+
+  const lightState = await page.evaluate(() => {
+    const noteAlert = document.querySelector<HTMLElement>(".markdown-alert.markdown-alert-note")
+    const warningAlert = document.querySelector<HTMLElement>(".markdown-alert.markdown-alert-warning")
+    const zenumlParticipant = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .participant-box")
+    const packetLabel = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .packetLabel")
+    const treeViewLabel = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .treeView-node-label")
+    return {
+      hasNoteAlert: noteAlert != null,
+      hasWarningAlert: warningAlert != null,
+      noteHasSourcepos: Boolean(noteAlert?.dataset.sourcepos),
+      noteHasOcticon: noteAlert?.querySelector(".markdown-alert-title svg.octicon path") != null,
+      noteHasRocketEmoji: (noteAlert?.textContent ?? "").includes("🚀"),
+      mermaidErrors: document.querySelectorAll(".mermaidError").length,
+      zenumlFillLight: zenumlParticipant ? getComputedStyle(zenumlParticipant).fill : "",
+      packetTextLight: packetLabel ? getComputedStyle(packetLabel).fill : "",
+      treeViewTextLight: treeViewLabel ? getComputedStyle(treeViewLabel).fill : "",
+    }
+  })
+
+  expect(lightState.hasNoteAlert).toBe(true)
+  expect(lightState.hasWarningAlert).toBe(true)
+  expect(lightState.noteHasSourcepos).toBe(true)
+  expect(lightState.noteHasOcticon).toBe(true)
+  expect(lightState.noteHasRocketEmoji).toBe(true)
+  expect(lightState.mermaidErrors === 0).toBe(true)
+
+  await page.getByRole("button", { name: "Toggle theme", exact: true }).click()
+  await page.waitForFunction(({ previousPacketFill, previousTreeViewFill }) => {
+    if (document.documentElement.dataset.theme !== "dark") return false
+    const packetLabel = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .packetLabel")
+    const treeViewLabel = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .treeView-node-label")
+    return packetLabel != null &&
+      treeViewLabel != null &&
+      getComputedStyle(packetLabel).fill !== previousPacketFill &&
+      getComputedStyle(treeViewLabel).fill !== previousTreeViewFill
+  }, { previousPacketFill: lightState.packetTextLight, previousTreeViewFill: lightState.treeViewTextLight })
+
+  const darkState = await page.evaluate(() => {
+    const zenumlParticipant = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .participant-box")
+    const packetLabel = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .packetLabel")
+    const treeViewLabel = document.querySelector<SVGElement>(".mermaidViewport svg.mermaidSvg .treeView-node-label")
+    return {
+      mermaidErrors: document.querySelectorAll(".mermaidError").length,
+      zenumlFillDark: zenumlParticipant ? getComputedStyle(zenumlParticipant).fill : "",
+      packetTextDark: packetLabel ? getComputedStyle(packetLabel).fill : "",
+      treeViewTextDark: treeViewLabel ? getComputedStyle(treeViewLabel).fill : "",
+    }
+  })
+
+  expect(darkState.mermaidErrors === 0).toBe(true)
+  expect(darkState.zenumlFillDark !== "" && darkState.zenumlFillDark !== lightState.zenumlFillLight).toBe(true)
+  expect(darkState.packetTextDark !== "" && darkState.packetTextDark !== "rgb(0, 0, 0)").toBe(true)
+  expect(darkState.treeViewTextDark !== "" && darkState.treeViewTextDark !== "rgb(0, 0, 0)").toBe(true)
 })
 
 function mermaidTransform(page: Page): Promise<string> {
