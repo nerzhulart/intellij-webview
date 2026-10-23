@@ -637,22 +637,19 @@ internal class MacWebViewEngine(
   }
 
   override fun clearFocus() {
-    if (!attachmentRequested) return
-
-    scope.launch(MacMainThreadDispatcher) {
-      if (attachment != null) {
-        val wv = handles?.webView ?: return@launch
-        WKWebViewBridge.clearFocus(wv)
-      }
-    }
+    clearNativeFocus()
   }
 
   override fun clearFocusForSwingFocusTransfer() {
-    if (!attachmentRequested) return
+    clearNativeFocus()
+  }
 
-    scope.launch(MacMainThreadDispatcher) {
-      val focusTarget = attachment?.parentContentView ?: return@launch
-      makeFirstResponder(focusTarget)
+  private fun clearNativeFocus() {
+    if (!attachmentRequested && attachment == null) return
+
+    MacObjectiveC.executeOnMainThread {
+      val wv = handles?.webView ?: return@executeOnMainThread
+      WKWebViewBridge.clearFocus(wv, attachment?.parentContentView ?: ID.NIL)
     }
   }
 
@@ -728,6 +725,12 @@ internal class MacWebViewEngine(
   private fun updateNativeVisibility() {
     val currentAttachment = attachment ?: return
     val hidden = hostHidden || lastAppliedLayout?.hasVisibleBounds != true
+    if (hidden) {
+      handles?.webView?.let { webView ->
+        WKWebViewBridge.restoreWindowFirstResponderIfInsideView(webView, currentAttachment.parentContentView)
+      }
+      WKWebViewBridge.restoreWindowFirstResponderIfInsideView(currentAttachment.clipView, currentAttachment.parentContentView)
+    }
     WKWebViewBridge.setHidden(currentAttachment.clipView, hidden)
     if (hidden != lastNativeHidden) {
       lastNativeHidden = hidden
@@ -746,6 +749,10 @@ internal class MacWebViewEngine(
     attachment = null
     lastAppliedLayout = null
     lastNativeHidden = null
+    handles?.webView?.let { webView ->
+      WKWebViewBridge.restoreWindowFirstResponderIfInsideView(webView, currentAttachment.parentContentView)
+    }
+    WKWebViewBridge.restoreWindowFirstResponderIfInsideView(currentAttachment.clipView, currentAttachment.parentContentView)
     detachFromParent()
     WKWebViewBridge.releaseClippingContainer(currentAttachment.clipView)
     traceAttachment("release.done") {
@@ -805,6 +812,7 @@ internal data class MacWebViewFirstResponderState(
   val hasResponder: Boolean,
   val isInsideWebView: Boolean,
   val responderDescription: String,
+  val isWindowContentView: Boolean = false,
 )
 
 internal data class MacNativeLayout(
