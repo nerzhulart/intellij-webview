@@ -23,6 +23,35 @@ allprojects {
   tasks.withType<Test>().configureEach {
     outputs.doNotCacheIf("Test results must not be restored from the build cache") { true }
   }
+
+  // The IntelliJ IDEA Maven archive (`useInstaller = false`) ships `plugins/jcef-plugin` without its native CEF bundle,
+  // so JCEF never initializes in the sandbox IDE. The JetBrains Runtime with JCEF, which runIde starts on, ships a bundle
+  // for the same platform build in `lib` on Linux and in `bin` on Windows; `jcef.native.bundle.path` takes priority over
+  // the plugin one. The IDE gets a copy in the build directory: Chromium creates `extensions` next to libcef, and the
+  // runtime itself lives in an immutable Gradle transform workspace.
+  plugins.withId("org.jetbrains.intellij.platform") {
+    val jcefBundle = layout.buildDirectory.dir("jcef-bundle")
+    fun File.hasLibcef() = listFiles { file -> file.name.startsWith("libcef.") }.orEmpty().isNotEmpty()
+    val prepareJcefBundle = tasks.register<Sync>("prepareJcefBundle") {
+      description = "Copies the native CEF bundle of the JetBrains Runtime out of the immutable Gradle transform cache for runIde."
+      from(tasks.named<RunIdeTask>("runIde").flatMap { it.runtimeDirectory }.map { runtime ->
+        listOf("lib", "bin").map { runtime.dir(it).asFile }.filter { it.hasLibcef() }
+      }) {
+        exclude("modules", "server", "ct.sym", "src.zip")
+      }
+      into(jcefBundle)
+      doLast {
+        if (destinationDir.hasLibcef()) destinationDir.resolve("extensions").mkdirs()
+      }
+    }
+    tasks.withType<RunIdeTask>().configureEach {
+      dependsOn(prepareJcefBundle)
+      jvmArgumentProviders.add(CommandLineArgumentProvider {
+        val bundle = jcefBundle.get().asFile
+        if (bundle.hasLibcef()) listOf("-Djcef.native.bundle.path=${bundle.absolutePath}") else emptyList()
+      })
+    }
+  }
 }
 
 base {
