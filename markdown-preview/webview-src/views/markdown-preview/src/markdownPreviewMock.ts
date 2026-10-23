@@ -3,6 +3,8 @@
 import { apiId, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 import { defineWebViewMock } from "@nerzhulart/intellij-webview-sdk-testkit"
 import type {
+  MarkdownAddToAgentContextParams,
+  MarkdownAddToAgentContextResultParams,
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandDescriptor,
@@ -58,6 +60,7 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   setFontSize(params: MarkdownSetFontSizeRequest): Promise<void>
   previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
   pageZoomChanged(params: MarkdownPageZoomChangedParams): Promise<void>
+  addToAgentContext(params: MarkdownAddToAgentContextParams): Promise<MarkdownAddToAgentContextResultParams>
 }
 
 interface MarkdownPageZoomChangedParams {
@@ -227,6 +230,10 @@ export default defineWebViewMock(({ host, page, theme }) => {
     async pageZoomChanged(params) {
       toolbar.log.textContent = JSON.stringify({ kind: "pageZoomChanged", ...params })
     },
+    async addToAgentContext(params) {
+      toolbar.log.textContent = JSON.stringify({ kind: "addToAgentContext", ...params })
+      return { added: true }
+    },
   })
 
   function currentSettings(): MarkdownPreviewSettings {
@@ -235,6 +242,7 @@ export default defineWebViewMock(({ host, page, theme }) => {
       effectiveFontSize: currentFontSize,
       defaultFontSize,
       fontSizeOptions,
+      canAddToAgentContext: true,
     }
   }
 })

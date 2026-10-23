@@ -7,7 +7,8 @@
       "@nerzhulart/intellij-webview-sdk": ["../../webview-src/packages/api/src/index.ts"],
       "@nerzhulart/intellij-webview-sdk/vite": ["../../webview-src/packages/build/src/index.ts"],
       "@nerzhulart/intellij-webview-sdk-testkit": ["../../webview-src/packages/testkit/src/index.ts"],
-      "@nerzhulart/intellij-webview-sdk-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"]
+      "@nerzhulart/intellij-webview-sdk-testkit/node": ["../../webview-src/packages/testkit/src/node.ts"],
+      "@nerzhulart/intellij-webview-sdk-testkit/vite": ["../../webview-src/packages/testkit/src/vite.ts"]
     }
   },
   "include": ["build.ts", "mock.vite.config.ts", "playwright.config.ts", "views/**/*.ts", "views/**/*.tsx", "views/**/*.d.ts", "test/**/*.ts", "test/**/*.tsx"]

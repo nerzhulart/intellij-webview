@@ -20,6 +20,8 @@ import {
   topVisibleSourceLine,
 } from "./markdownSourcePositions"
 import type {
+  MarkdownAddToAgentContextParams,
+  MarkdownAddToAgentContextResultParams,
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownLinkColors,
@@ -73,6 +75,7 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   setFontSize(params: MarkdownSetFontSizeRequest): Promise<void>
   previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
   pageZoomChanged(params: MarkdownPageZoomChangedParams): Promise<void>
+  addToAgentContext(params: MarkdownAddToAgentContextParams): Promise<MarkdownAddToAgentContextResultParams>
 }
 
 interface MarkdownPageZoomChangedParams {
@@ -181,6 +184,7 @@ function renderPreview(reason = "render", startedAtMs = performance.now(), detai
       onResolvePathLinks={resolveMarkdownPathLinks}
       onNavigatePathLink={navigateMarkdownPathLink}
       onSetFontSize={setMarkdownFontSize}
+      onAddToAgentContext={addMarkdownToAgentContext}
     />
   )
   requestAnimationFrame(() => {
@@ -244,6 +248,10 @@ function setMarkdownFontSize(fontSize: number): void {
   void markdownPreviewHostApi.setFontSize({ fontSize })
 }
 
+function addMarkdownToAgentContext(params: MarkdownAddToAgentContextParams): Promise<MarkdownAddToAgentContextResultParams> {
+  return markdownPreviewHostApi.addToAgentContext(params)
+}
+
 function applyTheme(theme: "light" | "dark"): void {
   document.documentElement.dataset.theme = theme
 }
@@ -291,6 +299,7 @@ function defaultPreviewSettings(): MarkdownPreviewSettings {
     effectiveFontSize: fontSize,
     defaultFontSize: fontSize,
     fontSizeOptions: [fontSize],
+    canAddToAgentContext: false,
   }
 }
 
@@ -304,6 +313,7 @@ function normalizePreviewSettings(settings: MarkdownPreviewSettings): MarkdownPr
     effectiveFontSize,
     defaultFontSize,
     fontSizeOptions,
+    canAddToAgentContext: Boolean(settings.canAddToAgentContext),
   }
 }
 
