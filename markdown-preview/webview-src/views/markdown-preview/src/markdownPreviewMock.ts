@@ -168,6 +168,12 @@ export default defineWebViewMock(({ host, page, theme }) => {
     updatePreview()
   })
 
+  toolbar.mermaid12MarkdownButton.addEventListener("click", () => {
+    currentMarkdown = mermaid12Markdown
+    currentChanges = []
+    updatePreview()
+  })
+
   toolbar.ideDiffColorsButton.addEventListener("click", () => {
     const palette = ideChangeColorPalettes[ideChangeColorPaletteIndex]
     ideChangeColorPaletteIndex = (ideChangeColorPaletteIndex + 1) % ideChangeColorPalettes.length
@@ -254,6 +260,7 @@ function installMockToolbar(): {
   diffMarkdownButton: HTMLButtonElement,
   longDiffMarkdownButton: HTMLButtonElement,
   inlineDiffMarkdownButton: HTMLButtonElement,
+  mermaid12MarkdownButton: HTMLButtonElement,
   ideDiffColorsButton: HTMLButtonElement,
   ideLinkColorsButton: HTMLButtonElement,
   log: HTMLSpanElement,
@@ -297,6 +304,11 @@ function installMockToolbar(): {
   inlineDiffMarkdownButton.textContent = "Inline diff"
   toolbar.append(inlineDiffMarkdownButton)
 
+  const mermaid12MarkdownButton = document.createElement("button")
+  mermaid12MarkdownButton.type = "button"
+  mermaid12MarkdownButton.textContent = "Mermaid 12"
+  toolbar.append(mermaid12MarkdownButton)
+
   const ideDiffColorsButton = document.createElement("button")
   ideDiffColorsButton.type = "button"
   ideDiffColorsButton.textContent = "IDE diff colors"
@@ -320,6 +332,7 @@ function installMockToolbar(): {
     diffMarkdownButton,
     longDiffMarkdownButton,
     inlineDiffMarkdownButton,
+    mermaid12MarkdownButton,
     ideDiffColorsButton,
     ideLinkColorsButton,
     log,
@@ -491,6 +504,61 @@ flowchart LR
 ## 📌 Локальная навигация раздела
 
 Anchor target with a Unicode heading.
+
+> [!NOTE]
+> Ship it with :rocket: emoji and GitHub alerts.
+`
+
+const mermaid12Markdown = `# Mermaid 12 & Markdown Enhancements
+
+> [!NOTE]
+> Modern Mermaid 12 diagrams and :rocket: emoji shortcodes.
+
+> [!WARNING]
+> Check dark mode contrast across diagrams.
+
+\`\`\`mermaid
+---
+config:
+  layout: tidy-tree
+---
+mindmap
+  root((Architecture))
+    Frontend
+    Backend
+\`\`\`
+
+\`\`\`mermaid
+zenuml
+  title AuthService
+  Client->Server.login() {
+    return token
+  }
+\`\`\`
+
+\`\`\`mermaid
+usecase-beta
+  actor dev(Developer)
+  dev --> uc1(Render Mermaid 12)
+\`\`\`
+
+\`\`\`mermaid
+packet-beta
+  0-7: "Header"
+  8-15: "Payload"
+\`\`\`
+
+\`\`\`mermaid
+treeView-beta
+  "src"
+    "MermaidBlock.tsx"
+    "MarkdownPreviewApp.tsx"
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  A@{ icon: "lucide:server", label: "Gateway" } --> B@{ shape: person, label: "User" }
+\`\`\`
 `
 
 const shortMarkdown = `# Short Markdown

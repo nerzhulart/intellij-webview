@@ -44,6 +44,11 @@ html.is-over-change-marker body::-webkit-scrollbar-track {
   --markdown-code-tag: #E8BF6A;
   --markdown-code-type: #A9B7C6;
   --markdown-error: #C75450;
+  --markdown-alert-note: var(--ij-accent, #548AF7);
+  --markdown-alert-tip: var(--ij-success, #57A866);
+  --markdown-alert-important: #A57BEA;
+  --markdown-alert-warning: #D6B443;
+  --markdown-alert-caution: var(--markdown-error, #E06666);
   /* `--markdown-ide-link*` come from the `Link.*` colors of the IDE UI theme, see `setLinkColors` in main.tsx. */
   --markdown-link: var(--markdown-ide-link, var(--ij-accent, #3574F0));
   --markdown-link-hover: var(--markdown-ide-link-hover, var(--markdown-link));
@@ -93,6 +98,11 @@ html[data-theme="light"] .markdownPreview {
   --markdown-code-tag: #0033B3;
   --markdown-code-type: #174AD4;
   --markdown-error: #C75450;
+  --markdown-alert-note: var(--ij-accent, #3871E1);
+  --markdown-alert-tip: var(--ij-success, #3E9B4F);
+  --markdown-alert-important: #8C5AD6;
+  --markdown-alert-warning: #C9A227;
+  --markdown-alert-caution: var(--markdown-error, #D14B4B);
   --markdown-mark-bg: #FFF3B1;
 }
 
@@ -983,6 +993,58 @@ html[data-theme="light"] .markdownPreview {
   color: var(--ij-text-secondary);
 }
 
+.markdownPreview .markdown-alert {
+  --markdown-alert-color: var(--markdown-alert-note);
+  margin: 1em 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--markdown-alert-color);
+  border-radius: 0 4px 4px 0;
+  color: var(--ij-text-primary);
+  background: color-mix(in srgb, var(--markdown-alert-color) 8%, transparent);
+}
+
+.markdownPreview .markdown-alert > :first-child {
+  margin-top: 0;
+}
+
+.markdownPreview .markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+
+.markdownPreview .markdown-alert .markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--markdown-alert-color);
+  font-weight: 600;
+}
+
+.markdownPreview .markdown-alert .markdown-alert-title .octicon {
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+.markdownPreview .markdown-alert-note {
+  --markdown-alert-color: var(--markdown-alert-note);
+}
+
+.markdownPreview .markdown-alert-tip {
+  --markdown-alert-color: var(--markdown-alert-tip);
+}
+
+.markdownPreview .markdown-alert-important {
+  --markdown-alert-color: var(--markdown-alert-important);
+}
+
+.markdownPreview .markdown-alert-warning {
+  --markdown-alert-color: var(--markdown-alert-warning);
+}
+
+.markdownPreview .markdown-alert-caution {
+  --markdown-alert-color: var(--markdown-alert-caution);
+}
+
 .markdownPreview table {
   display: block;
   max-width: 100%;
@@ -1087,6 +1149,43 @@ html[data-theme="light"] .markdownPreview {
 .mermaidViewport svg {
   display: block;
   max-width: none;
+}
+
+.mermaidViewport svg.mermaidSvg .frame-border-inner {
+  fill: var(--ij-bg-panel);
+  stroke: none;
+}
+
+.mermaidViewport svg.mermaidSvg .participant-box,
+.mermaidViewport svg.mermaidSvg .occurrence,
+.mermaidViewport svg.mermaidSvg .divider-bg {
+  fill: var(--ij-bg-panel-alt, var(--ij-bg-panel));
+  stroke: var(--ij-border-strong);
+}
+
+.mermaidViewport svg.mermaidSvg .fragment-header {
+  fill: var(--ij-bg-panel);
+  stroke: var(--ij-border-strong);
+}
+
+.mermaidViewport svg.mermaidSvg .participant-label,
+.mermaidViewport svg.mermaidSvg .message-label,
+.mermaidViewport svg.mermaidSvg .fragment-label,
+.mermaidViewport svg.mermaidSvg .return-label {
+  fill: var(--ij-text-primary);
+}
+
+.mermaidViewport svg.mermaidSvg .message-line,
+.mermaidViewport svg.mermaidSvg .return-line,
+.mermaidViewport svg.mermaidSvg .lifeline-line,
+.mermaidViewport svg.mermaidSvg .fragment-border,
+.mermaidViewport svg.mermaidSvg .divider-line {
+  stroke: var(--ij-text-secondary);
+}
+
+.mermaidViewport svg.mermaidSvg .arrow-head {
+  fill: var(--ij-text-secondary);
+  stroke: var(--ij-text-secondary);
 }
 
 .markdownZoomToolbar {

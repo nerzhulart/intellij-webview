@@ -6,8 +6,10 @@ import { getPerfLogger } from "@nerzhulart/intellij-webview-sdk"
 import rehypeRaw from "rehype-raw"
 import rehypeSanitize from "rehype-sanitize"
 import rehypeSlug from "rehype-slug"
+import remarkEmoji from "remark-emoji"
 import remarkFrontmatter from "remark-frontmatter"
 import remarkGfm from "remark-gfm"
+import { remarkAlert } from "remark-github-blockquote-alert"
 import { FloatingMarkdownControls } from "./FloatingMarkdownControls"
 import { MarkdownAgentContextPopover } from "./markdownAgentContextPopover"
 import { setScrollbarChangeMarkers } from "./markdownChangeMarkers"
@@ -93,6 +95,7 @@ type WindowWithIdleCallback = Window & {
 const baseRemarkPlugins: NonNullable<Options["remarkPlugins"]> = [
   remarkGfm,
   [remarkFrontmatter, ["yaml", "toml"]],
+  remarkAlert,
   remarkFrontmatterBlocks,
   remarkSourcePositionAttributes,
 ]
@@ -141,8 +144,8 @@ export function MarkdownPreviewApp({
   const commandLookup = createCommandLookup(commands)
   const remarkPlugins = useMemo<Options["remarkPlugins"]>(() => {
     const ranges = inlineChangeRanges(changes)
-    if (ranges.length === 0) return baseRemarkPlugins
-    return [...baseRemarkPlugins, [remarkInlineChanges, { markdown, ranges }]]
+    if (ranges.length === 0) return [...baseRemarkPlugins, remarkEmoji]
+    return [...baseRemarkPlugins, [remarkInlineChanges, { markdown, ranges }], remarkEmoji]
   }, [changes, markdown])
   const [rehypeHighlightState, setRehypeHighlightState] = useState<{ contentVersion: number, plugin: RehypePlugin } | undefined>()
   const rehypeHighlightPlugin = rehypeHighlightState?.contentVersion === contentVersion ? rehypeHighlightState.plugin : undefined
