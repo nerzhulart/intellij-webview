@@ -76,6 +76,7 @@ internal object WKWebViewBridge {
   private const val SEL_INIT_WITH_FRAME_CONFIGURATION = "initWithFrame:configuration:"
   private const val SEL_ACCEPTS_FIRST_MOUSE = "acceptsFirstMouse:"
   private const val SEL_FLAGS_CHANGED = "flagsChanged:"
+  private const val SEL_DELIVER_JAVA_KEY_EVENT_HELPER = "deliverJavaKeyEventHelper:"
   private const val SEL_LOAD_REQUEST = "loadRequest:"
   private const val SEL_LOAD_HTML_STRING_BASE_URL = "loadHTMLString:baseURL:"
   private const val SEL_EVALUATE_JAVASCRIPT = "evaluateJavaScript:completionHandler:"
@@ -359,6 +360,7 @@ internal object WKWebViewBridge {
   }
 
   fun releaseClippingContainer(clipView: ID) {
+    restoreWindowFirstResponderIfInsideView(clipView)
     invoke(clipView, SEL_REMOVE_FROM_SUPERVIEW)
     invoke(clipView, SEL_RELEASE)
   }
@@ -370,6 +372,7 @@ internal object WKWebViewBridge {
   fun subviewCount(view: ID): Long = invoke(invoke(view, "subviews"), "count").toLong()
 
   fun detachFromParent(webView: ID) {
+    restoreWindowFirstResponderIfInsideView(webView)
     invoke(webView, SEL_REMOVE_FROM_SUPERVIEW)
   }
 
@@ -435,6 +438,9 @@ internal object WKWebViewBridge {
   }
 
   fun setHidden(view: ID, hidden: Boolean) {
+    if (hidden) {
+      restoreWindowFirstResponderIfInsideView(view)
+    }
     invoke(view, SEL_SET_HIDDEN, hidden)
   }
 
@@ -449,10 +455,33 @@ internal object WKWebViewBridge {
     }
   }
 
-  fun clearFocus(webView: ID) {
-    val window = invoke(webView, SEL_WINDOW)
-    if (!isNil(window)) {
-      invoke(window, SEL_MAKE_FIRST_RESPONDER, ID.NIL)
+  fun clearFocus(webView: ID, fallbackResponder: ID = ID.NIL) {
+    restoreWindowFirstResponderIfInsideView(webView, fallbackResponder)
+  }
+
+  /**
+   * Moves the window's first responder back to its root content view (JBR's `AWTView`) before a
+   * native WebView or its clipping container is unfocused, hidden, or removed from its superview.
+   *
+   * Passing `nil` to `-[NSWindow makeFirstResponder:]` or letting AppKit auto-resign a hidden/removed
+   * first responder makes the `NSWindow` itself (`AWTWindow_Normal`) the first responder. JBR's
+   * `AWTView` never reclaims first-responder status on subsequent Swing focus changes, causing
+   * `-[NSWindow keyDown:]` to hit `noResponderFor:` (`NSBeep()`) and dropping `flagsChanged:` events.
+   */
+  fun restoreWindowFirstResponderIfInsideView(view: ID, fallbackResponder: ID = ID.NIL) {
+    if (isNil(view)) return
+    val window = invoke(view, SEL_WINDOW)
+    if (isNil(window)) return
+
+    val firstResponder = invoke(window, SEL_FIRST_RESPONDER)
+    if (isNil(firstResponder) || !isInsideView(firstResponder, view)) return
+
+    val targetResponder = when {
+      !isNil(fallbackResponder) && invoke(fallbackResponder, SEL_WINDOW) == window -> fallbackResponder
+      else -> contentView(window) ?: ID.NIL
+    }
+    if (firstResponder != targetResponder) {
+      invoke(window, SEL_MAKE_FIRST_RESPONDER, targetResponder)
     }
   }
 
@@ -481,12 +510,14 @@ internal object WKWebViewBridge {
       return MacWebViewFirstResponderState(hasResponder = false, isInsideWebView = false, responderDescription = "<nil>")
     }
 
+    val contentView = contentView(window)
     val isWebViewResponder = firstResponder == webView
-    val isDescendantOfWebView = isDescendantOfWebView(firstResponder, webView)
+    val isDescendantOfWebView = isDescendantOfView(firstResponder, webView)
     return MacWebViewFirstResponderState(
       hasResponder = true,
       isInsideWebView = isWebViewResponder || isDescendantOfWebView,
       responderDescription = describeResponder(firstResponder),
+      isWindowContentView = contentView != null && firstResponder == contentView,
     )
   }
 
@@ -502,8 +533,8 @@ internal object WKWebViewBridge {
     invoke(handles.webView, SEL_SET_UI_DELEGATE, ID.NIL)
     invoke(handles.webView, SEL_REMOVE_GESTURE_RECOGNIZER, handles.nativeMouseRecognizer)
 
-    // 2. Detach from superview
-    invoke(handles.webView, SEL_REMOVE_FROM_SUPERVIEW)
+    // 2. Detach from superview (restoring window firstResponder to AWTView if needed)
+    detachFromParent(handles.webView)
 
     // 3. Unregister message callback
     messageHandlerCallbacks.remove(handles.messageHandler.toLong())
@@ -617,11 +648,32 @@ internal object WKWebViewBridge {
   }
 
   private fun handleFlagsChanged(webView: ID, event: ID) {
-    val keyEvent = modifierKeyEvent(webView, event) ?: return
+    val keyEvent = modifierKeyEvent(webView, event)
     // AppKit can deliver modifier changes to windows that are not currently owned by this WebView.
     // Forward only when WKWebView, or one of its private descendants, is the active first responder.
     if (!firstResponderIsInsideWebView(webView)) return
-    modifierKeyCallbacks[webView.toLong()]?.invoke(keyEvent)
+    if (forwardFlagsChangedToWindowContentView(webView, event)) return
+    if (keyEvent != null) {
+      modifierKeyCallbacks[webView.toLong()]?.invoke(keyEvent)
+    }
+  }
+
+  /**
+   * `WKWebView` consumes `flagsChanged:` instead of forwarding it up the responder chain to JBR's
+   * `AWTView`. That leaves `sLastModifiers` in `libawt_lwawt.dylib` out of sync with the physical
+   * keyboard state, so a subsequent modifier release handled by `AWTView` (for example releasing
+   * `Ctrl` in the `Ctrl+Tab` Switcher popup) is misreported as `KEY_PRESSED (VK_UNDEFINED)`.
+   *
+   * Forwarding `flagsChanged:` to `AWTView` updates `sLastModifiers` and dispatches the standard
+   * AWT modifier `KeyEvent` through `CPlatformResponder`.
+   */
+  private fun forwardFlagsChangedToWindowContentView(webView: ID, event: ID): Boolean {
+    val window = invoke(webView, SEL_WINDOW)
+    if (isNil(window)) return false
+    val contentView = contentView(window) ?: return false
+    if (contentView == webView || !respondsTo(contentView, SEL_DELIVER_JAVA_KEY_EVENT_HELPER)) return false
+    invoke(contentView, SEL_FLAGS_CHANGED, event)
+    return true
   }
 
   private fun modifierKeyEvent(webView: ID, event: ID): ModifierKeyEvent? {
@@ -959,17 +1011,17 @@ internal object WKWebViewBridge {
     if (isNil(window)) return false
 
     val firstResponder = invoke(window, SEL_FIRST_RESPONDER)
-    return !isNil(firstResponder) && isInsideWebView(firstResponder, webView)
+    return !isNil(firstResponder) && isInsideView(firstResponder, webView)
   }
 
-  private fun isInsideWebView(responder: ID, webView: ID): Boolean {
-    return responder == webView || isDescendantOfWebView(responder, webView)
+  private fun isInsideView(responder: ID, view: ID): Boolean {
+    return responder == view || isDescendantOfView(responder, view)
   }
 
-  private fun isDescendantOfWebView(responder: ID, webView: ID): Boolean {
-    return responder != webView &&
+  private fun isDescendantOfView(responder: ID, view: ID): Boolean {
+    return responder != view &&
            invoke(responder, SEL_RESPONDS_TO_SELECTOR, nativeSelector(SEL_IS_DESCENDANT_OF)).booleanValue() &&
-           invoke(responder, SEL_IS_DESCENDANT_OF, webView).booleanValue()
+           invoke(responder, SEL_IS_DESCENDANT_OF, view).booleanValue()
   }
 
   private const val NSEVENT_MODIFIER_FLAG_SHIFT = 1L shl 17

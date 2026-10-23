@@ -547,6 +547,36 @@ class SwingWebViewHostPanelGeometryTest {
   }
 
   @Test
+  fun removingOrHidingFocusedHostAfterTemporaryFocusLoss_clearsWebViewFocusAndNotifiesPageLeave() {
+    val engine = FakeNativeEngine()
+    val focusEntrySink = RecordingFocusEntrySink()
+    @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.
+    val scope = CoroutineScope(SupervisorJob())
+    try {
+      val host = SwingWebViewHostPanel(scope, engine, focusEntrySink)
+      val popupComponent = JPanel()
+
+      host.focusListeners.forEach { listener ->
+        listener.focusGained(FocusEvent(host, FocusEvent.FOCUS_GAINED, false, popupComponent, FocusEvent.Cause.MOUSE_EVENT))
+      }
+      // Opening a popup such as Ctrl+Tab Switcher sends a temporary FOCUS_LOST.
+      host.focusListeners.forEach { listener ->
+        listener.focusLost(FocusEvent(host, FocusEvent.FOCUS_LOST, true, popupComponent, FocusEvent.Cause.ACTIVATION))
+      }
+      assertEquals(0, focusEntrySink.leaveCount)
+      assertEquals(0, engine.clearFocusForSwingTransferCount)
+
+      host.close()
+
+      assertEquals(1, focusEntrySink.leaveCount)
+      assertEquals(1, engine.clearFocusForSwingTransferCount)
+    }
+    finally {
+      scope.cancel()
+    }
+  }
+
+  @Test
   fun swingFocusGain_duringNativeSynchronizationDoesNotRequestNativeFocus() {
     val engine = FakeComponentBackedEngine()
     @Suppress("RAW_SCOPE_CREATION") // Test scope has no parent in this pure Swing geometry test.

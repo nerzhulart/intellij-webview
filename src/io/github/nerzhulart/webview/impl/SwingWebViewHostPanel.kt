@@ -247,7 +247,10 @@ class SwingWebViewHostPanel internal constructor(
     override fun componentResized(e: ComponentEvent) = syncNative()
     override fun componentMoved(e: ComponentEvent) = syncNative()
     override fun componentShown(e: ComponentEvent) = syncNative()
-    override fun componentHidden(e: ComponentEvent) = syncNative()
+    override fun componentHidden(e: ComponentEvent) {
+      markWebViewFocusOutsideHost()
+      syncNative()
+    }
   }
 
   @RequiresEdt
@@ -264,6 +267,7 @@ class SwingWebViewHostPanel internal constructor(
   @RequiresEdt
   override fun removeNotify() {
     logHostLifecycle("removeNotify") { "scopeActive=${scope.isActive}, engineAttached=$engineAttached" }
+    markWebViewFocusOutsideHost()
     unregisterHeavyweight()
     if (engineAttached) {
         engine.detach()
@@ -516,6 +520,7 @@ class SwingWebViewHostPanel internal constructor(
   @RequiresEdt
   internal fun close() {
     logHostLifecycle("close") { "scopeActive=${scope.isActive}, engineAttached=$engineAttached, displayable=$isDisplayable" }
+    markWebViewFocusOutsideHost()
     unregisterHeavyweight()
     if (engineAttached) {
       engine.detach()
@@ -532,6 +537,9 @@ class SwingWebViewHostPanel internal constructor(
     addComponentListener(resizeListener)
     val listener = HierarchyListener { e ->
       if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) {
+        if (!isShowing) {
+          markWebViewFocusOutsideHost()
+        }
         syncNative()
       }
     }

@@ -268,11 +268,11 @@ class WebViewFocusInteropRobotTest {
       while (true) {
         lastState = engine.firstResponderState()
         val state = lastState
-        if (state != null && state.hasResponder && !state.isInsideWebView) return@withTimeoutOrNull true
+        if (state != null && state.hasResponder && !state.isInsideWebView && state.isWindowContentView) return@withTimeoutOrNull true
         delay(50.milliseconds)
       }
     } == true
-    assertTrue(matched, "macOS first responder did not move back outside WKWebView; lastState=$lastState")
+    assertTrue(matched, "macOS first responder did not move back to the window content view (AWTView); lastState=$lastState")
   }
 
   private fun requestForeground(frame: JFrame) {
