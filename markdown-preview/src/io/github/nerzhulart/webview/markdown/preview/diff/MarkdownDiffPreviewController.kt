@@ -148,6 +148,7 @@ internal class MarkdownDiffPreviewController private constructor(
 
   private fun createPreview(side: MarkdownDiffSide): Preview {
     val panel = WebViewMarkdownPreviewPanel(project, side.virtualFile)
+    panel.isEditablePreview = false
     Disposer.register(this, panel)
     panel.scrollListener = { line -> syncScroll(side.side, line) }
     panel.pageZoomListener = { zoom -> syncPageZoom(side.side, zoom) }

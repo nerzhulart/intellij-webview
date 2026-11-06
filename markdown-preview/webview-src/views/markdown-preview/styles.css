@@ -1315,3 +1315,457 @@ html[data-theme="light"] .markdownPreview {
     animation: none;
   }
 }
+
+.markdownTaskCheckbox.is-editable {
+  cursor: pointer;
+}
+
+.markdownBlockEditTrigger {
+  position: absolute;
+  z-index: 15;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--ij-border);
+  border-radius: 5px;
+  background: var(--ij-bg-panel);
+  color: var(--ij-text-secondary);
+  box-shadow: 0 2px 6px color-mix(in srgb, black 18%, transparent);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.markdownBlockEditTrigger:hover,
+.markdownBlockEditTrigger:focus-visible {
+  color: var(--ij-text-primary);
+  background: var(--ij-bg-hover, #00000012);
+  border-color: var(--ij-accent, #3574F0);
+}
+
+.markdownBlockEditor {
+  margin: 12px 0;
+  border: 1px solid var(--ij-accent, #3574F0);
+  border-radius: 6px;
+  background: var(--ij-bg-panel);
+  box-shadow: 0 2px 10px color-mix(in srgb, black 14%, transparent);
+  overflow: visible;
+}
+
+.markdownBlockEditor.is-drag-over {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--ij-accent, #3574F0) 8%, var(--ij-bg-panel));
+}
+
+.markdownBlockEditorHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ij-border);
+  background: color-mix(in srgb, var(--ij-bg-window) 55%, var(--ij-bg-panel));
+  border-top-left-radius: 5px;
+  border-top-right-radius: 5px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.markdownFormattingToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.markdownFormattingToolbarButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ij-text-primary);
+  font-family: var(--ij-font), sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.markdownFormattingToolbarButton.is-italic .markdownFormattingToolbarGlyph {
+  font-style: italic;
+}
+
+.markdownFormattingToolbarButton.is-strikethrough .markdownFormattingToolbarGlyph {
+  text-decoration: line-through;
+}
+
+.markdownFormattingToolbarButton.is-code .markdownFormattingToolbarGlyph {
+  font-family: var(--ij-font-mono, monospace);
+  font-size: 11px;
+}
+
+.markdownFormattingToolbarButton:hover:not(:disabled),
+.markdownFormattingToolbarButton:focus-visible:not(:disabled) {
+  background: var(--ij-bg-hover, #00000012);
+}
+
+.markdownFormattingToolbarButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.markdownBlockEditorActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markdownBlockEditorButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--ij-border);
+  border-radius: 4px;
+  background: var(--ij-bg-window);
+  color: var(--ij-text-primary);
+  font-family: var(--ij-font), sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.markdownBlockEditorButton:hover:not(:disabled) {
+  background: var(--ij-bg-hover, #00000012);
+}
+
+.markdownBlockEditorButton.is-primary {
+  border-color: var(--ij-accent, #3574F0);
+  background: var(--ij-accent, #3574F0);
+  color: #ffffff;
+}
+
+.markdownBlockEditorButton.is-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.markdownBlockEditorBody {
+  position: relative;
+  padding: 8px;
+}
+
+.markdownBlockEditorTextarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 76px;
+  padding: 8px 10px;
+  border: 1px solid var(--ij-border);
+  border-radius: 4px;
+  background: var(--ij-bg-window);
+  color: var(--ij-text-primary);
+  font-family: var(--ij-font-mono, monospace);
+  font-size: var(--markdown-preview-font-size, 13px);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.markdownBlockEditorTextarea:focus {
+  border-color: var(--ij-accent, #3574F0);
+  box-shadow: var(--ij-focus-ring);
+}
+
+.markdownBlockEditorConflictBanner,
+.markdownBlockEditorErrorBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ij-border);
+  background: color-mix(in srgb, var(--markdown-error, #C75450) 14%, var(--ij-bg-panel));
+  color: var(--ij-text-primary);
+  font-size: 12px;
+}
+
+.markdownBlockEditorConflictActions {
+  display: flex;
+  gap: 6px;
+}
+
+.mermaidBlock {
+  position: relative;
+}
+
+.mermaidEditButton {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--ij-border);
+  border-radius: 5px;
+  background: var(--ij-bg-panel);
+  color: var(--ij-text-primary);
+  box-shadow: 0 2px 6px color-mix(in srgb, black 18%, transparent);
+  font-family: var(--ij-font), sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mermaidBlock.hasError .mermaidEditButton {
+  top: 8px;
+  right: 8px;
+  left: auto;
+}
+
+.mermaidEditButton:hover,
+.mermaidEditButton:focus-visible {
+  background: var(--ij-bg-hover, #00000012);
+  border-color: var(--ij-accent, #3574F0);
+}
+
+.markdownTableEditorToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.markdownTableEditorGridWrapper {
+  overflow-x: auto;
+}
+
+.markdownTableEditorGrid {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+}
+
+.markdownTableEditorGrid th,
+.markdownTableEditorGrid td {
+  padding: 2px;
+  border: 1px solid var(--ij-border);
+}
+
+.markdownTableEditorAlignRow th {
+  background: color-mix(in srgb, var(--ij-bg-window) 60%, var(--ij-bg-panel));
+  padding: 2px 4px;
+}
+
+.markdownTableEditorAlignButton {
+  width: 100%;
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ij-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.markdownTableEditorAlignButton:hover {
+  color: var(--ij-text-primary);
+  background: var(--ij-bg-hover, #00000012);
+}
+
+.markdownTableEditorCellInput {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 90px;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--ij-bg-window);
+  color: var(--ij-text-primary);
+  font-family: var(--ij-font), sans-serif;
+  font-size: var(--markdown-preview-font-size, 13px);
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.markdownTableEditorCellInput.is-header {
+  font-weight: 600;
+}
+
+.markdownTableEditorCellInput:focus {
+  border-color: var(--ij-accent, #3574F0);
+  box-shadow: var(--ij-focus-ring);
+}
+
+.markdownCodeBlockEditorMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.markdownCodeBlockEditorBadge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ij-text-secondary);
+}
+
+.markdownCodeBlockLanguageInput {
+  width: 110px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--ij-border);
+  border-radius: 4px;
+  background: var(--ij-bg-window);
+  color: var(--ij-text-primary);
+  font-family: var(--ij-font-mono, monospace);
+  font-size: 12px;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.markdownCodeBlockEditorLayout {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.markdownCodeBlockEditorLayout.is-split {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+@media (max-width: 640px) {
+  .markdownCodeBlockEditorLayout.is-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.markdownCodeBlockInputContainer {
+  position: relative;
+  display: grid;
+  border: 1px solid var(--ij-border);
+  border-radius: 4px;
+  background: var(--ij-bg-window);
+  overflow: hidden;
+}
+
+.markdownCodeBlockHighlightBackdrop,
+.markdownCodeBlockEditorTextarea {
+  grid-area: 1 / 1 / 2 / 2;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 110px;
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--ij-font-mono, monospace);
+  font-size: var(--markdown-preview-font-size, 13px);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.markdownCodeBlockHighlightBackdrop {
+  pointer-events: none;
+  border: none;
+  background: transparent;
+  color: var(--ij-text-primary);
+  overflow: hidden;
+}
+
+.markdownCodeBlockHighlightBackdrop code {
+  padding: 0;
+  background: transparent;
+  font: inherit;
+}
+
+.markdownCodeBlockEditorTextarea {
+  border: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ij-text-primary);
+  resize: vertical;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.markdownCodeBlockEditorTextarea::selection {
+  background: color-mix(in srgb, var(--ij-accent, #3574F0) 32%, transparent);
+}
+
+.markdownCodeBlockLivePreview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--ij-border);
+  border-radius: 4px;
+  background: var(--ij-bg-window);
+}
+
+.markdownCodeBlockLivePreviewTitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ij-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.markdownFileLinkAutocomplete {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: calc(100% - 4px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--ij-border);
+  border-radius: 6px;
+  background: var(--ij-bg-panel);
+  box-shadow: 0 4px 12px color-mix(in srgb, black 22%, transparent);
+}
+
+.markdownFileLinkOption {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ij-text-primary);
+  font-family: var(--ij-font-mono, monospace);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.markdownFileLinkOption:hover,
+.markdownFileLinkOption.is-selected {
+  background: var(--ij-bg-selected, rgba(53, 132, 228, 0.24));
+}

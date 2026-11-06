@@ -56,4 +56,20 @@ internal class MarkdownPreviewPathLinkResolverTest : BasePlatformTestCase() {
     assertEmpty(resolver.resolve("missing/Nope.kt", source))
     assertEmpty(resolver.resolve(outside.toString(), source))
   }
+
+  fun `test suggests relative file paths from markdown directory`() = runBlocking {
+    val resolver = MarkdownPreviewPathLinkResolver(project, this)
+    val source = myFixture.addFileToProject("docs/readme.md", "# Docs\n").virtualFile
+    myFixture.addFileToProject("docs/guide/intro.md", "# Intro\n")
+    myFixture.addFileToProject("src/Main.kt", "fun main() {}\n")
+    IndexingTestUtil.waitUntilIndexesAreReady(project)
+
+    val allSuggestions = resolver.suggestRelativeFilePaths("", source, limit = 10)
+    val filteredSuggestions = resolver.suggestRelativeFilePaths("Main", source, limit = 10)
+
+    assertTrue(allSuggestions.contains("guide/intro.md"))
+    assertTrue(allSuggestions.contains("../src/Main.kt"))
+    assertFalse(allSuggestions.contains("readme.md"))
+    assertEquals(listOf("../src/Main.kt"), filteredSuggestions)
+  }
 }

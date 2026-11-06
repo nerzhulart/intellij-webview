@@ -70,6 +70,67 @@ internal class MarkdownPreviewPathLinkResolver(
     }
   }
 
+  suspend fun suggestRelativeFilePaths(
+    query: String,
+    sourceFile: VirtualFile?,
+    limit: Int = DEFAULT_SUGGESTION_LIMIT,
+  ): List<String> {
+    if (limit <= 0) return emptyList()
+    val maxResults = limit.coerceAtMost(MAX_SUGGESTION_LIMIT)
+    val normalizedQuery = FileUtil.toSystemIndependentName(query.trim())
+      .removePrefix("./")
+      .trimStart('/')
+    val lowerQuery = normalizedQuery.lowercase()
+
+    return readAction {
+      if (project.isDisposed) return@readAction emptyList()
+      val baseDirectories = project.getBaseDirectories()
+      val sourceDirectory = sourceFile?.parent?.takeIf { it.isValid }
+      val baseProjectDirectories = BaseProjectDirectories.getInstance(project)
+      val fileIndex = ProjectFileIndex.getInstance(project)
+      val psiManager = PsiManager.getInstance(project)
+      val matchedEntries = LinkedHashMap<String, SuggestedFileEntry>()
+
+      fun consider(file: VirtualFile) {
+        if (!file.isValid || file.isDirectory || file == sourceFile) return
+        if (!isProjectFile(file, fileIndex, psiManager, baseProjectDirectories)) return
+
+        val relativePath = relativePathFromSource(file, sourceDirectory, baseDirectories)
+        if (relativePath.isBlank()) return
+        val projectDisplayPath = displayPath(file, baseDirectories)
+        if (lowerQuery.isNotEmpty()) {
+          val matchesRelative = relativePath.lowercase().contains(lowerQuery)
+          val matchesName = file.name.lowercase().contains(lowerQuery)
+          val matchesDisplay = projectDisplayPath.lowercase().contains(lowerQuery)
+          if (!matchesRelative && !matchesName && !matchesDisplay) return
+        }
+
+        matchedEntries.putIfAbsent(
+          relativePath,
+          SuggestedFileEntry(
+            relativePath = relativePath,
+            fileName = file.name,
+          ),
+        )
+      }
+
+      if (normalizedQuery.isNotEmpty()) {
+        findExactFiles(normalizedQuery, sourceDirectory, baseDirectories, absoluteFile = null).forEach(::consider)
+        findIndexedFiles(normalizedQuery, baseDirectories).forEach(::consider)
+      }
+
+      fileIndex.iterateContent { file ->
+        consider(file)
+        true
+      }
+
+      matchedEntries.values
+        .sortedWith(suggestionComparator(lowerQuery))
+        .take(maxResults)
+        .map { it.relativePath }
+    }
+  }
+
   suspend fun navigate(rawPath: String, sourceFile: VirtualFile?, component: JComponent, clientX: Int, clientY: Int) {
     val candidates = resolve(rawPath, sourceFile)
     if (candidates.isEmpty()) return
@@ -165,6 +226,57 @@ internal class MarkdownPreviewPathLinkResolver(
            ?: file.presentableUrl
   }
 
+  private fun relativePathFromSource(
+    file: VirtualFile,
+    sourceDirectory: VirtualFile?,
+    baseDirectories: Set<VirtualFile>,
+  ): String {
+    if (sourceDirectory != null) {
+      VfsUtilCore.getRelativePath(file, sourceDirectory, '/')?.takeIf { it.isNotEmpty() }?.let { return it }
+      VfsUtilCore.findRelativePath(sourceDirectory, file, '/')?.takeIf { it.isNotEmpty() }?.let { return it }
+    }
+    return displayPath(file, baseDirectories)
+  }
+
+  private fun suggestionComparator(lowerQuery: String): Comparator<SuggestedFileEntry> {
+    return Comparator { first, second ->
+      val firstRank = suggestionRank(first, lowerQuery)
+      val secondRank = suggestionRank(second, lowerQuery)
+      if (firstRank != secondRank) return@Comparator firstRank.compareTo(secondRank)
+
+      val firstParentSteps = parentTraversalCount(first.relativePath)
+      val secondParentSteps = parentTraversalCount(second.relativePath)
+      if (firstParentSteps != secondParentSteps) return@Comparator firstParentSteps.compareTo(secondParentSteps)
+
+      if (first.relativePath.length != second.relativePath.length) {
+        return@Comparator first.relativePath.length.compareTo(second.relativePath.length)
+      }
+      first.relativePath.compareTo(second.relativePath, ignoreCase = true)
+    }
+  }
+
+  private fun suggestionRank(entry: SuggestedFileEntry, lowerQuery: String): Int {
+    if (lowerQuery.isEmpty()) return 0
+    val lowerName = entry.fileName.lowercase()
+    val lowerRelative = entry.relativePath.lowercase()
+    return when {
+      lowerName == lowerQuery || lowerRelative == lowerQuery -> 0
+      lowerName.startsWith(lowerQuery) -> 1
+      lowerRelative.startsWith(lowerQuery) -> 2
+      else -> 3
+    }
+  }
+
+  private fun parentTraversalCount(path: String): Int {
+    var count = 0
+    var rest = path
+    while (rest.startsWith("../")) {
+      count++
+      rest = rest.removePrefix("../")
+    }
+    return count
+  }
+
   private fun parsePath(rawPath: String): ParsedPath? {
     val trimmed = rawPath.trim().trim('`', '\'', '"')
     if (trimmed.isEmpty()) return null
@@ -243,7 +355,14 @@ internal class MarkdownPreviewPathLinkResolver(
 
   private data class ParsedPath(val path: String, val line: Int?, val column: Int?)
 
+  private data class SuggestedFileEntry(
+    val relativePath: String,
+    val fileName: String,
+  )
+
   private companion object {
+    private const val DEFAULT_SUGGESTION_LIMIT = 20
+    private const val MAX_SUGGESTION_LIMIT = 100
     private val HASH_LINE_SUFFIX = Regex("^(.+)#L(\\d+)$")
     private val COLON_LOCATION_SUFFIX = Regex("^(.+?):(\\d+)(?::(\\d+))?$")
   }

@@ -85,6 +85,9 @@ class WebViewMarkdownPreviewPanel(
   private var changedBlocks: List<MarkdownChangedBlockDescriptor> = emptyList()
 
   @Volatile
+  internal var isEditablePreview: Boolean = true
+
+  @Volatile
   @ApiStatus.Internal
   var scrollListener: ((Int) -> Unit)? = null
 
@@ -128,10 +131,15 @@ class WebViewMarkdownPreviewPanel(
   }
 
   private fun updateMarkdown(markdown: String, initialScrollLineNumber: Int, document: VirtualFile?) {
+    val resolvedDocument = document ?: virtualFile
+    val current = lastUpdate
+    if (current != null && current.markdown == markdown && current.document == resolvedDocument) {
+      return
+    }
     val update = MarkdownUpdate(
       markdown = markdown,
       initialScrollLineNumber = initialScrollLineNumber,
-      document = document ?: virtualFile,
+      document = resolvedDocument,
       contentVersion = nextContentVersion++,
     )
     lastUpdate = update
@@ -304,6 +312,7 @@ class WebViewMarkdownPreviewPanel(
       }
 
       override suspend fun previewScrolled(params: MarkdownPreviewScrolledParams) {
+        lastUpdate = lastUpdate?.copy(initialScrollLineNumber = params.line)
         val listener = scrollListener ?: return
         withContext(Dispatchers.EDT) {
           listener(params.line)
@@ -339,6 +348,47 @@ class WebViewMarkdownPreviewPanel(
           "markdown.webview.addToAgentContext.result - file=${currentFile?.path ?: fileName}, added=$added"
         }
         return MarkdownAddToAgentContextResultParams(added = added)
+      }
+
+      override suspend fun applyDocumentEdit(params: MarkdownApplyDocumentEditParams): MarkdownApplyDocumentEditResultParams {
+        val update = lastUpdate
+        val currentFile = update?.document ?: virtualFile
+        val result = MarkdownDocumentEditorSupport.applyDocumentEdit(
+          project = project,
+          virtualFile = currentFile,
+          currentContentVersion = update?.contentVersion,
+          isEditablePreview = isEditablePreview,
+          params = params,
+        )
+        if (result.applied && result.updatedMarkdown != null) {
+          updateMarkdown(
+            markdown = result.updatedMarkdown,
+            initialScrollLineNumber = update?.initialScrollLineNumber ?: 0,
+            document = currentFile,
+          )
+        }
+        return result.toContractResult()
+      }
+
+      override suspend fun saveImageAsset(params: MarkdownSaveImageAssetParams): MarkdownSaveImageAssetResultParams {
+        val currentFile = lastUpdate?.document ?: virtualFile
+        return MarkdownImageAssetSaver.saveImageAsset(
+          project = project,
+          markdownFile = currentFile,
+          isEditablePreview = isEditablePreview,
+          params = params,
+        )
+      }
+
+      override suspend fun suggestFileLinks(params: MarkdownSuggestFileLinksParams): MarkdownSuggestedFileLinksParams {
+        val resolver = pathLinkResolver ?: return MarkdownSuggestedFileLinksParams(emptyList())
+        val currentFile = lastUpdate?.document ?: virtualFile
+        val paths = resolver.suggestRelativeFilePaths(
+          query = params.query,
+          sourceFile = currentFile,
+          limit = params.limit,
+        )
+        return MarkdownSuggestedFileLinksParams(paths)
       }
     }
   }
@@ -488,12 +538,14 @@ class WebViewMarkdownPreviewPanel(
   private fun currentPreviewSettings(): MarkdownPreviewSettingsParams {
     val fontSize = service<MarkdownPreviewSettings>().state.fontSize
     val defaultFontSize = MarkdownPreviewSettings.State().fontSize
+    val currentFile = lastUpdate?.document ?: virtualFile
     return MarkdownPreviewSettingsParams(
       fontSize = fontSize.takeIf { it != defaultFontSize },
       effectiveFontSize = fontSize,
       defaultFontSize = defaultFontSize,
       fontSizeOptions = previewFontSizeOptions(fontSize, defaultFontSize),
       canAddToAgentContext = MarkdownAgentContextSupport.isAvailable(project),
+      canEditDocument = MarkdownDocumentEditorSupport.canEditDocument(project, currentFile, isEditablePreview),
     )
   }
 

@@ -22,6 +22,8 @@ import {
 import type {
   MarkdownAddToAgentContextParams,
   MarkdownAddToAgentContextResultParams,
+  MarkdownApplyDocumentEditParams,
+  MarkdownApplyDocumentEditResultParams,
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownLinkColors,
@@ -32,8 +34,12 @@ import type {
   MarkdownResolveRunCommandsRequest,
   MarkdownResolvedRunCommandsResponse,
   MarkdownRunCommandRequest,
+  MarkdownSaveImageAssetParams,
+  MarkdownSaveImageAssetResultParams,
   MarkdownSetFontSizeRequest,
   MarkdownSourceRange,
+  MarkdownSuggestFileLinksParams,
+  MarkdownSuggestedFileLinksParams,
 } from "./markdownPreviewTypes"
 
 interface MarkdownContentChangedParams {
@@ -76,6 +82,9 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
   pageZoomChanged(params: MarkdownPageZoomChangedParams): Promise<void>
   addToAgentContext(params: MarkdownAddToAgentContextParams): Promise<MarkdownAddToAgentContextResultParams>
+  applyDocumentEdit(params: MarkdownApplyDocumentEditParams): Promise<MarkdownApplyDocumentEditResultParams>
+  saveImageAsset(params: MarkdownSaveImageAssetParams): Promise<MarkdownSaveImageAssetResultParams>
+  suggestFileLinks(params: MarkdownSuggestFileLinksParams): Promise<MarkdownSuggestedFileLinksParams>
 }
 
 interface MarkdownPageZoomChangedParams {
@@ -185,6 +194,9 @@ function renderPreview(reason = "render", startedAtMs = performance.now(), detai
       onNavigatePathLink={navigateMarkdownPathLink}
       onSetFontSize={setMarkdownFontSize}
       onAddToAgentContext={addMarkdownToAgentContext}
+      onApplyDocumentEdit={applyMarkdownDocumentEdit}
+      onSaveImageAsset={saveMarkdownImageAsset}
+      onSuggestFileLinks={suggestMarkdownFileLinks}
     />
   )
   requestAnimationFrame(() => {
@@ -252,6 +264,18 @@ function addMarkdownToAgentContext(params: MarkdownAddToAgentContextParams): Pro
   return markdownPreviewHostApi.addToAgentContext(params)
 }
 
+function applyMarkdownDocumentEdit(params: MarkdownApplyDocumentEditParams): Promise<MarkdownApplyDocumentEditResultParams> {
+  return markdownPreviewHostApi.applyDocumentEdit(params)
+}
+
+function saveMarkdownImageAsset(params: MarkdownSaveImageAssetParams): Promise<MarkdownSaveImageAssetResultParams> {
+  return markdownPreviewHostApi.saveImageAsset(params)
+}
+
+function suggestMarkdownFileLinks(params: MarkdownSuggestFileLinksParams): Promise<MarkdownSuggestedFileLinksParams> {
+  return markdownPreviewHostApi.suggestFileLinks(params)
+}
+
 function applyTheme(theme: "light" | "dark"): void {
   document.documentElement.dataset.theme = theme
 }
@@ -300,6 +324,7 @@ function defaultPreviewSettings(): MarkdownPreviewSettings {
     defaultFontSize: fontSize,
     fontSizeOptions: [fontSize],
     canAddToAgentContext: false,
+    canEditDocument: false,
   }
 }
 
@@ -314,6 +339,7 @@ function normalizePreviewSettings(settings: MarkdownPreviewSettings): MarkdownPr
     defaultFontSize,
     fontSizeOptions,
     canAddToAgentContext: Boolean(settings.canAddToAgentContext),
+    canEditDocument: Boolean(settings.canEditDocument),
   }
 }
 

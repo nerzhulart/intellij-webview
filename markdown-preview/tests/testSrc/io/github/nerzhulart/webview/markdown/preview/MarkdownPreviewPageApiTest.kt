@@ -176,6 +176,93 @@ internal class MarkdownPreviewPageApiTest : TestCase() {
     assertEquals("true", resultPayload.getValue("added").jsonPrimitive.content)
   }
 
+  fun `test settings payload includes canEditDocument flag`() {
+    val payload = Json.encodeToJsonElement(
+      MarkdownPreviewSettingsParams.serializer(),
+      previewSettings(fontSize = 14).copy(canEditDocument = true),
+    ).jsonObject
+
+    assertEquals("true", payload.getValue("canEditDocument").jsonPrimitive.content)
+  }
+
+  fun `test applyDocumentEdit request and result payloads serialize fields`() {
+    val requestPayload = Json.encodeToJsonElement(
+      MarkdownApplyDocumentEditParams.serializer(),
+      MarkdownApplyDocumentEditParams(
+        contentVersion = 7,
+        range = MarkdownPreviewSourceRange(
+          startLine = 3,
+          startColumn = 1,
+          endLine = 5,
+          endColumn = 12,
+        ),
+        newMarkdown = "- [x] Updated task",
+        actionTitle = "Toggle task",
+      ),
+    ).jsonObject
+    val resultPayload = Json.encodeToJsonElement(
+      MarkdownApplyDocumentEditResultParams.serializer(),
+      MarkdownApplyDocumentEditResultParams(
+        applied = false,
+        conflict = true,
+        errorMessage = "Version mismatch",
+      ),
+    ).jsonObject
+
+    assertEquals("7", requestPayload.getValue("contentVersion").jsonPrimitive.content)
+    assertEquals("- [x] Updated task", requestPayload.getValue("newMarkdown").jsonPrimitive.content)
+    assertEquals("Toggle task", requestPayload.getValue("actionTitle").jsonPrimitive.content)
+    val range = requestPayload.getValue("range").jsonObject
+    assertEquals("3", range.getValue("startLine").jsonPrimitive.content)
+    assertEquals("1", range.getValue("startColumn").jsonPrimitive.content)
+    assertEquals("5", range.getValue("endLine").jsonPrimitive.content)
+    assertEquals("12", range.getValue("endColumn").jsonPrimitive.content)
+
+    assertEquals("false", resultPayload.getValue("applied").jsonPrimitive.content)
+    assertEquals("true", resultPayload.getValue("conflict").jsonPrimitive.content)
+    assertEquals("Version mismatch", resultPayload.getValue("errorMessage").jsonPrimitive.content)
+  }
+
+  fun `test saveImageAsset and suggestFileLinks payloads serialize fields`() {
+    val saveRequest = Json.encodeToJsonElement(
+      MarkdownSaveImageAssetParams.serializer(),
+      MarkdownSaveImageAssetParams(
+        fileNameHint = "screenshot.jpg",
+        mimeType = "image/jpeg",
+        base64Bytes = "aGVsbG8=",
+      ),
+    ).jsonObject
+    val saveResult = Json.encodeToJsonElement(
+      MarkdownSaveImageAssetResultParams.serializer(),
+      MarkdownSaveImageAssetResultParams(
+        saved = true,
+        relativePath = "assets/screenshot.jpg",
+      ),
+    ).jsonObject
+    val suggestRequest = Json.encodeToJsonElement(
+      MarkdownSuggestFileLinksParams.serializer(),
+      MarkdownSuggestFileLinksParams(
+        query = "Main",
+        limit = 10,
+      ),
+    ).jsonObject
+    val suggestResult = Json.encodeToJsonElement(
+      MarkdownSuggestedFileLinksParams.serializer(),
+      MarkdownSuggestedFileLinksParams(
+        paths = listOf("src/Main.kt", "../README.md"),
+      ),
+    ).jsonObject
+
+    assertEquals("screenshot.jpg", saveRequest.getValue("fileNameHint").jsonPrimitive.content)
+    assertEquals("image/jpeg", saveRequest.getValue("mimeType").jsonPrimitive.content)
+    assertEquals("aGVsbG8=", saveRequest.getValue("base64Bytes").jsonPrimitive.content)
+    assertEquals("true", saveResult.getValue("saved").jsonPrimitive.content)
+    assertEquals("assets/screenshot.jpg", saveResult.getValue("relativePath").jsonPrimitive.content)
+    assertEquals("Main", suggestRequest.getValue("query").jsonPrimitive.content)
+    assertEquals("10", suggestRequest.getValue("limit").jsonPrimitive.content)
+    assertEquals(listOf("src/Main.kt", "../README.md"), suggestResult.getValue("paths").jsonArray.map { it.jsonPrimitive.content })
+  }
+
   private fun previewSettings(fontSize: Int?): MarkdownPreviewSettingsParams {
     val defaultFontSize = 13
     val effectiveFontSize = fontSize ?: defaultFontSize

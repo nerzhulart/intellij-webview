@@ -12,10 +12,13 @@ import {
   shouldHandleZoomEvent,
 } from "./MarkdownZoomControls"
 import { attachMarkdownWheelZoom, type MarkdownWheelZoom } from "./markdownWheelZoom"
+import { positionKey, type SourcePositionRange } from "./markdownSourcePositions"
 
 interface MermaidBlockProps {
   chart: string
   theme: "light" | "dark"
+  sourcePosition?: SourcePositionRange
+  onEditDiagram?: () => void
 }
 
 type RenderState =
@@ -30,7 +33,7 @@ let mermaidRenderQueue: Promise<unknown> = Promise.resolve()
 const PRESERVED_SVG_TAGS = new Set(["defs", "style", "title", "desc", "metadata", "marker"])
 const THEME_COLOR_LIMIT = 12
 
-export function MermaidBlock({ chart, theme }: MermaidBlockProps) {
+export function MermaidBlock({ chart, theme, sourcePosition, onEditDiagram }: MermaidBlockProps) {
   const hostId = useRef(`markdown-preview-mermaid-${++mermaidBlockId}`)
   const [state, setState] = useState<RenderState>({ kind: "rendering" })
 
@@ -65,21 +68,50 @@ export function MermaidBlock({ chart, theme }: MermaidBlockProps) {
     }
   }, [chart, theme])
 
+  const sourcePosAttr = sourcePosition ? positionKey(sourcePosition) : undefined
   if (state.kind === "rendered") {
-    return <RenderedMermaidDiagram svg={state.svg} />
+    return <RenderedMermaidDiagram svg={state.svg} sourcePosAttr={sourcePosAttr} onEditDiagram={onEditDiagram} />
   }
   if (state.kind === "error") {
     return (
-      <div className="mermaidBlock hasError">
+      <div
+        className="mermaidBlock hasError"
+        data-sourcepos={sourcePosAttr}
+        data-editable-block={onEditDiagram ? "mermaid" : undefined}
+        data-editable-language={onEditDiagram ? "mermaid" : undefined}
+      >
+        {onEditDiagram && (
+          <button
+            type="button"
+            className="mermaidEditButton"
+            aria-label="Edit diagram"
+            title="Edit Mermaid diagram"
+            onClick={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              onEditDiagram()
+            }}
+          >
+            Edit
+          </button>
+        )}
         <div className="mermaidError">{state.message}</div>
         <pre><code>{chart}</code></pre>
       </div>
     )
   }
-  return <div className="mermaidBlock isRendering">Rendering diagram...</div>
+  return <div className="mermaidBlock isRendering" data-sourcepos={sourcePosAttr}>Rendering diagram...</div>
 }
 
-function RenderedMermaidDiagram({ svg }: { svg: string }) {
+function RenderedMermaidDiagram({
+  svg,
+  sourcePosAttr,
+  onEditDiagram,
+}: {
+  svg: string
+  sourcePosAttr?: string
+  onEditDiagram?: () => void
+}) {
   const hostRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null)
@@ -169,8 +201,28 @@ function RenderedMermaidDiagram({ svg }: { svg: string }) {
   }
 
   return (
-    <div className="mermaidBlock isInteractive">
+    <div
+      className="mermaidBlock isInteractive"
+      data-sourcepos={sourcePosAttr}
+      data-editable-block={onEditDiagram ? "mermaid" : undefined}
+      data-editable-language={onEditDiagram ? "mermaid" : undefined}
+    >
       <div className="mermaidViewport" ref={hostRef} />
+      {onEditDiagram && (
+        <button
+          type="button"
+          className="mermaidEditButton"
+          aria-label="Edit diagram"
+          title="Edit Mermaid diagram"
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            onEditDiagram()
+          }}
+        >
+          Edit
+        </button>
+      )}
       <MarkdownZoomToolbar
         targetLabel="diagram"
         className="mermaidToolbar"

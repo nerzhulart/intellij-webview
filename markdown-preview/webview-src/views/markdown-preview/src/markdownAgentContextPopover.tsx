@@ -280,6 +280,9 @@ function computeSelectionPopoverAnchor(range: Range, selectedText: string): Sele
   if (!isNodeInside(range.startContainer, previewContent) || !isNodeInside(range.endContainer, previewContent)) {
     return undefined
   }
+  if (isNodeInsideBlockEditor(range.startContainer) || isNodeInsideBlockEditor(range.endContainer)) {
+    return undefined
+  }
 
   const rect = resolveSelectionRect(range, previewContent)
   const highlightRects = collectSelectionHighlightRects(range, rect)
@@ -416,4 +419,9 @@ function resolveSelectionRect(range: Range, fallbackElement: HTMLElement): DOMRe
 function isNodeInside(node: Node, container: HTMLElement): boolean {
   const element = node instanceof HTMLElement ? node : node.parentElement
   return element !== null && container.contains(element)
+}
+
+function isNodeInsideBlockEditor(node: Node): boolean {
+  const element = node instanceof HTMLElement ? node : node.parentElement
+  return element?.closest(".markdownBlockEditor") != null
 }

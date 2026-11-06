@@ -88,6 +88,7 @@ export interface MarkdownPreviewSettings {
   defaultFontSize: number
   fontSizeOptions: number[]
   canAddToAgentContext?: boolean
+  canEditDocument?: boolean
 }
 
 export interface MarkdownAddToAgentContextParams {
@@ -97,6 +98,40 @@ export interface MarkdownAddToAgentContextParams {
 
 export interface MarkdownAddToAgentContextResultParams {
   added: boolean
+}
+
+export interface MarkdownApplyDocumentEditParams {
+  contentVersion: number
+  range: MarkdownSourceRange
+  newMarkdown: string
+  actionTitle?: string
+}
+
+export interface MarkdownApplyDocumentEditResultParams {
+  applied: boolean
+  conflict?: boolean
+  errorMessage?: string | null
+}
+
+export interface MarkdownSaveImageAssetParams {
+  fileNameHint?: string
+  mimeType?: string
+  base64Bytes: string
+}
+
+export interface MarkdownSaveImageAssetResultParams {
+  saved: boolean
+  relativePath?: string | null
+  errorMessage?: string | null
+}
+
+export interface MarkdownSuggestFileLinksParams {
+  query: string
+  limit?: number
+}
+
+export interface MarkdownSuggestedFileLinksParams {
+  paths: string[]
 }
 
 export interface MarkdownRunCommandRequest {

@@ -267,7 +267,7 @@ function changeClassName(kind: MarkdownChangedBlockDescriptor["kind"]): string {
   }
 }
 
-function parseSourcePosition(sourcePosition: string | undefined): SourcePositionRange | undefined {
+export function parseSourcePosition(sourcePosition: string | undefined): SourcePositionRange | undefined {
   const match = sourcePosition?.match(sourcePositionPattern)
   if (!match) return undefined
 

@@ -2,9 +2,12 @@
 
 import { apiId, type WebViewCallable, type WebViewImplementable } from "@nerzhulart/intellij-webview-sdk"
 import { defineWebViewMock } from "@nerzhulart/intellij-webview-sdk-testkit"
+import { applyMarkdownRangePatch } from "./markdownAstPatcher"
 import type {
   MarkdownAddToAgentContextParams,
   MarkdownAddToAgentContextResultParams,
+  MarkdownApplyDocumentEditParams,
+  MarkdownApplyDocumentEditResultParams,
   MarkdownChangeColors,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandDescriptor,
@@ -17,8 +20,12 @@ import type {
   MarkdownResolveRunCommandsRequest,
   MarkdownResolvedRunCommandsResponse,
   MarkdownRunCommandRequest,
+  MarkdownSaveImageAssetParams,
+  MarkdownSaveImageAssetResultParams,
   MarkdownSetFontSizeRequest,
   MarkdownSourceRange,
+  MarkdownSuggestFileLinksParams,
+  MarkdownSuggestedFileLinksParams,
 } from "./markdownPreviewTypes"
 
 interface MarkdownContentChangedParams {
@@ -61,6 +68,9 @@ interface MarkdownPreviewHostApi extends WebViewCallable {
   previewScrolled(params: MarkdownPreviewScrolledParams): Promise<void>
   pageZoomChanged(params: MarkdownPageZoomChangedParams): Promise<void>
   addToAgentContext(params: MarkdownAddToAgentContextParams): Promise<MarkdownAddToAgentContextResultParams>
+  applyDocumentEdit(params: MarkdownApplyDocumentEditParams): Promise<MarkdownApplyDocumentEditResultParams>
+  saveImageAsset(params: MarkdownSaveImageAssetParams): Promise<MarkdownSaveImageAssetResultParams>
+  suggestFileLinks(params: MarkdownSuggestFileLinksParams): Promise<MarkdownSuggestedFileLinksParams>
 }
 
 interface MarkdownPageZoomChangedParams {
@@ -89,6 +99,14 @@ const diffChanges: MarkdownChangedBlockDescriptor[] = [
   { kind: "ADDED", startLine: 14, endLine: 14 },
 ]
 const resolvedPathLinks = new Set(["docs/guide.md:12", "src/Main.kt", "src\\WindowsPath.kt", "index.h", "index.html", "style.css", "requirements.txt", "my_django_project/", "my_django_app/"])
+const mockProjectFiles = [
+  "docs/guide.md",
+  "src/Main.kt",
+  "src/Mermaid.kt",
+  "templates/index.html",
+  "style.css",
+  "requirements.txt",
+]
 const longDiff = longDiffMarkdown()
 const defaultFontSize = 13
 // Distinct palettes in the style of the `Diff & Merge` colors of an IDE color scheme, so tests can tell them apart.
@@ -114,23 +132,39 @@ const fontSizeOptions = [8, 9, 10, 11, 12, defaultFontSize, 14, 16, 18, 20, 22, 
 export default defineWebViewMock(({ host, page, theme }) => {
   const toolbar = installMockToolbar()
   let contentVersion = 1
+  let lastSentContentVersion = 1
   let currentMarkdown = sampleMarkdown
   let currentChanges = changes
   let currentFontSize = defaultFontSize
+  let canEditDocument = true
+  let savedImageCounter = 0
   let ideChangeColorPaletteIndex = 0
   let ideLinkColorPaletteIndex = 0
 
   function updatePreview(): void {
+    lastSentContentVersion = contentVersion++
     page.callable(markdownPreviewPageApiId).contentChanged({
       markdown: currentMarkdown,
       scrollLine: 0,
       settings: currentSettings(),
-      contentVersion: contentVersion++,
+      contentVersion: lastSentContentVersion,
       changes: currentChanges,
     })
     page.callable(markdownPreviewPageApiId).selectionChanged({
       selection: { startLine: 16, startColumn: 1, endLine: 16, endColumn: 17 },
     })
+  }
+
+  ;(window as Window & {
+    __MARKDOWN_PREVIEW_MOCK_SET_CONTENT__?: (nextMarkdown: string, editable?: boolean, forceVersion?: number) => void
+  }).__MARKDOWN_PREVIEW_MOCK_SET_CONTENT__ = (nextMarkdown: string, editable = true, forceVersion?: number) => {
+    currentMarkdown = nextMarkdown
+    canEditDocument = editable
+    currentChanges = []
+    if (typeof forceVersion === "number") {
+      contentVersion = forceVersion
+    }
+    updatePreview()
   }
 
   toolbar.toggleThemeButton.addEventListener("click", () => {
@@ -240,6 +274,46 @@ export default defineWebViewMock(({ host, page, theme }) => {
       toolbar.log.textContent = JSON.stringify({ kind: "addToAgentContext", ...params })
       return { added: true }
     },
+    async applyDocumentEdit(params) {
+      toolbar.log.textContent = JSON.stringify({ kind: "applyDocumentEdit", ...params })
+      if (!canEditDocument) {
+        return { applied: false, errorMessage: "Document is not editable" }
+      }
+      if (params.contentVersion !== lastSentContentVersion) {
+        return { applied: false, conflict: true, errorMessage: "Document was modified externally" }
+      }
+      const patched = applyMarkdownRangePatch(currentMarkdown, params.range, params.newMarkdown)
+      if (patched === undefined) {
+        return { applied: false, errorMessage: "Invalid source range" }
+      }
+      currentMarkdown = patched
+      updatePreview()
+      return { applied: true }
+    },
+    async saveImageAsset(params) {
+      toolbar.log.textContent = JSON.stringify({ kind: "saveImageAsset", fileNameHint: params.fileNameHint, mimeType: params.mimeType })
+      if (!canEditDocument) {
+        return { saved: false, errorMessage: "Document is not editable" }
+      }
+      const rawHint = (params.fileNameHint ?? "image.png").trim() || "image.png"
+      const dotIndex = rawHint.lastIndexOf(".")
+      const stem = (dotIndex > 0 ? rawHint.slice(0, dotIndex) : rawHint).replace(/[^a-zA-Z0-9._-]+/g, "-") || "image"
+      const ext = dotIndex > 0 ? rawHint.slice(dotIndex + 1).toLowerCase() : "png"
+      const suffix = savedImageCounter === 0 ? "" : `-${savedImageCounter}`
+      savedImageCounter++
+      return {
+        saved: true,
+        relativePath: `assets/${stem}${suffix}.${ext}`,
+      }
+    },
+    async suggestFileLinks(params) {
+      const query = params.query.trim().toLowerCase()
+      const limit = Math.max(1, params.limit ?? 20)
+      const paths = mockProjectFiles
+        .filter(path => query.length === 0 || path.toLowerCase().includes(query))
+        .slice(0, limit)
+      return { paths }
+    },
   })
 
   function currentSettings(): MarkdownPreviewSettings {
@@ -249,6 +323,7 @@ export default defineWebViewMock(({ host, page, theme }) => {
       defaultFontSize,
       fontSizeOptions,
       canAddToAgentContext: true,
+      canEditDocument,
     }
   }
 })
@@ -507,6 +582,11 @@ Anchor target with a Unicode heading.
 
 > [!NOTE]
 > Ship it with :rocket: emoji and GitHub alerts.
+
+## Tasks
+
+- [ ] First task item
+- [x] Second completed task
 `
 
 const mermaid12Markdown = `# Mermaid 12 & Markdown Enhancements

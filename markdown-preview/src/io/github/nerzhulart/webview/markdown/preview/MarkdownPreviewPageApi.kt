@@ -46,6 +46,12 @@ interface MarkdownPreviewHostApi : WebViewImplementable {
 
   suspend fun addToAgentContext(params: MarkdownAddToAgentContextParams): MarkdownAddToAgentContextResultParams
 
+  suspend fun applyDocumentEdit(params: MarkdownApplyDocumentEditParams): MarkdownApplyDocumentEditResultParams
+
+  suspend fun saveImageAsset(params: MarkdownSaveImageAssetParams): MarkdownSaveImageAssetResultParams
+
+  suspend fun suggestFileLinks(params: MarkdownSuggestFileLinksParams): MarkdownSuggestedFileLinksParams
+
   companion object {
     val ID: WebViewApiId<MarkdownPreviewHostApi> = WebViewApiId.of("markdown.preview")
   }
@@ -69,6 +75,7 @@ data class MarkdownPreviewSettingsParams(
   val defaultFontSize: Int,
   val fontSizeOptions: List<Int>,
   val canAddToAgentContext: Boolean = false,
+  val canEditDocument: Boolean = false,
 )
 
 @ApiStatus.Internal
@@ -241,4 +248,44 @@ data class MarkdownAddToAgentContextParams(
 @Serializable
 data class MarkdownAddToAgentContextResultParams(
   val added: Boolean,
+)
+
+@Serializable
+data class MarkdownApplyDocumentEditParams(
+  val contentVersion: Int,
+  val range: MarkdownPreviewSourceRange,
+  val newMarkdown: String,
+  val actionTitle: String = "",
+)
+
+@Serializable
+data class MarkdownApplyDocumentEditResultParams(
+  val applied: Boolean,
+  val conflict: Boolean = false,
+  val errorMessage: String? = null,
+)
+
+@Serializable
+data class MarkdownSaveImageAssetParams(
+  val fileNameHint: String = "image.png",
+  val mimeType: String = "image/png",
+  val base64Bytes: String,
+)
+
+@Serializable
+data class MarkdownSaveImageAssetResultParams(
+  val saved: Boolean,
+  val relativePath: String? = null,
+  val errorMessage: String? = null,
+)
+
+@Serializable
+data class MarkdownSuggestFileLinksParams(
+  val query: String,
+  val limit: Int = 20,
+)
+
+@Serializable
+data class MarkdownSuggestedFileLinksParams(
+  val paths: List<String>,
 )

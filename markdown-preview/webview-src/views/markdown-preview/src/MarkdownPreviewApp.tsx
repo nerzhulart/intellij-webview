@@ -1,6 +1,6 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
-import { lazy, Suspense, useEffect, useMemo, useState, type MouseEvent } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ChangeEvent, type MouseEvent, type ReactNode } from "react"
 import ReactMarkdown, { type Components, type Options } from "react-markdown"
 import { getPerfLogger } from "@nerzhulart/intellij-webview-sdk"
 import rehypeRaw from "rehype-raw"
@@ -12,15 +12,25 @@ import remarkGfm from "remark-gfm"
 import { remarkAlert } from "remark-github-blockquote-alert"
 import { FloatingMarkdownControls } from "./FloatingMarkdownControls"
 import { MarkdownAgentContextPopover } from "./markdownAgentContextPopover"
+import { patchTaskListItemCheckbox } from "./markdownAstPatcher"
+import {
+  MarkdownBlockEditor,
+  MarkdownHoveredBlockEditTrigger,
+  createActiveEditBlock,
+  type ActiveMarkdownEditBlock,
+  type EditableMarkdownBlockKind,
+} from "./markdownBlockEditor"
 import { setScrollbarChangeMarkers } from "./markdownChangeMarkers"
 import { markdownDiagnosticDetails } from "./markdownDiagnostics"
-import { codeNodeFromPreNode, type HastNode } from "./markdownHastUtils"
+import { codeNodeFromPreNode, hastText, type HastNode } from "./markdownHastUtils"
 import { inlineChangeRanges, remarkInlineChanges } from "./markdownInlineChanges"
 import type { MarkdownPageZoom } from "./markdownPageZoom"
 import { collectPathLinkCandidates, renderPathLinks } from "./markdownPathLinks"
 import type {
   MarkdownAddToAgentContextParams,
   MarkdownAddToAgentContextResultParams,
+  MarkdownApplyDocumentEditParams,
+  MarkdownApplyDocumentEditResultParams,
   MarkdownChangedBlockDescriptor,
   MarkdownCommandCandidate,
   MarkdownCommandDescriptor,
@@ -31,9 +41,13 @@ import type {
   MarkdownResolveRunCommandsRequest,
   MarkdownResolvedRunCommandsResponse,
   MarkdownRunCommandRequest,
+  MarkdownSaveImageAssetParams,
+  MarkdownSaveImageAssetResultParams,
   MarkdownSourceRange,
+  MarkdownSuggestFileLinksParams,
+  MarkdownSuggestedFileLinksParams,
 } from "./markdownPreviewTypes"
-import { codeToString } from "./markdownReactUtils"
+import { classNames, codeToString } from "./markdownReactUtils"
 import { markdownResourceSrc } from "./markdownResources"
 import { frontmatterBlockFromPreNode, frontmatterLanguageFromPreNode, remarkFrontmatterBlocks, remarkSourcePositionAttributes } from "./markdownRemarkPlugins"
 import {
@@ -54,10 +68,12 @@ import {
   cancelScheduledMarkdownPreviewScroll,
   clearSourceDecorations,
   decorateSourceBlocks,
+  parseSourcePosition,
   positionKey,
   scrollMarkdownPreviewToLine,
   sourcePositionFromHastNode,
   sourcePositionFromPreNode,
+  type SourcePositionRange,
 } from "./markdownSourcePositions"
 
 export { scrollMarkdownPreviewToLine } from "./markdownSourcePositions"
@@ -78,6 +94,9 @@ interface MarkdownPreviewAppProps {
   onNavigatePathLink: (request: MarkdownNavigatePathLinkRequest) => void
   onSetFontSize: (fontSize: number) => void
   onAddToAgentContext: (params: MarkdownAddToAgentContextParams) => Promise<MarkdownAddToAgentContextResultParams>
+  onApplyDocumentEdit?: (params: MarkdownApplyDocumentEditParams) => Promise<MarkdownApplyDocumentEditResultParams>
+  onSaveImageAsset?: (params: MarkdownSaveImageAssetParams) => Promise<MarkdownSaveImageAssetResultParams>
+  onSuggestFileLinks?: (params: MarkdownSuggestFileLinksParams) => Promise<MarkdownSuggestedFileLinksParams>
 }
 
 const emptyPathSet = new Set<string>()
@@ -121,7 +140,24 @@ export function MarkdownPreviewApp({
   onNavigatePathLink,
   onSetFontSize,
   onAddToAgentContext,
+  onApplyDocumentEdit,
+  onSaveImageAsset,
+  onSuggestFileLinks,
 }: MarkdownPreviewAppProps) {
+  const canEditDocument = Boolean(settings.canEditDocument) && onApplyDocumentEdit !== undefined
+  const [activeEditBlock, setActiveEditBlock] = useState<ActiveMarkdownEditBlock | undefined>()
+  const handleStartEdit = useCallback(
+    (range: SourcePositionRange, kind: EditableMarkdownBlockKind, language?: string) => {
+      if (!canEditDocument) return
+      setActiveEditBlock(createActiveEditBlock(markdown, range, kind, language))
+    },
+    [canEditDocument, markdown],
+  )
+  useEffect(() => {
+    if (!canEditDocument && activeEditBlock !== undefined) {
+      setActiveEditBlock(undefined)
+    }
+  }, [activeEditBlock, canEditDocument])
   const commandCandidates: MarkdownCommandCandidate[] = []
   const pathLinkCandidates = useMemo(() => {
     const startedAtMs = performance.now()
@@ -156,6 +192,59 @@ export function MarkdownPreviewApp({
       [rehypeHighlightPlugin, { detect: true, plainText: ["mermaid", "text", "txt"] }],
     ] as Options["rehypePlugins"]
   }, [rehypeHighlightPlugin])
+  function renderEditableBlock(
+    node: unknown,
+    kind: EditableMarkdownBlockKind,
+    renderDefault: (editableProps: Record<string, string | undefined>) => ReactNode,
+    language?: string,
+  ): ReactNode {
+    const sourcePosition = kind === "code" || kind === "mermaid"
+      ? sourcePositionFromPreNode(node) ?? sourcePositionFromHastNode(node)
+      : sourcePositionFromHastNode(node)
+    const key = sourcePosition ? positionKey(sourcePosition) : undefined
+    if (canEditDocument && activeEditBlock && key === activeEditBlock.key && onApplyDocumentEdit) {
+      return (
+        <MarkdownBlockEditor
+          key={`editor:${activeEditBlock.key}`}
+          markdown={markdown}
+          contentVersion={contentVersion}
+          block={activeEditBlock}
+          theme={theme}
+          onApplyDocumentEdit={onApplyDocumentEdit}
+          onSaveImageAsset={onSaveImageAsset}
+          onSuggestFileLinks={onSuggestFileLinks}
+          onClose={() => setActiveEditBlock(undefined)}
+        />
+      )
+    }
+
+    const editableProps: Record<string, string | undefined> = canEditDocument && key
+      ? {
+          "data-editable-block": kind,
+          "data-editable-language": language,
+        }
+      : {}
+    return renderDefault(editableProps)
+  }
+
+  function handleTaskCheckboxChange(event: ChangeEvent<HTMLInputElement>, node: unknown): void {
+    if (!canEditDocument || !onApplyDocumentEdit) return
+    event.stopPropagation()
+    const liElement = event.currentTarget.closest<HTMLElement>("li[data-sourcepos]")
+    const itemRange = parseSourcePosition(liElement?.dataset.sourcepos) ?? sourcePositionFromHastNode(node)
+    if (!itemRange) return
+
+    const patch = patchTaskListItemCheckbox(markdown, itemRange, event.currentTarget.checked)
+    if (!patch) return
+
+    void onApplyDocumentEdit({
+      contentVersion,
+      range: patch.range,
+      newMarkdown: patch.newMarkdown,
+      actionTitle: "Toggle task item",
+    })
+  }
+
   const components: Components = {
     a({ href, children, ...props }) {
       function handleClick(event: MouseEvent<HTMLAnchorElement>): void {
@@ -171,8 +260,64 @@ export function MarkdownPreviewApp({
 
       return <a {...props} href={href} onClick={handleClick}>{children}</a>
     },
+    input({ node, type, checked, disabled, className, ...props }) {
+      if (type === "checkbox") {
+        if (canEditDocument) {
+          return (
+            <input
+              {...props}
+              type="checkbox"
+              checked={Boolean(checked)}
+              disabled={false}
+              className={classNames(className, "markdownTaskCheckbox", "is-editable")}
+              onClick={event => event.stopPropagation()}
+              onDoubleClick={event => event.stopPropagation()}
+              onChange={event => handleTaskCheckboxChange(event, node)}
+            />
+          )
+        }
+        return <input {...props} type="checkbox" checked={Boolean(checked)} disabled={Boolean(disabled ?? true)} className={className} />
+      }
+      return <input {...props} type={type} checked={checked} disabled={disabled} className={className} />
+    },
     img({ src, alt, ...props }) {
       return <img {...props} src={markdownResourceSrc(src)} alt={alt} />
+    },
+    h1({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <h1 {...props} {...editableProps} className={className}>{children}</h1>)
+    },
+    h2({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <h2 {...props} {...editableProps} className={className}>{children}</h2>)
+    },
+    h3({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <h3 {...props} {...editableProps} className={className}>{children}</h3>)
+    },
+    h4({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <h4 {...props} {...editableProps} className={className}>{children}</h4>)
+    },
+    h5({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <h5 {...props} {...editableProps} className={className}>{children}</h5>)
+    },
+    h6({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <h6 {...props} {...editableProps} className={className}>{children}</h6>)
+    },
+    blockquote({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <blockquote {...props} {...editableProps} className={className}>{children}</blockquote>)
+    },
+    ul({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <ul {...props} {...editableProps} className={className}>{children}</ul>)
+    },
+    ol({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "text", editableProps => <ol {...props} {...editableProps} className={className}>{children}</ol>)
+    },
+    div({ node, className, children, ...props }) {
+      if (className?.split(/\s+/).includes("markdown-alert")) {
+        return renderEditableBlock(node, "text", editableProps => <div {...props} {...editableProps} className={className}>{children}</div>)
+      }
+      return <div {...props} className={className}>{children}</div>
+    },
+    table({ node, className, children, ...props }) {
+      return renderEditableBlock(node, "table", editableProps => <table {...props} {...editableProps} className={className}>{children}</table>)
     },
     p({ node, className, children, ...props }) {
       const image = standaloneImageFromParagraphNode(node)
@@ -184,7 +329,7 @@ export function MarkdownPreviewApp({
           </Suspense>
         )
       }
-      return <p {...props} className={className}>{children}</p>
+      return renderEditableBlock(node, "text", editableProps => <p {...props} {...editableProps} className={className}>{children}</p>)
     },
     pre({ node, className, children, ...props }) {
       const frontmatterLanguage = frontmatterLanguageFromPreNode(node)
@@ -212,20 +357,58 @@ export function MarkdownPreviewApp({
       const sourcePosition = sourcePositionFromPreNode(node)
       const codeNode = codeNodeFromPreNode(node)
       const isMermaidFence = codeNode ? isMermaidCodeNode(codeNode) : false
+      const codeLanguage = codeNode ? codeLanguageFromNode(codeNode) : undefined
+      const key = sourcePosition ? positionKey(sourcePosition) : undefined
+      if (canEditDocument && activeEditBlock && key === activeEditBlock.key && onApplyDocumentEdit) {
+        return (
+          <MarkdownBlockEditor
+            key={`editor:${activeEditBlock.key}`}
+            markdown={markdown}
+            contentVersion={contentVersion}
+            block={activeEditBlock}
+            theme={theme}
+            onApplyDocumentEdit={onApplyDocumentEdit}
+            onSaveImageAsset={onSaveImageAsset}
+            onSuggestFileLinks={onSuggestFileLinks}
+            onClose={() => setActiveEditBlock(undefined)}
+          />
+        )
+      }
       const codeFenceCandidates = sourcePosition && codeNode && !isMermaidFence ? codeFenceCommandCandidates(sourcePosition, codeNode) : []
       commandCandidates.push(...codeFenceCandidates)
-      if (isMermaidFence) {
-        return <>{children}</>
+      if (isMermaidFence && codeNode) {
+        const mermaidCode = hastText(codeNode).replace(/\n$/, "")
+        return (
+          <Suspense fallback={<div className="mermaidBlock isRendering">Rendering diagram...</div>}>
+            <LazyMermaidBlock
+              chart={mermaidCode}
+              theme={theme}
+              sourcePosition={sourcePosition}
+              onEditDiagram={
+                canEditDocument && sourcePosition
+                  ? () => handleStartEdit(sourcePosition, "mermaid", "mermaid")
+                  : undefined
+              }
+            />
+          </Suspense>
+        )
       }
+      const editableCodeProps: Record<string, string | undefined> = canEditDocument && key
+        ? {
+            "data-sourcepos": key,
+            "data-editable-block": "code",
+            "data-editable-language": codeLanguage,
+          }
+        : {}
       const blockCommand = sourcePosition ? findBlockCommand(commandLookup, sourcePosition) : undefined
       const lineCommands = sourcePosition ? findLineCommands(commandLookup, sourcePosition, blockCommand?.firstLineCommandId) : []
       const hasCommandGutter = codeFenceCandidates.length > 0 || blockCommand || lineCommands.length > 0
       if (!hasCommandGutter) {
-        return <pre className={className} {...props}>{children}</pre>
+        return <pre className={className} {...props} {...editableCodeProps}>{children}</pre>
       }
       return (
         <div className="codeFenceWithCommands">
-          <pre className={className} {...props}>{children}</pre>
+          <pre className={className} {...props} {...editableCodeProps}>{children}</pre>
           <CodeFenceRunGutter
             contentVersion={contentVersion}
             sourcePosition={sourcePosition}
@@ -238,14 +421,23 @@ export function MarkdownPreviewApp({
     },
     code({ node, className, children, ...props }) {
       const code = codeToString(children).replace(/\n$/, "")
+      const sourcePosition = sourcePositionFromHastNode(node)
       if (className?.split(/\s+/).includes("language-mermaid")) {
         return (
           <Suspense fallback={<div className="mermaidBlock isRendering">Rendering diagram...</div>}>
-            <LazyMermaidBlock chart={code} theme={theme} />
+            <LazyMermaidBlock
+              chart={code}
+              theme={theme}
+              sourcePosition={sourcePosition}
+              onEditDiagram={
+                canEditDocument && sourcePosition
+                  ? () => handleStartEdit(sourcePosition, "mermaid", "mermaid")
+                  : undefined
+              }
+            />
           </Suspense>
         )
       }
-      const sourcePosition = sourcePositionFromHastNode(node)
       if (sourcePosition && !hasLanguageClass(className)) {
         commandCandidates.push(inlineCommandCandidate(sourcePosition, code))
       }
@@ -382,9 +574,14 @@ export function MarkdownPreviewApp({
         </ReactMarkdown>
       </div>
       <FloatingMarkdownControls markdown={markdown} settings={settings} pageZoom={pageZoom} onSetFontSize={onSetFontSize} />
+      <MarkdownHoveredBlockEditTrigger
+        enabled={canEditDocument}
+        activeBlockKey={activeEditBlock?.key}
+        onStartEdit={handleStartEdit}
+      />
       <MarkdownAgentContextPopover
         contentVersion={contentVersion}
-        enabled={Boolean(settings.canAddToAgentContext)}
+        enabled={Boolean(settings.canAddToAgentContext) && activeEditBlock === undefined}
         onAddToAgentContext={onAddToAgentContext}
       />
     </>
@@ -473,6 +670,17 @@ function isWhitespaceTextNode(node: HastNode): boolean {
 
 function stringProperty(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
+}
+
+function codeLanguageFromNode(codeNode: HastNode): string | undefined {
+  const rawClass = codeNode.properties?.className
+  const classes = Array.isArray(rawClass)
+    ? rawClass.filter((item): item is string => typeof item === "string")
+    : typeof rawClass === "string"
+      ? rawClass.split(/\s+/)
+      : []
+  const langClass = classes.find(name => name.startsWith("language-"))
+  return langClass?.slice("language-".length)
 }
 
 function markdownMayNeedSyntaxHighlighting(markdown: string): boolean {
