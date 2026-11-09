@@ -1075,6 +1075,52 @@ test("renders Mermaid 12 diagrams, extensions, GitHub alerts, and emoji shortcod
   expect(darkState.treeViewTextDark !== "" && darkState.treeViewTextDark !== "rgb(0, 0, 0)").toBe(true)
 })
 
+test("keeps Mermaid diagrams unclipped when group getBBox ignores child transforms", async ({ page }) => {
+  if (!preview) {
+    throw new Error("Markdown preview mock preview server was not started")
+  }
+  await page.addInitScript(() => {
+    const originalGetBBox = SVGGraphicsElement.prototype.getBBox
+    SVGGraphicsElement.prototype.getBBox = function () {
+      if (this instanceof SVGGElement && this.classList.contains("mermaidPanZoom")) {
+        // Simulate WebKit's stale group getBBox() returning untransformed node bounds centered at 0.
+        return new DOMRect(-153, -31.5, 306, 785.5)
+      }
+      return originalGetBBox.call(this)
+    }
+  })
+  await page.goto(preview.url)
+  await page.waitForSelector(".mermaidViewport > svg.mermaidSvg")
+
+  const state = await page.evaluate(() => {
+    const svg = document.querySelector<SVGSVGElement>(".mermaidViewport > svg.mermaidSvg")
+    const viewport = document.querySelector<HTMLElement>(".mermaidViewport")
+    const nodes = Array.from(document.querySelectorAll<SVGGraphicsElement>(".mermaidPanZoom .node"))
+    if (!svg || !viewport || nodes.length === 0) return null
+    const svgRect = svg.getBoundingClientRect()
+    const viewportRect = viewport.getBoundingClientRect()
+    const svgStyle = getComputedStyle(svg)
+    const allNodesInsideSvg = nodes.every(node => {
+      const rect = node.getBoundingClientRect()
+      return rect.left >= svgRect.left - 1
+        && rect.right <= svgRect.right + 1
+        && rect.top >= svgRect.top - 1
+        && rect.bottom <= svgRect.bottom + 1
+    })
+    return {
+      allNodesInsideSvg,
+      svgOverflow: svgStyle.overflow,
+      svgOverflowWrap: svgStyle.overflowWrap,
+      viewportWiderThanSvg: viewportRect.width >= svgRect.width,
+    }
+  })
+
+  expect(state !== null).toBe(true)
+  expect(state?.allNodesInsideSvg === true).toBe(true)
+  expect(state?.svgOverflow === "visible").toBe(true)
+  expect(state?.svgOverflowWrap === "normal").toBe(true)
+})
+
 function mermaidTransform(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector(".mermaidPanZoom")?.getAttribute("transform") ?? "")
 }
@@ -1123,16 +1169,20 @@ function markdownImageTransform(page: Page): Promise<string> {
   return page.evaluate(() => document.querySelector<HTMLElement>(".markdownImage")?.style.transform ?? "")
 }
 
-/** The SVG is drawn at 1:1 with its viewBox, and the block is tall enough to show it without vertical clipping. */
+/** The SVG is drawn at 1:1 with its viewBox, centered horizontally in a wider viewport, and not clipped vertically. */
 function mermaidSvgHasNaturalSize(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const viewport = document.querySelector<HTMLElement>(".mermaidViewport")
     const svg = document.querySelector<SVGSVGElement>(".mermaidViewport svg")
     if (!viewport || !svg) return false
     const viewBox = svg.viewBox.baseVal
+    const viewportBox = viewport.getBoundingClientRect()
     const box = svg.getBoundingClientRect()
+    const centeredHorizontally = box.width >= viewportBox.width
+      || Math.abs((box.left + box.right) / 2 - (viewportBox.left + viewportBox.right) / 2) <= 1
     return Math.abs(box.width - viewBox.width) <= 1
       && Math.abs(box.height - viewBox.height) <= 1
+      && centeredHorizontally
       && viewport.scrollHeight <= viewport.clientHeight + 1
   })
 }

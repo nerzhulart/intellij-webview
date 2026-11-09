@@ -221,6 +221,17 @@ function fitSvgViewBoxToContent(svgElement: SVGSVGElement, contentElement: SVGGr
     const box = contentElement.getBBox()
     if (box.width <= 0 || box.height <= 0) return
     const padding = 24
+    const viewBox = svgElement.viewBox.baseVal
+    // WebKit can ignore child node translate() transforms in group getBBox() right after reparenting,
+    // shifting the measured box into negative coordinates and clipping Mermaid's computed viewBox.
+    if (
+      viewBox.width > 0
+      && viewBox.height > 0
+      && (box.x + box.width + padding < viewBox.x + viewBox.width
+        || box.y + box.height + padding < viewBox.y + viewBox.height)
+    ) {
+      return
+    }
     svgElement.setAttribute("viewBox", `${box.x - padding} ${box.y - padding} ${box.width + padding * 2} ${box.height + padding * 2}`)
   }
   catch {
