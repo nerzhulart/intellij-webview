@@ -1149,6 +1149,13 @@ html[data-theme="light"] .markdownPreview {
 .mermaidViewport svg {
   display: block;
   max-width: none;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.mermaidViewport > svg.mermaidSvg {
+  margin: 0 auto;
+  overflow: visible;
 }
 
 .mermaidViewport svg.mermaidSvg .frame-border-inner {
