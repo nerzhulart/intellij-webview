@@ -33,7 +33,7 @@ flowchart LR
 
 ## Quick Start
 
-Use the [WebView Runtime plugin on JetBrains Marketplace](https://plugins.jetbrains.com/plugin/33513-webview-runtime-experimental-) as the host for your consumer plugin. The example below uses runtime version `0.7.1-eap.3`; use the same release version for the TypeScript SDK.
+Use the [WebView Runtime plugin on JetBrains Marketplace](https://plugins.jetbrains.com/plugin/33513-webview-runtime-experimental-) as the host for your consumer plugin. The example below uses runtime version `0.12.1`; use the same release version for the TypeScript SDK.
 
 ### 1. Add the Runtime plugin dependency
 
@@ -48,12 +48,12 @@ repositories {
 
 dependencies {
   intellijPlatform {
-    plugin("io.github.nerzhulart.webview:0.7.1-eap.3@eap")
+    plugin("io.github.nerzhulart.webview:0.12.1")
   }
 }
 ```
 
-The `@eap` suffix selects the Marketplace EAP channel; omit it when using a stable release. Also declare the runtime as an external plugin dependency in your consumer plugin descriptor:
+This release uses the default Marketplace channel. Also declare the runtime as an external plugin dependency in your consumer plugin descriptor:
 
 ```xml
 <dependencies>
@@ -68,7 +68,7 @@ The runtime is installed alongside your consumer plugin; it is not bundled with 
 Add the exact SDK version matching the runtime plugin to your frontend package:
 
 ```shell
-bun add --exact --dev @nerzhulart/intellij-webview-sdk@0.7.1-eap.3
+bun add --exact --dev @nerzhulart/intellij-webview-sdk@0.12.1
 ```
 
 Build the frontend as part of your plugin build and package its output under plugin resources; WebView Runtime serves those bundled assets, so a local HTTP server is not needed. See the [Hello WebView sample](samples/hello-webview/README.md) for a complete Gradle and Bun setup.
