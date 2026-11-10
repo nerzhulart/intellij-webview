@@ -31,7 +31,49 @@ flowchart LR
 
 [![Watch Markdown Lens: Preview and Diff](https://img.youtube.com/vi/buoWWxdTRLw/hqdefault.jpg)](https://www.youtube.com/watch?v=buoWWxdTRLw)
 
-## Create a WebView
+## Quick Start
+
+Use the [WebView Runtime plugin on JetBrains Marketplace](https://plugins.jetbrains.com/plugin/33513-webview-runtime-experimental-) as the host for your consumer plugin. The example below uses runtime version `0.7.1-eap.3`; use the same release version for the TypeScript SDK.
+
+### 1. Add the Runtime plugin dependency
+
+Configure the IntelliJ Platform Gradle Plugin to resolve Marketplace plugins and add the runtime to your IDE dependencies:
+
+```kotlin
+repositories {
+  intellijPlatform {
+    defaultRepositories()
+  }
+}
+
+dependencies {
+  intellijPlatform {
+    plugin("io.github.nerzhulart.webview:0.7.1-eap.3@eap")
+  }
+}
+```
+
+The `@eap` suffix selects the Marketplace EAP channel; omit it when using a stable release. Also declare the runtime as an external plugin dependency in your consumer plugin descriptor:
+
+```xml
+<dependencies>
+  <plugin id="io.github.nerzhulart.webview"/>
+</dependencies>
+```
+
+The runtime is installed alongside your consumer plugin; it is not bundled with the IDE or your plugin.
+
+### 2. Install the TypeScript SDK
+
+Add the exact SDK version matching the runtime plugin to your frontend package:
+
+```shell
+bun add --exact --dev @nerzhulart/intellij-webview-sdk@0.7.1-eap.3
+```
+
+Build the frontend as part of your plugin build and package its output under plugin resources; WebView Runtime serves those bundled assets, so a local HTTP server is not needed. See the [Hello WebView sample](samples/hello-webview/README.md) for a complete Gradle and Bun setup.
+
+### 3. Create a WebView
 
 Create and own the panel from Kotlin:
 
@@ -49,7 +91,7 @@ suspend fun createEditorToolsPanel(scope: CoroutineScope): WebViewPanel {
 }
 ```
 
-The supplied `CoroutineScope` is the panel's lifetime owner. Cancel that scope when the owning UI is disposed; `WebViewPanel` has no separate `close()` method.
+Create the panel and add `panel.component` to the Swing hierarchy on the EDT. The supplied `CoroutineScope` owns the panel's lifetime: cancel that scope when the owning UI is disposed; `WebViewPanel` has no separate `close()` method.
 
 Define the same typed contract on both sides. Kotlin implements an API called by the page:
 
@@ -81,32 +123,7 @@ const editorHostApiId = apiId<EditorHostApi>()("editor.host")
 await webView.callable(editorHostApiId).openFile({ path: "src/Main.kt" })
 ```
 
-See the [WebView UI Authoring Guide](docs/guides/WebView-UI-Authoring-Guide.md) for complete lifecycle, build, protocol, preview, and testing guidance.
-
-## Install and Depend on the Runtime
-
-Build or download the WebView Runtime ZIP, install it in the target IDE, and declare the external plugin dependency in the consumer plugin descriptor:
-
-```xml
-<dependencies>
-  <plugin id="io.github.nerzhulart.webview"/>
-</dependencies>
-```
-
-`io.github.nerzhulart.webview` is the existing technical plugin ID. The runtime is not bundled with the IDE and must be installed alongside the consumer plugin.
-
-The source manifests remain private workspace packages, while releases publish public npm packages under `@nerzhulart`. Keep the canonical imports and install the exact package version that matches the runtime plugin:
-
-```json
-{
-  "devDependencies": {
-    "@nerzhulart/intellij-webview-sdk": "0.1.0",
-    "@nerzhulart/intellij-webview-sdk-testkit": "0.1.0"
-  }
-}
-```
-
-Do not use floating semver ranges for these packages. See [Frontend Package Distribution](docs/frontend/WebView-Frontend-Package-Distribution.md) for the package contract.
+See the [WebView UI Authoring Guide](docs/guides/WebView-UI-Authoring-Guide.md) for complete lifecycle, build, protocol, preview, and testing guidance, and [Frontend Package Distribution](docs/frontend/WebView-Frontend-Package-Distribution.md) for the npm package contract.
 
 ## Backend Support
 
@@ -123,7 +140,6 @@ The runtime and its public APIs are experimental. Compatibility may change betwe
 
 Current distribution limitations:
 
-- Releases are GitHub Release assets, not Marketplace publications.
 - Source and published npm packages use the same `@nerzhulart/*` coordinates.
 - Kotlin IDE test sources remain in the repository but are not wired into the standalone Gradle build.
 - The target IDE build and minimum compatible build are configured in `gradle.properties` and `build.gradle.kts`.
