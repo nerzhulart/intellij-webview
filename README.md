@@ -2,7 +2,7 @@
 
 Build rich IDE interfaces with HTML, CSS, TypeScript, and your preferred frontend framework—without running a local web server.
 
-WebView Runtime is an experimental, independently installed plugin for IntelliJ-based IDEs. A plugin owns the Kotlin lifecycle and business logic, bundles static frontend assets, and communicates with the page through typed Kotlin/TypeScript contracts.
+WebView Runtime is an independently installed plugin for IntelliJ-based IDEs. A plugin owns the Kotlin lifecycle and business logic, bundles static frontend assets, and communicates with the page through typed Kotlin/TypeScript contracts.
 
 ## What It Provides
 
@@ -24,6 +24,12 @@ flowchart LR
   Runtime <-->|assets and bridge frames| Engine
   Engine <-->|rendering and page events| Page
 ```
+
+## Markdown Lens
+
+[Markdown Lens](https://plugins.jetbrains.com/plugin/33921-markdown-lens--preview-and-diff) is a Markdown preview plugin for JetBrains IDEs built on WebView Runtime. It supports Mermaid diagrams and rendered Markdown diffs, showing both versions side by side with synchronized scrolling and change markers.
+
+[![Watch Markdown Lens: Preview and Diff](https://img.youtube.com/vi/buoWWxdTRLw/hqdefault.jpg)](https://www.youtube.com/watch?v=buoWWxdTRLw)
 
 ## Create a WebView
 
