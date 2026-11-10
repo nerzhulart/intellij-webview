@@ -2,7 +2,7 @@
 
 Build rich IDE interfaces with HTML, CSS, TypeScript, and your preferred frontend framework—without running a local web server.
 
-WebView Runtime is an experimental, independently installed plugin for IntelliJ-based IDEs. A plugin owns the Kotlin lifecycle and business logic, bundles static frontend assets, and communicates with the page through typed Kotlin/TypeScript contracts.
+WebView Runtime is an independently installed plugin for IntelliJ-based IDEs. A plugin owns the Kotlin lifecycle and business logic, bundles static frontend assets, and communicates with the page through typed Kotlin/TypeScript contracts.
 
 ## What It Provides
 
