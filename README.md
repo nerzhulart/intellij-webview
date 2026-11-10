@@ -1,3 +1,11 @@
+- [![Linux x64](https://img.shields.io/github/check-runs/nerzhulart/intellij-webview/master?nameFilter=Linux%20x64&label=Linux%20x64)](https://github.com/nerzhulart/intellij-webview/actions/workflows/tests.yml?query=branch%3Amaster)
+- [![Linux ARM64](https://img.shields.io/github/check-runs/nerzhulart/intellij-webview/master?nameFilter=Linux%20ARM64&label=Linux%20ARM64)](https://github.com/nerzhulart/intellij-webview/actions/workflows/tests.yml?query=branch%3Amaster)
+- [![Windows x64](https://img.shields.io/github/check-runs/nerzhulart/intellij-webview/master?nameFilter=Windows%20x64&label=Windows%20x64)](https://github.com/nerzhulart/intellij-webview/actions/workflows/tests.yml?query=branch%3Amaster)
+- [![Windows ARM64](https://img.shields.io/github/check-runs/nerzhulart/intellij-webview/master?nameFilter=Windows%20ARM64&label=Windows%20ARM64)](https://github.com/nerzhulart/intellij-webview/actions/workflows/tests.yml?query=branch%3Amaster)
+- [![macOS Intel](https://img.shields.io/github/check-runs/nerzhulart/intellij-webview/master?nameFilter=macOS%20Intel&label=macOS%20Intel)](https://github.com/nerzhulart/intellij-webview/actions/workflows/tests.yml?query=branch%3Amaster)
+- [![macOS ARM64](https://img.shields.io/github/check-runs/nerzhulart/intellij-webview/master?nameFilter=macOS%20ARM64&label=macOS%20ARM64)](https://github.com/nerzhulart/intellij-webview/actions/workflows/tests.yml?query=branch%3Amaster)
+- [![WebView TS tests](https://github.com/nerzhulart/intellij-webview/actions/workflows/webview-tests.yml/badge.svg)](https://github.com/nerzhulart/intellij-webview/actions/workflows/webview-tests.yml)
+
 # WebView Runtime for IntelliJ
 
 Build rich IDE interfaces with HTML, CSS, TypeScript, and your preferred frontend framework—without running a local web server.
@@ -15,14 +23,25 @@ WebView Runtime is an independently installed plugin for IntelliJ-based IDEs. A 
 
 ```mermaid
 flowchart LR
-  Consumer["Consumer plugin\nKotlin + bundled web assets"]
-  Runtime["WebView Runtime plugin\nlifecycle, assets, typed bridge"]
-  Page["WebView page\nTypeScript UI"]
-  Engine["Browser engine\nWKWebView, WebView2, or JCEF"]
+  subgraph Plugin["Your IntelliJ plugin"]
+    Host["Kotlin host<br/>IDE services and business logic"]
+    Assets["Bundled frontend assets<br/>HTML, CSS, JavaScript"]
+  end
 
-  Consumer <-->|panel lifecycle and typed API| Runtime
-  Runtime <-->|assets and bridge frames| Engine
-  Engine <-->|rendering and page events| Page
+  subgraph Runtime["WebView Runtime plugin"]
+    Panel["Swing panel and scoped lifecycle<br/>WKWebView / WebView2 / JCEF"]
+    Bridge["Typed JSON-RPC bridge<br/>Bidirectional API calls"]
+    Origin["Virtual asset origin<br/>No local HTTP server"]
+  end
+
+  UI["Embedded WebView UI<br/>TypeScript + your frontend framework"]
+
+  Host -->|createWebViewPanel| Panel
+  Panel -->|hosts and renders| UI
+  Host <-->|WebViewInterop| Bridge
+  Bridge <-->|TypeScript SDK| UI
+  Assets --> Origin
+  Origin -->|loads bundled assets| UI
 ```
 
 ## Markdown Lens
